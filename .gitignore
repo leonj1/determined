@@ -1,6 +1,9 @@
 # Compiled binary
 /determined
 
+# Docker build output
+/bin/
+
 # Runtime per-iteration logs
 /logs/
 
