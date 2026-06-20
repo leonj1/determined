@@ -21,7 +21,11 @@ const prompt = "Read PLAN.md and STEPS.md. Find the first step that has needs to
 	"When there are no more steps then create STOP.md"
 
 func main() {
-	cfg, logDir := parseConfig()
+	cfg, logDir, err := parseConfig()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "determined: %v\n", err)
+		os.Exit(2)
+	}
 	clock := clients.NewSystemClock()
 	orchestrator := services.NewOrchestrator(
 		clients.NewExecCommandRunner(),
@@ -40,19 +44,25 @@ func main() {
 	os.Exit(outcome.ExitCode())
 }
 
-// parseConfig reads the limit flags and assembles the hardcoded run config.
-func parseConfig() (models.Config, string) {
+// parseConfig reads the flags, selects the AI coding tool, and assembles the
+// run config. It returns an error when the chosen tool is unsupported.
+func parseConfig() (models.Config, string, error) {
 	budget := flag.Duration("max-duration", time.Hour,
 		"wall-clock budget, checked between iterations; 0 means unlimited")
 	logDir := flag.String("log-dir", "logs", "directory for per-iteration log files")
+	tool := flag.String("tool", "droid", "AI coding CLI to run (droid|pi|claude)")
 	auto := flag.String("auto", "medium",
-		"droid autonomy level passed as --auto; required for unattended runs (low|medium|high)")
+		"droid autonomy level passed as --auto (droid only): low|medium|high")
 	flag.Parse()
 
+	selected, err := models.SelectTool(*tool, *auto)
+	if err != nil {
+		return models.Config{}, "", err
+	}
 	cfg := models.Config{
 		StopFile:   "STOP.md",
-		Invocation: models.Invocation{Binary: "droid", Args: []string{"exec", "--auto", *auto, prompt}},
+		Invocation: selected.Invocation(prompt),
 		Budget:     *budget,
 	}
-	return cfg, *logDir
+	return cfg, *logDir, nil
 }
