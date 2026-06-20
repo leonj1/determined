@@ -22,15 +22,14 @@ func render(inv models.Invocation) string {
 func TestSelectedToolRunsTheRightCommand(t *testing.T) {
 	cases := []struct {
 		tool string
-		auto string
 		want string
 	}{
-		{"droid", "high", `droid exec "do the work" --auto high`},
-		{"pi", "ignored", `pi -p "do the work"`},
-		{"claude", "ignored", `claude -p "do the work"`},
+		{"droid", `droid exec "do the work" --auto high`},
+		{"pi", `pi -p "do the work"`},
+		{"claude", `claude -p "do the work"`},
 	}
 	for _, c := range cases {
-		tool, err := models.SelectTool(c.tool, c.auto)
+		tool, err := models.SelectTool(c.tool)
 		if err != nil {
 			t.Fatalf("%s should be supported: %v", c.tool, err)
 		}
@@ -44,7 +43,7 @@ func TestSelectedToolRunsTheRightCommand(t *testing.T) {
 }
 
 func TestUnsupportedToolIsRejected(t *testing.T) {
-	_, err := models.SelectTool("gpt", "")
+	_, err := models.SelectTool("gpt")
 	if err == nil {
 		t.Fatal("expected an error when selecting an unsupported tool")
 	}

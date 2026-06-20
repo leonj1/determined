@@ -9,16 +9,18 @@ type Tool interface {
 	Invocation(prompt string) Invocation
 }
 
-// DroidTool runs the Factory droid CLI: `droid exec "<prompt>" --auto <level>`.
-// The autonomy level is required for unattended runs.
-type DroidTool struct {
-	Auto string
-}
+// droidAutonomy is the autonomy level droid runs at. Unattended runs always
+// use "high"; it is not user-configurable.
+const droidAutonomy = "high"
+
+// DroidTool runs the Factory droid CLI: `droid exec "<prompt>" --auto high`.
+// The autonomy level is fixed for unattended runs.
+type DroidTool struct{}
 
 func (DroidTool) Name() string { return "droid" }
 
-func (t DroidTool) Invocation(prompt string) Invocation {
-	return Invocation{Binary: "droid", Args: []string{"exec", prompt, "--auto", t.Auto}}
+func (DroidTool) Invocation(prompt string) Invocation {
+	return Invocation{Binary: "droid", Args: []string{"exec", prompt, "--auto", droidAutonomy}}
 }
 
 // PiTool runs the pi CLI: `pi -p "<prompt>"`.
@@ -39,11 +41,11 @@ func (ClaudeTool) Invocation(prompt string) Invocation {
 	return Invocation{Binary: "claude", Args: []string{"-p", prompt}}
 }
 
-// SelectTool returns the Tool named by name. auto is applied only to droid.
-func SelectTool(name string, auto string) (Tool, error) {
+// SelectTool returns the Tool named by name.
+func SelectTool(name string) (Tool, error) {
 	switch name {
 	case "droid":
-		return DroidTool{Auto: auto}, nil
+		return DroidTool{}, nil
 	case "pi":
 		return PiTool{}, nil
 	case "claude":

@@ -51,11 +51,9 @@ func parseConfig() (models.Config, string, error) {
 		"wall-clock budget, checked between iterations; 0 means unlimited")
 	logDir := flag.String("log-dir", "logs", "directory for per-iteration log files")
 	tool := flag.String("tool", "droid", "AI coding CLI to run (droid|pi|claude)")
-	auto := flag.String("auto", "medium",
-		"droid autonomy level passed as --auto (droid only): low|medium|high")
 	flag.Parse()
 
-	selected, err := models.SelectTool(*tool, *auto)
+	selected, err := models.SelectTool(*tool)
 	if err != nil {
 		return models.Config{}, "", err
 	}
