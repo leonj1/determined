@@ -33,7 +33,23 @@ go build -o determined ./cmd/determined
 ./determined --tool claude         # use the claude CLI instead
 ./determined --max-duration 2h     # raise the time budget
 ./determined --max-duration 0      # unlimited (bash parity; Ctrl+C is the only stop)
+./determined --version             # print the semantic version and exit
 ```
+
+### Versioned release build
+
+`make build` compiles the binary inside `Dockerfile.build` and stamps it with a
+semantic version, dropping the result at `bin/determined`:
+
+```bash
+make build                 # uses the seed in ./VERSION (1.0.0)
+make build VERSION=1.2.3    # override the version
+```
+
+The semver seed lives in the `VERSION` file (major.minor). On every push to the
+default branch, the `build` GitHub Actions workflow stamps the binary with
+`MAJOR.MINOR.<run-number>`, uploads it as a workflow artifact, and publishes a
+tagged GitHub Release.
 
 ## Behaviour
 
@@ -62,6 +78,7 @@ Each iteration, in the current working directory:
 | `--tool`         | `droid`  | AI coding CLI to run (`droid`/`pi`/`claude`).                   |
 | `--max-duration` | `1h`     | Wall-clock budget, checked between iterations. `0` = unlimited. |
 | `--log-dir`      | `logs`   | Directory for per-iteration log files.                          |
+| `--version`      | —        | Print the binary's semantic version and exit.                  |
 | `--auto`         | `medium` | `droid` autonomy level (`low`/`medium`/`high`), **droid only**. Required for unattended runs — without it `droid exec` stops on a permission prompt and the loop aborts on iteration 1. Ignored by `pi`/`claude`. |
 
 The prompt and the `STOP.md` / `PLAN.md` / `STEPS.md` filenames are hardcoded,

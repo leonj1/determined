@@ -20,6 +20,11 @@ const prompt = "Read PLAN.md and STEPS.md. Find the first step that has needs to
 	"Implement that step. Mark the step completed when you are done. Only work on one step. " +
 	"When there are no more steps then create STOP.md"
 
+// version is the semantic version of the binary. It defaults to "dev" for local
+// builds and is overridden at link time via -ldflags="-X main.version=<semver>"
+// by the release build (see Dockerfile.build / Makefile).
+var version = "dev"
+
 func main() {
 	cfg, logDir, err := parseConfig()
 	if err != nil {
@@ -51,7 +56,13 @@ func parseConfig() (models.Config, string, error) {
 		"wall-clock budget, checked between iterations; 0 means unlimited")
 	logDir := flag.String("log-dir", "logs", "directory for per-iteration log files")
 	tool := flag.String("tool", "droid", "AI coding CLI to run (droid|pi|claude)")
+	showVersion := flag.Bool("version", false, "print the version and exit")
 	flag.Parse()
+
+	if *showVersion {
+		fmt.Printf("determined %s\n", version)
+		os.Exit(0)
+	}
 
 	selected, err := models.SelectTool(*tool)
 	if err != nil {
