@@ -1,0 +1,55 @@
+name: build
+
+# Build the determined binary on every push to the default branch. Each build
+# is stamped with a unique semantic version (MAJOR.MINOR from the VERSION file,
+# PATCH from the run number), compiled via `make build` (Dockerfile.build), and
+# published as both a workflow artifact and a tagged GitHub Release.
+on:
+  push:
+    branches: [master]
+
+permissions:
+  contents: write # required to create the release tag
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Resolve semantic version
+        id: version
+        run: |
+          base="$(cat VERSION)"            # seed, e.g. 1.0.0
+          major_minor="${base%.*}"          # -> 1.0
+          version="${major_minor}.${GITHUB_RUN_NUMBER}"
+          echo "version=${version}" >>"$GITHUB_OUTPUT"
+          echo "Building determined ${version}"
+
+      - name: Build binary
+        run: make build VERSION=${{ steps.version.outputs.version }}
+
+      - name: Verify version stamp
+        run: |
+          got="$(./bin/determined --version)"
+          echo "$got"
+          test "$got" = "determined ${{ steps.version.outputs.version }}"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: determined-${{ steps.version.outputs.version }}
+          path: bin/determined
+          if-no-files-found: error
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="v${{ steps.version.outputs.version }}"
+          gh release create "$tag" \
+            bin/determined \
+            --title "$tag" \
+            --target "$GITHUB_SHA" \
+            --notes "Automated build of determined ${{ steps.version.outputs.version }} from ${GITHUB_SHA}."
