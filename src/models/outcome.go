@@ -12,12 +12,17 @@ const (
 	OutcomeBudgetExceeded
 	// OutcomeInterrupted means a signal (SIGINT/SIGTERM) ended the run.
 	OutcomeInterrupted
+	// OutcomePlanReady means a plan run produced PLAN.md and STEPS.md.
+	OutcomePlanReady
+	// OutcomePlanStalled means a plan iteration produced neither clarifying
+	// questions nor a finished plan, so the loop could not make progress.
+	OutcomePlanStalled
 )
 
-// ExitCode maps an outcome to a process exit code: 0 only when the AI tool
-// signalled completion via the stop file, 1 for every other termination.
+// ExitCode maps an outcome to a process exit code: 0 only when the work
+// completed cleanly (stop file created, or a plan was produced), 1 otherwise.
 func (o Outcome) ExitCode() int {
-	if o == OutcomeStopped {
+	if o == OutcomeStopped || o == OutcomePlanReady {
 		return 0
 	}
 	return 1
@@ -33,6 +38,10 @@ func (o Outcome) String() string {
 		return "stopped (time budget exhausted)"
 	case OutcomeInterrupted:
 		return "interrupted (signal received)"
+	case OutcomePlanReady:
+		return "plan ready (PLAN.md and STEPS.md created)"
+	case OutcomePlanStalled:
+		return "aborted (tool produced neither questions nor a plan)"
 	default:
 		return "unknown"
 	}

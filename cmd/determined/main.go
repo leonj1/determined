@@ -15,10 +15,42 @@ import (
 )
 
 // prompt is the hardcoded instruction handed to the AI coding tool each
-// iteration, ported verbatim from the original bash loop.
+// iteration of the execute loop, ported verbatim from the original bash loop.
 const prompt = "Read PLAN.md and STEPS.md. Find the first step that has needs to be completed. " +
 	"Implement that step. Mark the step completed when you are done. Only work on one step. " +
 	"When there are no more steps then create STOP.md"
+
+// planPrompt is the instruction handed to the tool each round of the attended
+// planning loop. It drives the QUESTIONS.md / ANSWERS.md protocol the
+// PlanOrchestrator mediates.
+const planPrompt = "You are helping plan a software project before any code is written. " +
+	"Read GOAL.md for the user's goal, and read ANSWERS.md if it exists for clarifying " +
+	"questions you already asked and the user's answers. " +
+	"If you do NOT yet have enough detail to write a thorough plan, write your clarifying " +
+	"questions to QUESTIONS.md as a markdown numbered list, one question per line, and do " +
+	"nothing else. " +
+	"If you DO have enough detail, write a detailed PLAN.md (overview, goals, constraints, " +
+	"architecture) and a STEPS.md containing an ordered list of discrete, individually " +
+	"completable steps, each marked incomplete, and do not write QUESTIONS.md. " +
+	"Do not implement anything. Do not create STOP.md."
+
+// assessPrompt asks the tool to judge whether each step in STEPS.md is small
+// enough for an AI coding tool to implement in a single pass, recording the
+// verdict in OVERSIZED.md for the PlanOrchestrator to act on.
+const assessPrompt = "Read STEPS.md. For each step, judge whether a capable AI coding tool could " +
+	"implement it correctly and completely in a single pass — one focused change. " +
+	"Write to OVERSIZED.md a markdown list naming every step that is too large or does too much " +
+	"to be implemented in one pass; quote or summarize each so it can be identified. " +
+	"If every step is already small enough, write exactly the single word NONE to OVERSIZED.md. " +
+	"Do not modify STEPS.md or PLAN.md. Do not implement anything. Do not create STOP.md."
+
+// breakdownPrompt asks the tool to split the steps flagged in OVERSIZED.md into
+// smaller, individually-implementable steps, rewriting STEPS.md in place.
+const breakdownPrompt = "Read STEPS.md and OVERSIZED.md. OVERSIZED.md lists steps that are too large to " +
+	"implement in one pass. Rewrite STEPS.md so each oversized step is broken into smaller, ordered, " +
+	"individually-implementable sub-steps; leave the already-small steps unchanged and preserve the " +
+	"overall order. Every step must be something an AI coding tool can implement correctly in a single " +
+	"focused pass. Do not implement anything. Do not create STOP.md."
 
 // version is the semantic version of the binary. It defaults to "dev" for local
 // builds and is overridden at link time via -ldflags="-X main.version=<semver>"
@@ -26,36 +58,13 @@ const prompt = "Read PLAN.md and STEPS.md. Find the first step that has needs to
 var version = "dev"
 
 func main() {
-	cfg, logDir, err := parseConfig()
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "determined: %v\n", err)
-		os.Exit(2)
-	}
-	clock := clients.NewSystemClock()
-	orchestrator := services.NewOrchestrator(
-		clients.NewExecCommandRunner(),
-		clients.NewOsStopSignal(),
-		clock,
-		clients.NewFileLogSink(logDir, clock),
-		os.Stdout,
-		cfg,
-	)
-
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
-
-	outcome := orchestrator.Run(ctx)
-	fmt.Fprintf(os.Stderr, "\ndetermined: %s\n", outcome)
-	os.Exit(outcome.ExitCode())
-}
-
-// parseConfig reads the flags, selects the AI coding tool, and assembles the
-// run config. It returns an error when the chosen tool is unsupported.
-func parseConfig() (models.Config, string, error) {
 	budget := flag.Duration("max-duration", time.Hour,
 		"wall-clock budget, checked between iterations; 0 means unlimited")
 	logDir := flag.String("log-dir", "logs", "directory for per-iteration log files")
 	tool := flag.String("tool", "droid", "AI coding CLI to run (droid|pi|claude)")
+	plan := flag.String("plan", "", "describe a goal to plan interactively, producing PLAN.md and STEPS.md")
+	maxStepPasses := flag.Int("max-step-passes", 5,
+		"max assess/breakdown rounds to shrink oversized steps during planning; 0 disables")
 	showVersion := flag.Bool("version", false, "print the version and exit")
 	flag.Parse()
 
@@ -66,12 +75,70 @@ func parseConfig() (models.Config, string, error) {
 
 	selected, err := models.SelectTool(*tool)
 	if err != nil {
-		return models.Config{}, "", err
+		fmt.Fprintf(os.Stderr, "determined: %v\n", err)
+		os.Exit(2)
 	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	clock := clients.NewSystemClock()
+	logs := clients.NewFileLogSink(*logDir, clock)
+
+	var outcome models.Outcome
+	if *plan != "" {
+		outcome = runPlan(ctx, selected, *plan, *budget, *maxStepPasses, clock, logs)
+	} else {
+		outcome = runLoop(ctx, selected, *budget, clock, logs)
+	}
+
+	fmt.Fprintf(os.Stderr, "\ndetermined: %s\n", outcome)
+	os.Exit(outcome.ExitCode())
+}
+
+// runLoop runs the unattended execute loop against PLAN.md / STEPS.md.
+func runLoop(ctx context.Context, tool models.Tool, budget time.Duration, clock services.Clock, logs services.LogSink) models.Outcome {
 	cfg := models.Config{
 		StopFile:   "STOP.md",
-		Invocation: selected.Invocation(prompt),
-		Budget:     *budget,
+		Invocation: tool.Invocation(prompt),
+		Budget:     budget,
 	}
-	return cfg, *logDir, nil
+	orchestrator := services.NewOrchestrator(
+		clients.NewExecCommandRunner(),
+		clients.NewOsStopSignal(),
+		clock,
+		logs,
+		os.Stdout,
+		cfg,
+	)
+	return orchestrator.Run(ctx)
+}
+
+// runPlan runs the attended planning loop, relaying the tool's clarifying
+// questions to the user until a plan is produced.
+func runPlan(ctx context.Context, tool models.Tool, goal string, budget time.Duration, maxStepPasses int, clock services.Clock, logs services.LogSink) models.Outcome {
+	cfg := models.PlanConfig{
+		Goal:                goal,
+		Invocation:          tool.Invocation(planPrompt),
+		Budget:              budget,
+		AssessInvocation:    tool.Invocation(assessPrompt),
+		BreakdownInvocation: tool.Invocation(breakdownPrompt),
+		MaxRefinePasses:     maxStepPasses,
+		GoalFile:            "GOAL.md",
+		QuestionsFile:       "QUESTIONS.md",
+		AnswersFile:         "ANSWERS.md",
+		PlanFile:            "PLAN.md",
+		StepsFile:           "STEPS.md",
+		OversizedFile:       "OVERSIZED.md",
+	}
+	orchestrator := services.NewPlanOrchestrator(
+		clients.NewExecCommandRunner(),
+		clients.NewOsFileStore(),
+		clients.NewStdinPrompter(os.Stdout, os.Stdin),
+		clock,
+		logs,
+		os.Stdout,
+		cfg,
+	)
+	return orchestrator.Run(ctx)
 }
