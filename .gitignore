@@ -1,0 +1,8 @@
+# Compiled binary
+/determined
+
+# Runtime per-iteration logs
+/logs/
+
+# Completion sentinel
+/STOP.md
