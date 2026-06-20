@@ -1,0 +1,8 @@
+.git
+.agents
+.claude
+bin
+logs
+STOP.md
+determined
+*.md

@@ -1,0 +1,19 @@
+# syntax=docker/dockerfile:1
+
+# Compile the determined binary in a pinned Go toolchain.
+FROM golang:1.24-alpine AS build
+WORKDIR /src
+
+# Download modules first so this layer caches independently of source changes.
+# (determined has no external dependencies, so this is currently a no-op.)
+COPY go.mod ./
+RUN go mod download
+
+# Build a static, stripped binary.
+COPY . .
+RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/determined ./cmd/determined
+
+# Export stage: a scratch image containing only the binary, so
+# `docker build --target bin --output` drops it straight onto the host.
+FROM scratch AS bin
+COPY --from=build /out/determined /determined
