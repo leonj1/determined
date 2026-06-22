@@ -100,12 +100,14 @@ func main() {
 func runLoop(ctx context.Context, tool models.Tool, budget time.Duration, clock services.Clock, logs services.LogSink) models.Outcome {
 	cfg := models.Config{
 		StopFile:   "STOP.md",
+		StepsFile:  "STEPS.md",
 		Invocation: tool.Invocation(prompt),
 		Budget:     budget,
 	}
 	orchestrator := services.NewOrchestrator(
 		clients.NewExecCommandRunner(),
 		clients.NewOsStopSignal(),
+		clients.NewOsFileStore(),
 		clock,
 		logs,
 		os.Stdout,

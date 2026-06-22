@@ -44,6 +44,16 @@ func (s *fakeLogSink) OpenIteration(int) (io.WriteCloser, error) {
 	return l, nil
 }
 
+// fakeStepReader serves STEPS.md content to the execute orchestrator.
+type fakeStepReader struct{ content string }
+
+func (r fakeStepReader) Read(string) (string, error) {
+	if r.content == "" {
+		return "", errors.New("missing steps")
+	}
+	return r.content, nil
+}
+
 // fakeRunner runs a scripted behaviour and counts its invocations.
 type fakeRunner struct {
 	calls  int
@@ -61,6 +71,7 @@ func (r *fakeRunner) Run(_ context.Context, _ models.Invocation, out io.Writer) 
 func config(budget time.Duration) models.Config {
 	return models.Config{
 		StopFile:   "STOP.md",
+		StepsFile:  "STEPS.md",
 		Invocation: models.Invocation{Binary: "droid", Args: []string{"exec", "go"}},
 		Budget:     budget,
 	}
@@ -78,7 +89,7 @@ func TestRunCompletesWhenToolSignalsDone(t *testing.T) {
 		}
 		return nil
 	}}
-	o := services.NewOrchestrator(runner, stop, &fakeClock{now: time.Now()}, logs, io.Discard, config(0))
+	o := services.NewOrchestrator(runner, stop, fakeStepReader{}, &fakeClock{now: time.Now()}, logs, io.Discard, config(0))
 
 	outcome := o.Run(context.Background())
 
@@ -100,7 +111,7 @@ func TestRunAbortsWhenToolFails(t *testing.T) {
 		}
 		return nil
 	}}
-	o := services.NewOrchestrator(runner, newFakeStopSignal(), &fakeClock{now: time.Now()}, &fakeLogSink{}, io.Discard, config(0))
+	o := services.NewOrchestrator(runner, newFakeStopSignal(), fakeStepReader{}, &fakeClock{now: time.Now()}, &fakeLogSink{}, io.Discard, config(0))
 
 	outcome := o.Run(context.Background())
 
@@ -118,7 +129,7 @@ func TestRunStopsWhenTimeBudgetExhausted(t *testing.T) {
 		clock.advance(4 * time.Minute)
 		return nil
 	}}
-	o := services.NewOrchestrator(runner, newFakeStopSignal(), clock, &fakeLogSink{}, io.Discard, config(10*time.Minute))
+	o := services.NewOrchestrator(runner, newFakeStopSignal(), fakeStepReader{}, clock, &fakeLogSink{}, io.Discard, config(10*time.Minute))
 
 	outcome := o.Run(context.Background())
 
@@ -134,7 +145,7 @@ func TestRunDoesNothingWhenStopFileAlreadyPresent(t *testing.T) {
 	stop := newFakeStopSignal()
 	stop.create("STOP.md")
 	runner := &fakeRunner{}
-	o := services.NewOrchestrator(runner, stop, &fakeClock{now: time.Now()}, &fakeLogSink{}, io.Discard, config(0))
+	o := services.NewOrchestrator(runner, stop, fakeStepReader{}, &fakeClock{now: time.Now()}, &fakeLogSink{}, io.Discard, config(0))
 
 	outcome := o.Run(context.Background())
 
@@ -155,11 +166,48 @@ func TestRunStopsWhenInterrupted(t *testing.T) {
 		}
 		return nil
 	}}
-	o := services.NewOrchestrator(runner, newFakeStopSignal(), &fakeClock{now: time.Now()}, &fakeLogSink{}, io.Discard, config(0))
+	o := services.NewOrchestrator(runner, newFakeStopSignal(), fakeStepReader{}, &fakeClock{now: time.Now()}, &fakeLogSink{}, io.Discard, config(0))
 
 	outcome := o.Run(ctx)
 
 	if outcome != models.OutcomeInterrupted || outcome.ExitCode() != 1 {
 		t.Fatalf("expected an interrupted stop with exit 1, got %v (exit %d)", outcome, outcome.ExitCode())
+	}
+}
+
+func TestRunEchoesStepProgressAndUpdatesEta(t *testing.T) {
+	stop := newFakeStopSignal()
+	clock := &fakeClock{now: time.Now()}
+	terminal := &bytes.Buffer{}
+	runner := &fakeRunner{script: func(call int, _ io.Writer) error {
+		clock.advance(time.Duration(call) * time.Minute)
+		if call == 3 {
+			stop.create("STOP.md")
+		}
+		return nil
+	}}
+	steps := fakeStepReader{content: "1. [ ] Add storage\n2. [ ] Add CLI\n3. [ ] Wire up\n"}
+	o := services.NewOrchestrator(runner, stop, steps, clock, &fakeLogSink{}, terminal, config(0))
+
+	outcome := o.Run(context.Background())
+
+	if outcome != models.OutcomeStopped {
+		t.Fatalf("expected a clean completion, got %v", outcome)
+	}
+	want := []string{
+		"Starting Step 1 of 3",
+		"Completed Step 1",
+		"ETA: 2m0s remaining (2 steps left)",
+		"Starting Step 2 of 3",
+		"Completed Step 2",
+		"ETA: 1m30s remaining (1 step left)",
+		"Starting Step 3 of 3",
+		"Completed Step 3",
+		"ETA: 0s remaining (0 steps left)",
+	}
+	for _, line := range want {
+		if !strings.Contains(terminal.String(), line) {
+			t.Fatalf("expected terminal output to contain %q, got:\n%s", line, terminal.String())
+		}
 	}
 }

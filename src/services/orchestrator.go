@@ -2,10 +2,18 @@ package services
 
 import (
 	"context"
+	"fmt"
 	"io"
+	"regexp"
+	"strings"
 	"time"
 
 	"determined/src/models"
+)
+
+var (
+	stepLinePattern          = regexp.MustCompile(`^\s*(?:[-*+]\s+|\d+[.)]\s+)(?:\[[ xX]\]\s*)?\S`)
+	completedStepLinePattern = regexp.MustCompile(`^\s*(?:[-*+]\s+|\d+[.)]\s+)\[[xX]\]\s+\S`)
 )
 
 // CommandRunner runs one AI-coding-tool invocation, streaming its combined
@@ -17,6 +25,11 @@ type CommandRunner interface {
 // StopSignal reports whether the completion sentinel file exists.
 type StopSignal interface {
 	Exists(path string) bool
+}
+
+// StepReader reads the step list used for progress labels.
+type StepReader interface {
+	Read(path string) (string, error)
 }
 
 // Clock reads wall-clock time.
@@ -34,18 +47,21 @@ type LogSink interface {
 type Orchestrator struct {
 	runner   CommandRunner
 	stop     StopSignal
+	steps    StepReader
 	clock    Clock
 	logs     LogSink
 	terminal io.Writer
 	cfg      models.Config
 
-	iteration int
+	iteration         int
+	completedDuration time.Duration
 }
 
 // NewOrchestrator wires an orchestrator from its dependencies.
 func NewOrchestrator(
 	runner CommandRunner,
 	stop StopSignal,
+	steps StepReader,
 	clock Clock,
 	logs LogSink,
 	terminal io.Writer,
@@ -54,6 +70,7 @@ func NewOrchestrator(
 	return &Orchestrator{
 		runner:   runner,
 		stop:     stop,
+		steps:    steps,
 		clock:    clock,
 		logs:     logs,
 		terminal: terminal,
@@ -98,10 +115,49 @@ func (o *Orchestrator) runOnce(ctx context.Context) (models.Outcome, bool) {
 	}
 	defer log.Close()
 	out := io.MultiWriter(o.terminal, log)
+	step := o.nextStep()
+	fmt.Fprintln(out, step.Started())
+	started := o.clock.Now()
 	if err := o.runner.Run(ctx, o.cfg.Invocation, out); err != nil {
 		return o.classifyFailure(ctx), true
 	}
+	o.completedDuration += o.clock.Now().Sub(started)
+	fmt.Fprintln(out, step.Completed())
+	if eta, ok := o.eta(step); ok {
+		fmt.Fprintf(out, "ETA: %s remaining (%s)\n", formatDuration(eta), step.RemainingText())
+	}
 	return models.OutcomeStopped, false // outcome ignored when stop is false
+}
+
+func (o *Orchestrator) nextStep() stepRun {
+	progress := o.stepProgress()
+	number := o.iteration
+	if progress.completed+1 > number {
+		number = progress.completed + 1
+	}
+	if progress.total > 0 && number > progress.total {
+		number = progress.total
+	}
+	return stepRun{number: number, total: progress.total}
+}
+
+func (o *Orchestrator) stepProgress() stepProgress {
+	if o.steps == nil || o.cfg.StepsFile == "" {
+		return stepProgress{}
+	}
+	content, err := o.steps.Read(o.cfg.StepsFile)
+	if err != nil {
+		return stepProgress{}
+	}
+	return parseStepProgress(content)
+}
+
+func (o *Orchestrator) eta(step stepRun) (time.Duration, bool) {
+	if step.total == 0 {
+		return 0, false
+	}
+	average := o.completedDuration / time.Duration(o.iteration)
+	return average * time.Duration(step.Remaining()), true
 }
 
 // classifyFailure distinguishes a genuine tool failure from an interruption,
@@ -127,4 +183,61 @@ func (o *Orchestrator) budgetExceeded(deadline time.Time) bool {
 		return false
 	}
 	return !o.clock.Now().Before(deadline)
+}
+
+type stepRun struct {
+	number int
+	total  int
+}
+
+func (s stepRun) Started() string {
+	if s.total == 0 {
+		return fmt.Sprintf("Starting Step %d", s.number)
+	}
+	return fmt.Sprintf("Starting Step %d of %d", s.number, s.total)
+}
+
+func (s stepRun) Completed() string {
+	return fmt.Sprintf("Completed Step %d", s.number)
+}
+
+func (s stepRun) Remaining() int {
+	if s.total == 0 || s.number >= s.total {
+		return 0
+	}
+	return s.total - s.number
+}
+
+func (s stepRun) RemainingText() string {
+	if s.Remaining() == 1 {
+		return "1 step left"
+	}
+	return fmt.Sprintf("%d steps left", s.Remaining())
+}
+
+type stepProgress struct {
+	total     int
+	completed int
+}
+
+func parseStepProgress(content string) stepProgress {
+	progress := stepProgress{}
+	for _, line := range strings.Split(content, "\n") {
+		if !stepLinePattern.MatchString(line) {
+			continue
+		}
+		progress.total++
+		if completedStepLinePattern.MatchString(line) {
+			progress.completed++
+		}
+	}
+	return progress
+}
+
+func formatDuration(d time.Duration) string {
+	rounded := d.Round(time.Second)
+	if rounded == 0 && d > 0 {
+		return time.Second.String()
+	}
+	return rounded.String()
 }
