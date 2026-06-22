@@ -23,6 +23,6 @@ make build TARGETOS=darwin TARGETARCH=arm64
 ```
 
 The semver seed lives in the `VERSION` file (major.minor). On every push to the
-default branch, the `build` GitHub Actions workflow stamps Linux ARM64 and macOS
-ARM64 binaries with `MAJOR.MINOR.<run-number>`, uploads them as a workflow
-artifact, and publishes them as tagged GitHub Release assets.
+default branch, the `build` GitHub Actions workflow stamps Linux ARM64, Linux
+AMD64, and macOS ARM64 binaries with `MAJOR.MINOR.<run-number>`, uploads them as
+a workflow artifact, and publishes them as tagged GitHub Release assets.
