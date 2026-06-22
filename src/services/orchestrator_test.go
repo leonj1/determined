@@ -45,11 +45,14 @@ func (s *fakeLogSink) OpenIteration(int) (io.WriteCloser, error) {
 }
 
 // fakeStepReader serves STEPS.md content to the execute orchestrator.
-type fakeStepReader struct{ content string }
+type fakeStepReader struct {
+	content string
+	err     error
+}
 
 func (r fakeStepReader) Read(string) (string, error) {
-	if r.content == "" {
-		return "", errors.New("missing steps")
+	if r.err != nil {
+		return "", r.err
 	}
 	return r.content, nil
 }
