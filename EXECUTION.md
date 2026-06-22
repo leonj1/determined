@@ -6,7 +6,11 @@ Each iteration, in the current working directory:
 2. If the time budget is exhausted → exit **1**. The budget is checked *between*
    iterations, so an in-flight tool run always finishes first.
 3. Otherwise run the selected tool's command, streaming its output live **and**
-   teeing it to `logs/iter-NNNN-<timestamp>.log`.
+   teeing it to `logs/iter-NNNN-<timestamp>.log`. Before each run it prints
+   `Starting Step N of M`, or `Starting Step N` when the total step count cannot
+   be determined; after a successful run it prints `Completed Step N`. Once at
+   least one step has completed, it prints an ETA based on the average duration
+   of completed steps so far.
 4. If the tool exits non-zero → abort immediately, exit **1**.
 5. `SIGINT` / `SIGTERM` → stop and exit **1**.
 
