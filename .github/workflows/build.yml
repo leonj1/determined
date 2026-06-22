@@ -34,6 +34,7 @@ jobs:
 
           targets=(
             "linux arm64 determined-linux-arm64"
+            "linux amd64 determined-linux-amd64"
             "darwin arm64 determined-darwin-arm64"
           )
 
@@ -55,6 +56,7 @@ jobs:
           set -euo pipefail
 
           grep -aq "${{ steps.version.outputs.version }}" bin/determined-linux-arm64
+          grep -aq "${{ steps.version.outputs.version }}" bin/determined-linux-amd64
           grep -aq "${{ steps.version.outputs.version }}" bin/determined-darwin-arm64
 
       - name: Upload artifact
@@ -63,6 +65,7 @@ jobs:
           name: determined-${{ steps.version.outputs.version }}
           path: |
             bin/determined-linux-arm64
+            bin/determined-linux-amd64
             bin/determined-darwin-arm64
           if-no-files-found: error
 
@@ -73,6 +76,7 @@ jobs:
           tag="v${{ steps.version.outputs.version }}"
           gh release create "$tag" \
             bin/determined-linux-arm64 \
+            bin/determined-linux-amd64 \
             bin/determined-darwin-arm64 \
             --title "$tag" \
             --target "$GITHUB_SHA" \
