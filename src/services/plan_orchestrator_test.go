@@ -116,6 +116,62 @@ func TestPlanAsksQuestionsThenCompletes(t *testing.T) {
 	}
 }
 
+func TestPlanUsesExistingGoalWhenConfirmed(t *testing.T) {
+	fs := newFakeFileStore()
+	fs.Write("GOAL.md", "existing goal\n")
+	prompter := &fakePrompter{answers: []string{"yes", "SQLite"}}
+	runner := &fakeRunner{script: func(call int, _ io.Writer) error {
+		switch call {
+		case 1:
+			fs.Write("QUESTIONS.md", "1. What database?\n")
+		case 2:
+			fs.Write("PLAN.md", "the plan")
+			fs.Write("STEPS.md", "the steps")
+		}
+		return nil
+	}}
+	o := services.NewPlanOrchestrator(runner, fs, prompter, &fakeClock{now: time.Now()}, &fakeLogSink{}, io.Discard, planConfig(0))
+
+	outcome := o.Run(context.Background())
+
+	if outcome != models.OutcomePlanReady {
+		t.Fatalf("expected a ready plan, got %v", outcome)
+	}
+	if fs.data["GOAL.md"] != "existing goal\n" {
+		t.Fatalf("expected existing GOAL.md to be preserved, got %q", fs.data["GOAL.md"])
+	}
+	if len(prompter.asked) != 2 {
+		t.Fatalf("expected one goal confirmation and one clarifying question, got %d prompts", len(prompter.asked))
+	}
+	if !strings.Contains(prompter.asked[0], "GOAL.md already exists") {
+		t.Fatalf("expected the first prompt to confirm the existing goal, got %q", prompter.asked[0])
+	}
+}
+
+func TestPlanReplacesExistingGoalWhenDeclined(t *testing.T) {
+	fs := newFakeFileStore()
+	fs.Write("GOAL.md", "existing goal\n")
+	prompter := &fakePrompter{answers: []string{"no"}}
+	runner := &fakeRunner{script: func(int, io.Writer) error {
+		fs.Write("PLAN.md", "the plan")
+		fs.Write("STEPS.md", "the steps")
+		return nil
+	}}
+	o := services.NewPlanOrchestrator(runner, fs, prompter, &fakeClock{now: time.Now()}, &fakeLogSink{}, io.Discard, planConfig(0))
+
+	outcome := o.Run(context.Background())
+
+	if outcome != models.OutcomePlanReady {
+		t.Fatalf("expected a ready plan, got %v", outcome)
+	}
+	if fs.data["GOAL.md"] != "build a todo CLI\n" {
+		t.Fatalf("expected GOAL.md to be replaced with the CLI goal, got %q", fs.data["GOAL.md"])
+	}
+	if len(prompter.asked) != 1 {
+		t.Fatalf("expected one goal confirmation, got %d prompts", len(prompter.asked))
+	}
+}
+
 func TestPlanRefinesOversizedSteps(t *testing.T) {
 	fs := newFakeFileStore()
 	cfg := planConfig(0)
