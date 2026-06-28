@@ -146,8 +146,8 @@ func (o *PlanOrchestrator) goalSourcePath() string {
 	if len(words) == 1 && o.files.Exists(words[0]) {
 		return words[0]
 	}
-	if len(words) == 2 && strings.EqualFold(words[0], "read") {
-		return words[1]
+	if len(words) > 1 && strings.EqualFold(words[0], "read") {
+		return strings.TrimSpace(goal[len(words[0]):])
 	}
 	return ""
 }

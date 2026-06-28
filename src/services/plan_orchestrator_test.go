@@ -194,6 +194,28 @@ func TestPlanUsesProvidedFileAsGoal(t *testing.T) {
 	}
 }
 
+func TestPlanUsesProvidedFileWithSpacesAsGoal(t *testing.T) {
+	fs := newFakeFileStore()
+	fs.Write("todo goal.md", "build from a filename with spaces\n")
+	cfg := planConfig(0)
+	cfg.Goal = "Read todo goal.md"
+	runner := &fakeRunner{script: func(int, io.Writer) error {
+		fs.Write("PLAN.md", "the plan")
+		fs.Write("STEPS.md", "the steps")
+		return nil
+	}}
+	o := services.NewPlanOrchestrator(runner, fs, &fakePrompter{}, &fakeClock{now: time.Now()}, &fakeLogSink{}, io.Discard, cfg)
+
+	outcome := o.Run(context.Background())
+
+	if outcome != models.OutcomePlanReady {
+		t.Fatalf("expected a ready plan, got %v", outcome)
+	}
+	if fs.data["GOAL.md"] != "build from a filename with spaces\n" {
+		t.Fatalf("expected GOAL.md to use the spaced filename contents, got %q", fs.data["GOAL.md"])
+	}
+}
+
 func TestPlanUsesProvidedPathAsGoal(t *testing.T) {
 	fs := newFakeFileStore()
 	fs.Write("TODO.md", "build from the bare path\n")
