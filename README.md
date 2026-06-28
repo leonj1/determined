@@ -31,6 +31,8 @@ go build -o determined ./cmd/determined
 
 # 2b. Starting from a one-line goal? Plan it interactively first:
 ./determined --plan "build a todo CLI"
+# Or seed GOAL.md from an existing file:
+./determined --plan "Read TODO.md"
 # ...answer the clarifying questions, then run the execute loop:
 ./determined
 ```

@@ -115,12 +115,41 @@ func (o *PlanOrchestrator) seedGoal() (models.Outcome, bool) {
 			return models.OutcomePlanReady, false
 		}
 	}
-	if err := o.files.Write(o.cfg.GoalFile, o.cfg.Goal+"\n"); err != nil {
+	goal, err := o.goalContent()
+	if err != nil {
+		fmt.Fprintf(o.terminal, "determined: %v\n", err)
+		return models.OutcomeDroidFailed, true
+	}
+	if err := o.files.Write(o.cfg.GoalFile, goal); err != nil {
 		fmt.Fprintf(o.terminal, "determined: could not write %s: %v\n", o.cfg.GoalFile, err)
 		return models.OutcomeDroidFailed, true
 	}
 	o.goalSeeded = true
 	return models.OutcomePlanReady, false
+}
+
+func (o *PlanOrchestrator) goalContent() (string, error) {
+	source := o.goalSourcePath()
+	if source == "" {
+		return o.cfg.Goal + "\n", nil
+	}
+	content, err := o.files.Read(source)
+	if err != nil {
+		return "", fmt.Errorf("could not read goal source %s: %w", source, err)
+	}
+	return content, nil
+}
+
+func (o *PlanOrchestrator) goalSourcePath() string {
+	goal := strings.TrimSpace(o.cfg.Goal)
+	words := strings.Fields(goal)
+	if len(words) == 1 && o.files.Exists(words[0]) {
+		return words[0]
+	}
+	if len(words) == 2 && strings.EqualFold(words[0], "read") {
+		return words[1]
+	}
+	return ""
 }
 
 func (o *PlanOrchestrator) useExistingGoal() (bool, error) {
