@@ -172,6 +172,99 @@ func TestPlanReplacesExistingGoalWhenDeclined(t *testing.T) {
 	}
 }
 
+func TestPlanUsesProvidedFileAsGoal(t *testing.T) {
+	fs := newFakeFileStore()
+	fs.Write("TODO.md", "# Goal\n\nBuild the todo CLI from this file.\n")
+	cfg := planConfig(0)
+	cfg.Goal = "Read TODO.md"
+	runner := &fakeRunner{script: func(int, io.Writer) error {
+		fs.Write("PLAN.md", "the plan")
+		fs.Write("STEPS.md", "the steps")
+		return nil
+	}}
+	o := services.NewPlanOrchestrator(runner, fs, &fakePrompter{}, &fakeClock{now: time.Now()}, &fakeLogSink{}, io.Discard, cfg)
+
+	outcome := o.Run(context.Background())
+
+	if outcome != models.OutcomePlanReady {
+		t.Fatalf("expected a ready plan, got %v", outcome)
+	}
+	if fs.data["GOAL.md"] != fs.data["TODO.md"] {
+		t.Fatalf("expected GOAL.md to use TODO.md contents, got %q", fs.data["GOAL.md"])
+	}
+}
+
+func TestPlanUsesProvidedFileWithSpacesAsGoal(t *testing.T) {
+	fs := newFakeFileStore()
+	fs.Write("todo goal.md", "build from a filename with spaces\n")
+	cfg := planConfig(0)
+	cfg.Goal = "Read todo goal.md"
+	runner := &fakeRunner{script: func(int, io.Writer) error {
+		fs.Write("PLAN.md", "the plan")
+		fs.Write("STEPS.md", "the steps")
+		return nil
+	}}
+	o := services.NewPlanOrchestrator(runner, fs, &fakePrompter{}, &fakeClock{now: time.Now()}, &fakeLogSink{}, io.Discard, cfg)
+
+	outcome := o.Run(context.Background())
+
+	if outcome != models.OutcomePlanReady {
+		t.Fatalf("expected a ready plan, got %v", outcome)
+	}
+	if fs.data["GOAL.md"] != "build from a filename with spaces\n" {
+		t.Fatalf("expected GOAL.md to use the spaced filename contents, got %q", fs.data["GOAL.md"])
+	}
+}
+
+func TestPlanUsesProvidedPathAsGoal(t *testing.T) {
+	fs := newFakeFileStore()
+	fs.Write("TODO.md", "build from the bare path\n")
+	cfg := planConfig(0)
+	cfg.Goal = "TODO.md"
+	runner := &fakeRunner{script: func(int, io.Writer) error {
+		fs.Write("PLAN.md", "the plan")
+		fs.Write("STEPS.md", "the steps")
+		return nil
+	}}
+	o := services.NewPlanOrchestrator(runner, fs, &fakePrompter{}, &fakeClock{now: time.Now()}, &fakeLogSink{}, io.Discard, cfg)
+
+	outcome := o.Run(context.Background())
+
+	if outcome != models.OutcomePlanReady {
+		t.Fatalf("expected a ready plan, got %v", outcome)
+	}
+	if fs.data["GOAL.md"] != "build from the bare path\n" {
+		t.Fatalf("expected GOAL.md to use TODO.md contents, got %q", fs.data["GOAL.md"])
+	}
+}
+
+func TestPlanReplacesExistingGoalWithProvidedFileWhenDeclined(t *testing.T) {
+	fs := newFakeFileStore()
+	fs.Write("GOAL.md", "existing goal\n")
+	fs.Write("TODO.md", "new session goal\n")
+	prompter := &fakePrompter{answers: []string{"no"}}
+	cfg := planConfig(0)
+	cfg.Goal = "Read TODO.md"
+	runner := &fakeRunner{script: func(int, io.Writer) error {
+		fs.Write("PLAN.md", "the plan")
+		fs.Write("STEPS.md", "the steps")
+		return nil
+	}}
+	o := services.NewPlanOrchestrator(runner, fs, prompter, &fakeClock{now: time.Now()}, &fakeLogSink{}, io.Discard, cfg)
+
+	outcome := o.Run(context.Background())
+
+	if outcome != models.OutcomePlanReady {
+		t.Fatalf("expected a ready plan, got %v", outcome)
+	}
+	if fs.data["GOAL.md"] != "new session goal\n" {
+		t.Fatalf("expected GOAL.md to be replaced with TODO.md contents, got %q", fs.data["GOAL.md"])
+	}
+	if len(prompter.asked) != 1 {
+		t.Fatalf("expected one goal confirmation, got %d prompts", len(prompter.asked))
+	}
+}
+
 func TestPlanRefinesOversizedSteps(t *testing.T) {
 	fs := newFakeFileStore()
 	cfg := planConfig(0)

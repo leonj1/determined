@@ -13,7 +13,7 @@ import "time"
 // them down further — repeating until every step is small enough, the budget is
 // exhausted, or MaxRefinePasses is reached.
 type PlanConfig struct {
-	Goal       string        // the user's raw goal, written to GoalFile each run
+	Goal       string        // the user's goal or a file reference used to seed GoalFile
 	Invocation Invocation    // the planning tool command (print mode) run each round
 	Budget     time.Duration // wall-clock budget; 0 means unlimited
 
