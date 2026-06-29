@@ -109,7 +109,7 @@ func runLoop(ctx context.Context, tool models.Tool, budget time.Duration, clock 
 	orchestrator := services.NewOrchestrator(
 		clients.NewExecCommandRunner(),
 		clients.NewOsStopSignal(),
-		clients.NewGitChangeCommitter(commitMessage),
+		clients.NewGitChangeCommitter(commitMessage, clients.NewExecGitRunner()),
 		clients.NewOsFileStore(),
 		clock,
 		logs,

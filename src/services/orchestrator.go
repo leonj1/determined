@@ -123,7 +123,7 @@ func (o *Orchestrator) runOnce(ctx context.Context) (models.Outcome, bool) {
 	}
 	defer log.Close()
 	out := io.MultiWriter(o.terminal, log)
-	progressBefore := o.stepProgress()
+	progressBefore, beforeOK := o.stepProgress()
 	step := o.nextStep(progressBefore)
 	fmt.Fprintln(out, step.Started())
 	started := o.clock.Now()
@@ -135,7 +135,7 @@ func (o *Orchestrator) runOnce(ctx context.Context) (models.Outcome, bool) {
 	if eta, ok := o.eta(step); ok {
 		fmt.Fprintf(out, "ETA: %s remaining (%s)\n", formatDuration(eta), step.RemainingText())
 	}
-	if err := o.commitCompletedTask(ctx, progressBefore, out); err != nil {
+	if err := o.commitCompletedTask(ctx, beforeOK, progressBefore, out); err != nil {
 		return models.OutcomeCommitFailed, true
 	}
 	return models.OutcomeStopped, false // outcome ignored when stop is false
@@ -152,24 +152,24 @@ func (o *Orchestrator) nextStep(progress stepProgress) stepRun {
 	return stepRun{number: number, total: progress.total}
 }
 
-func (o *Orchestrator) commitCompletedTask(ctx context.Context, before stepProgress, out io.Writer) error {
-	after := o.stepProgress()
-	if after.completed <= before.completed {
+func (o *Orchestrator) commitCompletedTask(ctx context.Context, beforeOK bool, before stepProgress, out io.Writer) error {
+	after, afterOK := o.stepProgress()
+	if !beforeOK || !afterOK || after.completed <= before.completed {
 		return nil
 	}
 	fmt.Fprintln(out, "Committing completed task changes")
 	return o.commits.Commit(ctx, out)
 }
 
-func (o *Orchestrator) stepProgress() stepProgress {
+func (o *Orchestrator) stepProgress() (stepProgress, bool) {
 	if o.steps == nil || o.cfg.StepsFile == "" {
-		return stepProgress{}
+		return stepProgress{}, false
 	}
 	content, err := o.steps.Read(o.cfg.StepsFile)
 	if err != nil {
-		return stepProgress{}
+		return stepProgress{}, false
 	}
-	return parseStepProgress(content)
+	return parseStepProgress(content), true
 }
 
 func (o *Orchestrator) eta(step stepRun) (time.Duration, bool) {

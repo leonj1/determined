@@ -155,7 +155,7 @@ func TestUserGetsCommitAfterCompletedTaskChanges(t *testing.T) {
 	defer restore()
 
 	var out bytes.Buffer
-	committer := clients.NewGitChangeCommitter("CHORE: save completed task changes")
+	committer := clients.NewGitChangeCommitter("CHORE: save completed task changes", clients.NewExecGitRunner())
 
 	if err := committer.Commit(context.Background(), &out); err != nil {
 		t.Fatalf("committing completed task changes should succeed: %v", err)
@@ -176,7 +176,7 @@ func TestCleanRepoNeedsNoCompletedTaskCommit(t *testing.T) {
 	defer restore()
 
 	var out bytes.Buffer
-	committer := clients.NewGitChangeCommitter("CHORE: save completed task changes")
+	committer := clients.NewGitChangeCommitter("CHORE: save completed task changes", clients.NewExecGitRunner())
 
 	if err := committer.Commit(context.Background(), &out); err != nil {
 		t.Fatalf("clean repo should not need a commit: %v", err)
@@ -191,10 +191,18 @@ func TestCommitRequiresAGitRepository(t *testing.T) {
 	restore := chdir(t, dir)
 	defer restore()
 
-	committer := clients.NewGitChangeCommitter("CHORE: save completed task changes")
+	committer := clients.NewGitChangeCommitter("CHORE: save completed task changes", clients.NewExecGitRunner())
 
 	if err := committer.Commit(context.Background(), io.Discard); err == nil {
 		t.Fatal("committing should fail outside a Git repository")
+	}
+}
+
+func TestCommitReportsCleanRepoOutputError(t *testing.T) {
+	committer := clients.NewGitChangeCommitter("CHORE: save completed task changes", fakeGitRunner{})
+
+	if err := committer.Commit(context.Background(), failingWriter{}); err == nil {
+		t.Fatal("clean repo commit should report output write failures")
 	}
 }
 
@@ -225,7 +233,9 @@ func chdir(t *testing.T, dir string) func() {
 
 func runGit(t *testing.T, dir string, args ...string) string {
 	t.Helper()
-	cmd := exec.Command("git", args...)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Dir = dir
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -238,4 +248,16 @@ type failingReader struct{}
 
 func (failingReader) Read([]byte) (int, error) {
 	return 0, os.ErrPermission
+}
+
+type failingWriter struct{}
+
+func (failingWriter) Write([]byte) (int, error) {
+	return 0, os.ErrPermission
+}
+
+type fakeGitRunner struct{}
+
+func (fakeGitRunner) Run(context.Context, io.Writer, io.Writer, string, ...string) error {
+	return nil
 }

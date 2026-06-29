@@ -255,6 +255,27 @@ func TestRunCommitsRepoChangesWhenToolCompletesATask(t *testing.T) {
 	}
 }
 
+func TestRunSkipsCommitWhenTaskProgressCouldNotBeReadBeforeRun(t *testing.T) {
+	stop := newFakeStopSignal()
+	steps := &fakeStepReader{content: "1. [x] Add storage\n", err: errors.New("steps temporarily unavailable")}
+	commits := &fakeChangeCommitter{}
+	runner := &fakeRunner{script: func(int, io.Writer) error {
+		steps.err = nil
+		stop.create("STOP.md")
+		return nil
+	}}
+	o := services.NewOrchestrator(runner, stop, commits, steps, &fakeClock{now: time.Now()}, &fakeLogSink{}, io.Discard, config(0))
+
+	outcome := o.Run(context.Background())
+
+	if outcome != models.OutcomeStopped {
+		t.Fatalf("expected a clean completion, got %v", outcome)
+	}
+	if commits.calls != 0 {
+		t.Fatalf("expected no commit when the before-progress snapshot was unavailable, got %d", commits.calls)
+	}
+}
+
 func TestRunAbortsWhenCompletedTaskCannotBeCommitted(t *testing.T) {
 	stop := newFakeStopSignal()
 	steps := &fakeStepReader{content: "1. [ ] Add storage\n"}
