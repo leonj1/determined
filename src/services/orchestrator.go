@@ -27,6 +27,11 @@ type StopSignal interface {
 	Exists(path string) bool
 }
 
+// ChangeCommitter commits repository changes created by a completed task.
+type ChangeCommitter interface {
+	Commit(ctx context.Context, out io.Writer) error
+}
+
 // StepReader reads the step list used for progress labels.
 type StepReader interface {
 	Read(path string) (string, error)
@@ -47,6 +52,7 @@ type LogSink interface {
 type Orchestrator struct {
 	runner   CommandRunner
 	stop     StopSignal
+	commits  ChangeCommitter
 	steps    StepReader
 	clock    Clock
 	logs     LogSink
@@ -61,6 +67,7 @@ type Orchestrator struct {
 func NewOrchestrator(
 	runner CommandRunner,
 	stop StopSignal,
+	commits ChangeCommitter,
 	steps StepReader,
 	clock Clock,
 	logs LogSink,
@@ -70,6 +77,7 @@ func NewOrchestrator(
 	return &Orchestrator{
 		runner:   runner,
 		stop:     stop,
+		commits:  commits,
 		steps:    steps,
 		clock:    clock,
 		logs:     logs,
@@ -115,7 +123,8 @@ func (o *Orchestrator) runOnce(ctx context.Context) (models.Outcome, bool) {
 	}
 	defer log.Close()
 	out := io.MultiWriter(o.terminal, log)
-	step := o.nextStep()
+	progressBefore := o.stepProgress()
+	step := o.nextStep(progressBefore)
 	fmt.Fprintln(out, step.Started())
 	started := o.clock.Now()
 	if err := o.runner.Run(ctx, o.cfg.Invocation, out); err != nil {
@@ -126,11 +135,13 @@ func (o *Orchestrator) runOnce(ctx context.Context) (models.Outcome, bool) {
 	if eta, ok := o.eta(step); ok {
 		fmt.Fprintf(out, "ETA: %s remaining (%s)\n", formatDuration(eta), step.RemainingText())
 	}
+	if err := o.commitCompletedTask(ctx, progressBefore, out); err != nil {
+		return models.OutcomeCommitFailed, true
+	}
 	return models.OutcomeStopped, false // outcome ignored when stop is false
 }
 
-func (o *Orchestrator) nextStep() stepRun {
-	progress := o.stepProgress()
+func (o *Orchestrator) nextStep(progress stepProgress) stepRun {
 	number := o.iteration
 	if progress.completed+1 > number {
 		number = progress.completed + 1
@@ -139,6 +150,15 @@ func (o *Orchestrator) nextStep() stepRun {
 		number = progress.total
 	}
 	return stepRun{number: number, total: progress.total}
+}
+
+func (o *Orchestrator) commitCompletedTask(ctx context.Context, before stepProgress, out io.Writer) error {
+	after := o.stepProgress()
+	if after.completed <= before.completed {
+		return nil
+	}
+	fmt.Fprintln(out, "Committing completed task changes")
+	return o.commits.Commit(ctx, out)
 }
 
 func (o *Orchestrator) stepProgress() stepProgress {

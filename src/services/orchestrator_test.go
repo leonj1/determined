@@ -71,6 +71,21 @@ func (r *fakeRunner) Run(_ context.Context, _ models.Invocation, out io.Writer) 
 	return r.script(r.calls, out)
 }
 
+// fakeChangeCommitter records completed-task commit attempts.
+type fakeChangeCommitter struct {
+	calls int
+	err   error
+}
+
+func (c *fakeChangeCommitter) Commit(_ context.Context, out io.Writer) error {
+	c.calls++
+	if c.err != nil {
+		return c.err
+	}
+	fmt.Fprintln(out, "committed changes")
+	return nil
+}
+
 func config(budget time.Duration) models.Config {
 	return models.Config{
 		StopFile:   "STOP.md",
@@ -92,7 +107,7 @@ func TestRunCompletesWhenToolSignalsDone(t *testing.T) {
 		}
 		return nil
 	}}
-	o := services.NewOrchestrator(runner, stop, fakeStepReader{}, &fakeClock{now: time.Now()}, logs, io.Discard, config(0))
+	o := services.NewOrchestrator(runner, stop, &fakeChangeCommitter{}, fakeStepReader{}, &fakeClock{now: time.Now()}, logs, io.Discard, config(0))
 
 	outcome := o.Run(context.Background())
 
@@ -114,7 +129,7 @@ func TestRunAbortsWhenToolFails(t *testing.T) {
 		}
 		return nil
 	}}
-	o := services.NewOrchestrator(runner, newFakeStopSignal(), fakeStepReader{}, &fakeClock{now: time.Now()}, &fakeLogSink{}, io.Discard, config(0))
+	o := services.NewOrchestrator(runner, newFakeStopSignal(), &fakeChangeCommitter{}, fakeStepReader{}, &fakeClock{now: time.Now()}, &fakeLogSink{}, io.Discard, config(0))
 
 	outcome := o.Run(context.Background())
 
@@ -132,7 +147,7 @@ func TestRunStopsWhenTimeBudgetExhausted(t *testing.T) {
 		clock.advance(4 * time.Minute)
 		return nil
 	}}
-	o := services.NewOrchestrator(runner, newFakeStopSignal(), fakeStepReader{}, clock, &fakeLogSink{}, io.Discard, config(10*time.Minute))
+	o := services.NewOrchestrator(runner, newFakeStopSignal(), &fakeChangeCommitter{}, fakeStepReader{}, clock, &fakeLogSink{}, io.Discard, config(10*time.Minute))
 
 	outcome := o.Run(context.Background())
 
@@ -148,7 +163,8 @@ func TestRunDoesNothingWhenStopFileAlreadyPresent(t *testing.T) {
 	stop := newFakeStopSignal()
 	stop.create("STOP.md")
 	runner := &fakeRunner{}
-	o := services.NewOrchestrator(runner, stop, fakeStepReader{}, &fakeClock{now: time.Now()}, &fakeLogSink{}, io.Discard, config(0))
+	commits := &fakeChangeCommitter{}
+	o := services.NewOrchestrator(runner, stop, commits, fakeStepReader{}, &fakeClock{now: time.Now()}, &fakeLogSink{}, io.Discard, config(0))
 
 	outcome := o.Run(context.Background())
 
@@ -157,6 +173,9 @@ func TestRunDoesNothingWhenStopFileAlreadyPresent(t *testing.T) {
 	}
 	if runner.calls != 0 {
 		t.Fatalf("expected no work when already stopped, got %d invocations", runner.calls)
+	}
+	if commits.calls != 0 {
+		t.Fatalf("expected no commit when no task was completed, got %d", commits.calls)
 	}
 }
 
@@ -169,7 +188,7 @@ func TestRunStopsWhenInterrupted(t *testing.T) {
 		}
 		return nil
 	}}
-	o := services.NewOrchestrator(runner, newFakeStopSignal(), fakeStepReader{}, &fakeClock{now: time.Now()}, &fakeLogSink{}, io.Discard, config(0))
+	o := services.NewOrchestrator(runner, newFakeStopSignal(), &fakeChangeCommitter{}, fakeStepReader{}, &fakeClock{now: time.Now()}, &fakeLogSink{}, io.Discard, config(0))
 
 	outcome := o.Run(ctx)
 
@@ -190,7 +209,7 @@ func TestRunEchoesStepProgressAndUpdatesEta(t *testing.T) {
 		return nil
 	}}
 	steps := fakeStepReader{content: "1. [ ] Add storage\n2. [ ] Add CLI\n3. [ ] Wire up\n"}
-	o := services.NewOrchestrator(runner, stop, steps, clock, &fakeLogSink{}, terminal, config(0))
+	o := services.NewOrchestrator(runner, stop, &fakeChangeCommitter{}, steps, clock, &fakeLogSink{}, terminal, config(0))
 
 	outcome := o.Run(context.Background())
 
@@ -212,5 +231,47 @@ func TestRunEchoesStepProgressAndUpdatesEta(t *testing.T) {
 		if !strings.Contains(terminal.String(), line) {
 			t.Fatalf("expected terminal output to contain %q, got:\n%s", line, terminal.String())
 		}
+	}
+}
+
+func TestRunCommitsRepoChangesWhenToolCompletesATask(t *testing.T) {
+	stop := newFakeStopSignal()
+	steps := &fakeStepReader{content: "1. [ ] Add storage\n"}
+	commits := &fakeChangeCommitter{}
+	runner := &fakeRunner{script: func(int, io.Writer) error {
+		steps.content = "1. [x] Add storage\n"
+		stop.create("STOP.md")
+		return nil
+	}}
+	o := services.NewOrchestrator(runner, stop, commits, steps, &fakeClock{now: time.Now()}, &fakeLogSink{}, io.Discard, config(0))
+
+	outcome := o.Run(context.Background())
+
+	if outcome != models.OutcomeStopped {
+		t.Fatalf("expected a clean completion, got %v", outcome)
+	}
+	if commits.calls != 1 {
+		t.Fatalf("expected completed task changes to be committed once, got %d", commits.calls)
+	}
+}
+
+func TestRunAbortsWhenCompletedTaskCannotBeCommitted(t *testing.T) {
+	stop := newFakeStopSignal()
+	steps := &fakeStepReader{content: "1. [ ] Add storage\n"}
+	commits := &fakeChangeCommitter{err: errors.New("git rejected the commit")}
+	runner := &fakeRunner{script: func(int, io.Writer) error {
+		steps.content = "1. [x] Add storage\n"
+		stop.create("STOP.md")
+		return nil
+	}}
+	o := services.NewOrchestrator(runner, stop, commits, steps, &fakeClock{now: time.Now()}, &fakeLogSink{}, io.Discard, config(0))
+
+	outcome := o.Run(context.Background())
+
+	if outcome != models.OutcomeCommitFailed || outcome.ExitCode() != 1 {
+		t.Fatalf("expected a commit failure, got %v (exit %d)", outcome, outcome.ExitCode())
+	}
+	if commits.calls != 1 {
+		t.Fatalf("expected one commit attempt, got %d", commits.calls)
 	}
 }

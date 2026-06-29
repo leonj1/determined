@@ -11,7 +11,7 @@ done
 
 `determined` only **orchestrates** invocations — the AI tool still does all the
 work. It adds the safety the one-liner lacks: failure handling, a time budget,
-graceful shutdown, and per-iteration logging.
+graceful shutdown, per-iteration logging, and Git commits after completed tasks.
 
 It has two modes:
 
@@ -78,7 +78,9 @@ codes.
 | `--auto`         | `medium` | `droid` autonomy level (`low`/`medium`/`high`), **droid only**. Required for unattended runs — without it `droid exec` stops on a permission prompt and the loop aborts on iteration 1. Ignored by `pi`/`claude`. |
 
 The prompt and the `STOP.md` / `PLAN.md` / `STEPS.md` filenames are hardcoded,
-matching the original bash script.
+matching the original bash script. During execute mode, when `STEPS.md` shows
+that an iteration marked a task complete, `determined` stages all repository
+changes and commits them with `CHORE: save completed task changes`.
 
 ## Known limitation
 

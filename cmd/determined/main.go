@@ -20,6 +20,8 @@ const prompt = "Read PLAN.md and STEPS.md. Find the first step that has needs to
 	"Implement that step. Mark the step completed when you are done. Only work on one step. " +
 	"When there are no more steps then create STOP.md"
 
+const commitMessage = "CHORE: save completed task changes"
+
 // planPrompt is the instruction handed to the tool each round of the attended
 // planning loop. It drives the QUESTIONS.md / ANSWERS.md protocol the
 // PlanOrchestrator mediates.
@@ -107,6 +109,7 @@ func runLoop(ctx context.Context, tool models.Tool, budget time.Duration, clock 
 	orchestrator := services.NewOrchestrator(
 		clients.NewExecCommandRunner(),
 		clients.NewOsStopSignal(),
+		clients.NewGitChangeCommitter(commitMessage),
 		clients.NewOsFileStore(),
 		clock,
 		logs,
