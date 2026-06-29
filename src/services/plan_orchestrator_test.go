@@ -403,6 +403,36 @@ func TestPlanStallsWhenToolProducesNothing(t *testing.T) {
 	}
 }
 
+func TestPlanStallsWhenQuestionsCannotBeParsed(t *testing.T) {
+	fs := newFakeFileStore()
+	runner := &fakeRunner{script: func(int, io.Writer) error {
+		fs.Write("QUESTIONS.md", "What database?")
+		return nil
+	}}
+	o := services.NewPlanOrchestrator(runner, fs, &fakePrompter{}, &fakeClock{now: time.Now()}, &fakeLogSink{}, io.Discard, planConfig(0))
+
+	outcome := o.Run(context.Background())
+
+	if outcome != models.OutcomePlanStalled || outcome.ExitCode() != 1 {
+		t.Fatalf("expected unparseable questions to stall planning, got %v (exit %d)", outcome, outcome.ExitCode())
+	}
+}
+
+func TestPlanInterruptedWhenUserCannotAnswerQuestion(t *testing.T) {
+	fs := newFakeFileStore()
+	runner := &fakeRunner{script: func(int, io.Writer) error {
+		fs.Write("QUESTIONS.md", "1. What database?\n")
+		return nil
+	}}
+	o := services.NewPlanOrchestrator(runner, fs, &fakePrompter{}, &fakeClock{now: time.Now()}, &fakeLogSink{}, io.Discard, planConfig(0))
+
+	outcome := o.Run(context.Background())
+
+	if outcome != models.OutcomeInterrupted || outcome.ExitCode() != 1 {
+		t.Fatalf("expected closed input to interrupt planning, got %v (exit %d)", outcome, outcome.ExitCode())
+	}
+}
+
 func TestPlanAbortsWhenToolFails(t *testing.T) {
 	fs := newFakeFileStore()
 	runner := &fakeRunner{script: func(int, io.Writer) error { return errors.New("claude: rate limited") }}

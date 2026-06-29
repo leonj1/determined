@@ -11,13 +11,17 @@ Each iteration, in the current working directory:
    be determined; after a successful run it prints `Completed Step N`. Once at
    least one step has completed, it prints an ETA based on the average duration
    of completed steps so far.
-4. If the tool exits non-zero → abort immediately, exit **1**.
-5. `SIGINT` / `SIGTERM` → stop and exit **1**.
+4. If `STEPS.md` shows that the tool marked a task complete during the
+   iteration, stage every repository change and commit it with
+   `CHORE: save completed task changes`. A clean worktree is treated as success.
+5. If the tool exits non-zero, or if committing completed-task changes fails →
+   abort immediately, exit **1**.
+6. `SIGINT` / `SIGTERM` → stop and exit **1**.
 
 ## Exit codes
 
 | Code | Meaning                                            |
 |------|----------------------------------------------------|
 | `0`  | The tool created `STOP.md` (execute), or wrote `PLAN.md` + `STEPS.md` (plan). |
-| `1`  | Any other termination: tool failure, budget exhausted, interrupted, or a stalled plan round. |
+| `1`  | Any other termination: tool failure, commit failure, budget exhausted, interrupted, or a stalled plan round. |
 | `2`  | Usage error (e.g. an unsupported `--tool`).        |

@@ -17,6 +17,9 @@ const (
 	// OutcomePlanStalled means a plan iteration produced neither clarifying
 	// questions nor a finished plan, so the loop could not make progress.
 	OutcomePlanStalled
+	// OutcomeCommitFailed means a task was marked complete, but committing the
+	// resulting repository changes failed.
+	OutcomeCommitFailed
 )
 
 // ExitCode maps an outcome to a process exit code: 0 only when the work
@@ -42,6 +45,8 @@ func (o Outcome) String() string {
 		return "plan ready (PLAN.md and STEPS.md created)"
 	case OutcomePlanStalled:
 		return "aborted (tool produced neither questions nor a plan)"
+	case OutcomeCommitFailed:
+		return "aborted (failed to commit completed task changes)"
 	default:
 		return "unknown"
 	}

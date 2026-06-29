@@ -15,6 +15,9 @@ func TestOnlyCompletionExitsCleanly(t *testing.T) {
 		{models.OutcomeDroidFailed, 1},
 		{models.OutcomeBudgetExceeded, 1},
 		{models.OutcomeInterrupted, 1},
+		{models.OutcomePlanReady, 0},
+		{models.OutcomePlanStalled, 1},
+		{models.OutcomeCommitFailed, 1},
 	}
 	for _, c := range cases {
 		if got := c.outcome.ExitCode(); got != c.wantCode {
