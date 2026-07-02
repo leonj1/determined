@@ -20,6 +20,9 @@ const (
 	// OutcomeCommitFailed means a task was marked complete, but committing the
 	// resulting repository changes failed.
 	OutcomeCommitFailed
+	// OutcomeVerificationFailed means completed-task changes could not be
+	// approved after the allowed repair attempts.
+	OutcomeVerificationFailed
 )
 
 // ExitCode maps an outcome to a process exit code: 0 only when the work
@@ -47,6 +50,8 @@ func (o Outcome) String() string {
 		return "aborted (tool produced neither questions nor a plan)"
 	case OutcomeCommitFailed:
 		return "aborted (failed to commit completed task changes)"
+	case OutcomeVerificationFailed:
+		return "aborted (verification did not approve completed task changes)"
 	default:
 		return "unknown"
 	}
