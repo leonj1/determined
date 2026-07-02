@@ -17,6 +17,7 @@ import (
 // prompt is the hardcoded instruction handed to the AI coding tool each
 // iteration of the execute loop, ported verbatim from the original bash loop.
 const prompt = "Read PLAN.md and STEPS.md. Find the first step that has needs to be completed. " +
+	"If VERIFICATION.md exists, read it first; it explains why the previous attempt was insufficient. " +
 	"Implement that step. Mark the step completed when you are done. Only work on one step. " +
 	"When there are no more steps then create STOP.md"
 
@@ -67,6 +68,8 @@ func main() {
 	plan := flag.String("plan", "", "describe a goal to plan interactively, producing PLAN.md and STEPS.md")
 	maxStepPasses := flag.Int("max-step-passes", 5,
 		"max assess/breakdown rounds to shrink oversized steps during planning; 0 disables")
+	maxVerificationRetries := flag.Int("max-verification-retries", 3,
+		"max verifier repair attempts per step during execution")
 	showVersion := flag.Bool("version", false, "print the version and exit")
 	flag.Parse()
 
@@ -91,7 +94,7 @@ func main() {
 	if *plan != "" {
 		outcome = runPlan(ctx, selected, *plan, *budget, *maxStepPasses, clock, logs)
 	} else {
-		outcome = runLoop(ctx, selected, *budget, clock, logs)
+		outcome = runLoop(ctx, selected, *budget, *maxVerificationRetries, clock, logs)
 	}
 
 	fmt.Fprintf(os.Stderr, "\ndetermined: %s\n", outcome)
@@ -99,17 +102,28 @@ func main() {
 }
 
 // runLoop runs the unattended execute loop against PLAN.md / STEPS.md.
-func runLoop(ctx context.Context, tool models.Tool, budget time.Duration, clock services.Clock, logs services.LogSink) models.Outcome {
+func runLoop(
+	ctx context.Context,
+	tool models.Tool,
+	budget time.Duration,
+	maxVerificationRetries int,
+	clock services.Clock,
+	logs services.LogSink,
+) models.Outcome {
+	runner := clients.NewExecCommandRunner()
 	cfg := models.Config{
-		StopFile:   "STOP.md",
-		StepsFile:  "STEPS.md",
-		Invocation: tool.Invocation(prompt),
-		Budget:     budget,
+		StopFile:                 "STOP.md",
+		StepsFile:                "STEPS.md",
+		VerificationFeedbackFile: "VERIFICATION.md",
+		Invocation:               tool.Invocation(prompt),
+		Budget:                   budget,
+		MaxVerificationRetries:   maxVerificationRetries,
 	}
-	orchestrator := services.NewOrchestrator(
-		clients.NewExecCommandRunner(),
+	orchestrator := services.NewVerifiedOrchestrator(
+		runner,
 		clients.NewOsStopSignal(),
 		clients.NewGitChangeCommitter(commitMessage, clients.NewExecGitRunner()),
+		services.NewToolChangeVerifier(runner, tool),
 		clients.NewOsFileStore(),
 		clock,
 		logs,

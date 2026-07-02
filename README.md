@@ -11,7 +11,8 @@ done
 
 `determined` only **orchestrates** invocations — the AI tool still does all the
 work. It adds the safety the one-liner lacks: failure handling, a time budget,
-graceful shutdown, per-iteration logging, and Git commits after completed tasks.
+graceful shutdown, per-iteration logging, verifier review, and Git commits after
+approved completed tasks.
 
 It has two modes:
 
@@ -75,14 +76,16 @@ codes.
 | `--plan`         | —        | Describe a goal to plan interactively; produces `PLAN.md` + `STEPS.md` instead of running the execute loop. |
 | `--max-step-passes` | `5`   | Max assess/breakdown rounds to shrink oversized steps during planning. `0` disables refinement. **plan only**. |
 | `--max-duration` | `1h`     | Wall-clock budget, checked between iterations. `0` = unlimited. |
-| `--log-dir`      | `logs`   | Directory for per-iteration log files.                          |
+| `--max-verification-retries` | `3` | Max verifier repair attempts per step during execution. |
+| `--log-dir`      | `logs`   | Directory for per-iteration and verifier log files.              |
 | `--version`      | —        | Print the binary's semantic version and exit.                  |
 | `--auto`         | `medium` | `droid` autonomy level (`low`/`medium`/`high`), **droid only**. Required for unattended runs — without it `droid exec` stops on a permission prompt and the loop aborts on iteration 1. Ignored by `pi`/`claude`. |
 
 The prompt and the `STOP.md` / `PLAN.md` / `STEPS.md` filenames are hardcoded,
 matching the original bash script. During execute mode, when `STEPS.md` shows
-that an iteration marked a task complete, `determined` stages all repository
-changes and commits them with `CHORE: save completed task changes`.
+that an iteration marked the intended task complete, `determined` verifies the
+diff against `AGENTS.md` and that step before committing. Rejected attempts are
+resubmitted with `VERIFICATION.md` feedback.
 
 ## Known limitation
 

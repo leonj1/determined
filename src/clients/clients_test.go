@@ -36,6 +36,19 @@ func TestUserCanReviewIterationLogAfterTheRun(t *testing.T) {
 	if err != nil || !strings.Contains(string(data), "step 7 output") {
 		t.Fatalf("expected the iteration's output persisted to %s, got %q (err %v)", path, data, err)
 	}
+
+	verifyLog, err := sink.OpenVerification(7)
+	if err != nil {
+		t.Fatalf("opening a verification log should succeed: %v", err)
+	}
+	io.WriteString(verifyLog, "verifier output")
+	verifyLog.Close()
+
+	verifyPath := filepath.Join(dir, "iter-0007-verify-20260620-093000.log")
+	verifyData, err := os.ReadFile(verifyPath)
+	if err != nil || !strings.Contains(string(verifyData), "verifier output") {
+		t.Fatalf("expected verifier output persisted to %s, got %q (err %v)", verifyPath, verifyData, err)
+	}
 }
 
 func TestStopSignalDetectsTheSentinelFile(t *testing.T) {
