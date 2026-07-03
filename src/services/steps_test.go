@@ -134,6 +134,37 @@ func TestNextIncompleteStep(t *testing.T) {
 	}
 }
 
+func TestCompletedStepCount(t *testing.T) {
+	cases := []struct {
+		name  string
+		steps []services.Step
+		want  int
+	}{
+		{
+			name:  "counts only checked steps",
+			steps: []services.Step{{Text: "one", Completed: true}, {Text: "two"}, {Text: "three", Completed: true}},
+			want:  2,
+		},
+		{
+			name:  "none checked",
+			steps: []services.Step{{Text: "one"}, {Text: "two"}},
+			want:  0,
+		},
+		{
+			name:  "empty list",
+			steps: nil,
+			want:  0,
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := services.CompletedStepCount(c.steps); got != c.want {
+				t.Fatalf("CompletedStepCount(%#v) = %d, want %d", c.steps, got, c.want)
+			}
+		})
+	}
+}
+
 func TestAllStepsComplete(t *testing.T) {
 	cases := []struct {
 		name  string

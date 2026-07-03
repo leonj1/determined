@@ -65,6 +65,8 @@ func main() {
 	plan := flag.String("plan", "", "describe a goal to plan interactively, producing PLAN.md and STEPS.md")
 	maxStepPasses := flag.Int("max-step-passes", 5,
 		"max assess/breakdown rounds to shrink oversized steps during planning; 0 disables")
+	maxStalled := flag.Int("max-stalled-iterations", 3,
+		"stop with exit 3 after this many consecutive iterations check no new step; 0 disables")
 	showVersion := flag.Bool("version", false, "print the version and exit")
 	flag.Parse()
 
@@ -89,7 +91,7 @@ func main() {
 	if *plan != "" {
 		outcome = runPlan(ctx, selected, *plan, *budget, *maxStepPasses, clock, logs)
 	} else {
-		outcome = runLoop(ctx, selected, *budget, clock, logs)
+		outcome = runLoop(ctx, selected, *budget, *maxStalled, clock, logs)
 	}
 
 	fmt.Fprintf(os.Stderr, "\ndetermined: %s\n", outcome)
@@ -97,13 +99,14 @@ func main() {
 }
 
 // runLoop runs the unattended execute loop against PLAN.md / STEPS.md.
-func runLoop(ctx context.Context, tool models.Tool, budget time.Duration, clock services.Clock, logs services.LogSink) models.Outcome {
+func runLoop(ctx context.Context, tool models.Tool, budget time.Duration, maxStalled int, clock services.Clock, logs services.LogSink) models.Outcome {
 	cfg := models.Config{
-		StopFile:  "STOP.md",
-		PlanFile:  "PLAN.md",
-		StepsFile: "STEPS.md",
-		Tool:      tool,
-		Budget:    budget,
+		StopFile:             "STOP.md",
+		PlanFile:             "PLAN.md",
+		StepsFile:            "STEPS.md",
+		Tool:                 tool,
+		Budget:               budget,
+		MaxStalledIterations: maxStalled,
 	}
 	orchestrator := services.NewOrchestrator(
 		clients.NewExecCommandRunner(),

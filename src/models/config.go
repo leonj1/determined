@@ -15,4 +15,8 @@ type Config struct {
 	StepsFile string
 	Tool      Tool          // builds each iteration's invocation from the injected prompt
 	Budget    time.Duration // wall-clock budget; 0 means unlimited
+	// MaxStalledIterations ends the run with OutcomeStalled after this many
+	// consecutive iterations complete without a newly checked step; 0 disables
+	// stall detection.
+	MaxStalledIterations int
 }

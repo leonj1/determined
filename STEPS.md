@@ -19,7 +19,7 @@ when its "Done when" condition is verified.
 - [x] 5. Fail fast on missing or stale protocol files. In execute mode, exit immediately with a clear error if PLAN.md or STEPS.md is missing at startup. At startup, if a stale STOP.md exists alongside unchecked steps, delete it with a warning instead of exiting instantly as success.
   Done when: running execute mode in a directory without PLAN.md/STEPS.md exits non-zero with a message naming the missing file, covered by a test, and `go test ./...` passes.
 
-- [ ] 6. Add stall detection. Before each iteration, snapshot the parsed completed-step count; if a configurable number of consecutive iterations (default 3, flag `--max-stalled-iterations`) complete without a newly checked step, end the run with a new `OutcomeStalled` outcome and distinct exit code. Update EXECUTION.md's exit-code table.
+- [x] 6. Add stall detection. Before each iteration, snapshot the parsed completed-step count; if a configurable number of consecutive iterations (default 3, flag `--max-stalled-iterations`) complete without a newly checked step, end the run with a new `OutcomeStalled` outcome and distinct exit code. Update EXECUTION.md's exit-code table.
   Done when: a test drives N no-progress iterations and observes `OutcomeStalled`, and `go test ./...` passes.
 
 - [ ] 7. Retry failed invocations instead of aborting. On a non-zero tool exit, retry the same iteration up to a cap of consecutive failures (default 3, flag `--max-consecutive-failures`), resetting the counter after any success. Only after the cap is hit does the run end with `OutcomeDroidFailed`. Interruptions (`ctx.Err()`) still stop immediately.

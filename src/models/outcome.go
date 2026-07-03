@@ -20,15 +20,24 @@ const (
 	// OutcomeMissingFiles means execute mode started without the protocol
 	// files a run needs (PLAN.md / STEPS.md), so no tool was ever invoked.
 	OutcomeMissingFiles
+	// OutcomeStalled means too many consecutive iterations completed without
+	// a newly checked step, so the run ended instead of looping forever.
+	OutcomeStalled
 )
 
 // ExitCode maps an outcome to a process exit code: 0 only when the work
-// completed cleanly (stop file created, or a plan was produced), 1 otherwise.
+// completed cleanly (stop file created, or a plan was produced), 3 when the
+// run stalled without progress, 1 for every other termination. Stalling gets
+// its own code so callers can tell "stuck" apart from "failed".
 func (o Outcome) ExitCode() int {
-	if o == OutcomeStopped || o == OutcomePlanReady {
+	switch o {
+	case OutcomeStopped, OutcomePlanReady:
 		return 0
+	case OutcomeStalled:
+		return 3
+	default:
+		return 1
 	}
-	return 1
 }
 
 func (o Outcome) String() string {
@@ -47,6 +56,8 @@ func (o Outcome) String() string {
 		return "aborted (tool produced neither questions nor a plan)"
 	case OutcomeMissingFiles:
 		return "aborted (required protocol file missing)"
+	case OutcomeStalled:
+		return "stalled (consecutive iterations checked no new step)"
 	default:
 		return "unknown"
 	}

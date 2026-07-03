@@ -28,7 +28,7 @@ type LogSink interface {
 
 // Orchestrator runs the AI coding tool in a loop until every step in the
 // steps file is checked complete, an invocation fails, the time budget is
-// exhausted, or a signal interrupts it. Each iteration it re-reads the steps
+// exhausted, progress stalls, or a signal interrupts it. Each iteration it re-reads the steps
 // file and aims the tool at exactly the next unchecked step. Completion is
 // decided by the parsed checkboxes, never by the tool: a STOP.md created
 // while unchecked steps remain is deleted and the loop continues.
@@ -41,6 +41,9 @@ type Orchestrator struct {
 	cfg      models.Config
 
 	iteration int
+	// stalled counts consecutive iterations that checked no new step; hitting
+	// cfg.MaxStalledIterations ends the run with OutcomeStalled.
+	stalled int
 }
 
 // NewOrchestrator wires an orchestrator from its dependencies.
@@ -72,8 +75,15 @@ func (o *Orchestrator) Run(ctx context.Context) models.Outcome {
 		if outcome, stop := o.preIteration(ctx, deadline); stop {
 			return outcome
 		}
+		completedBefore := o.completedStepCount()
 		if outcome, stop := o.runOnce(ctx); stop {
 			return outcome
+		}
+		if o.stalledOut(completedBefore) {
+			fmt.Fprintf(o.terminal,
+				"determined: no step checked in %d consecutive iterations; stopping\n",
+				o.cfg.MaxStalledIterations)
+			return models.OutcomeStalled
 		}
 	}
 }
@@ -158,6 +168,32 @@ func (o *Orchestrator) deletePrematureStop() {
 	fmt.Fprintf(o.terminal,
 		"determined: warning: %s existed while unchecked steps remain; deleted it and continuing\n",
 		o.cfg.StopFile)
+}
+
+// completedStepCount parses the steps file and counts the checked steps. A
+// read failure counts as zero; the surrounding loop surfaces the failure
+// itself on the next runOnce.
+func (o *Orchestrator) completedStepCount() int {
+	content, err := o.files.Read(o.cfg.StepsFile)
+	if err != nil {
+		return 0
+	}
+	return CompletedStepCount(ParseSteps(content))
+}
+
+// stalledOut updates the consecutive-no-progress counter by comparing the
+// completed-step count against its pre-iteration snapshot, and reports whether
+// the stall cap has been hit. Any newly checked step resets the counter.
+func (o *Orchestrator) stalledOut(completedBefore int) bool {
+	if o.cfg.MaxStalledIterations <= 0 {
+		return false
+	}
+	if o.completedStepCount() > completedBefore {
+		o.stalled = 0
+		return false
+	}
+	o.stalled++
+	return o.stalled >= o.cfg.MaxStalledIterations
 }
 
 // runOnce runs a single invocation, teeing its output to the terminal and a

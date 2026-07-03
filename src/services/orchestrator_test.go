@@ -193,6 +193,66 @@ func TestRunStopsWhenTimeBudgetExhausted(t *testing.T) {
 	}
 }
 
+func TestRunStallsAfterConsecutiveIterationsWithoutProgress(t *testing.T) {
+	cfg := config(0)
+	cfg.MaxStalledIterations = 3
+	var terminal bytes.Buffer
+	runner := &fakeRunner{} // never checks a step
+	o := services.NewOrchestrator(runner, stepsFileStore(), &fakeClock{now: time.Now()}, &fakeLogSink{}, &terminal, cfg)
+
+	outcome := o.Run(context.Background())
+
+	if outcome != models.OutcomeStalled || outcome.ExitCode() != 3 {
+		t.Fatalf("expected a stalled stop with exit 3, got %v (exit %d)", outcome, outcome.ExitCode())
+	}
+	if runner.calls != 3 {
+		t.Fatalf("expected the run to end after 3 no-progress iterations, got %d", runner.calls)
+	}
+	if !strings.Contains(terminal.String(), "no step checked in 3 consecutive iterations") {
+		t.Fatalf("expected a terminal message explaining the stall, got:\n%s", terminal.String())
+	}
+}
+
+func TestCheckedStepResetsTheStallCounter(t *testing.T) {
+	cfg := config(0)
+	cfg.MaxStalledIterations = 2
+	fs := stepsFileStore()
+	runner := &fakeRunner{script: func(call int, _ io.Writer) error {
+		if call == 2 { // one no-progress iteration, then a step is checked
+			fs.Write("STEPS.md", twoStepsFirstChecked)
+		}
+		return nil
+	}}
+	o := services.NewOrchestrator(runner, fs, &fakeClock{now: time.Now()}, &fakeLogSink{}, io.Discard, cfg)
+
+	outcome := o.Run(context.Background())
+
+	if outcome != models.OutcomeStalled {
+		t.Fatalf("expected the run to stall eventually, got %v", outcome)
+	}
+	if runner.calls != 4 {
+		t.Fatalf("expected progress to reset the counter (1 stall + progress + 2 stalls = 4 iterations), got %d", runner.calls)
+	}
+}
+
+func TestStallDetectionDisabledByZeroCap(t *testing.T) {
+	clock := &fakeClock{now: time.Now()}
+	runner := &fakeRunner{script: func(int, io.Writer) error {
+		clock.advance(time.Minute) // never checks a step; only the budget can end the run
+		return nil
+	}}
+	o := services.NewOrchestrator(runner, stepsFileStore(), clock, &fakeLogSink{}, io.Discard, config(10*time.Minute))
+
+	outcome := o.Run(context.Background())
+
+	if outcome != models.OutcomeBudgetExceeded {
+		t.Fatalf("expected no stall with a zero cap (budget ends the run), got %v", outcome)
+	}
+	if runner.calls != 10 {
+		t.Fatalf("expected all 10 budgeted no-progress iterations to run, got %d", runner.calls)
+	}
+}
+
 func TestRunEndsImmediatelyWhenAllStepsAlreadyChecked(t *testing.T) {
 	fs := plannedFileStore("- [x] 1. Done already.\n  Done when: nothing remains.\n")
 	runner := &fakeRunner{}

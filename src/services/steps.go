@@ -76,6 +76,17 @@ func AllStepsComplete(steps []Step) bool {
 	return true
 }
 
+// CompletedStepCount returns how many steps are checked complete.
+func CompletedStepCount(steps []Step) int {
+	n := 0
+	for _, s := range steps {
+		if s.Completed {
+			n++
+		}
+	}
+	return n
+}
+
 // checkboxItem parses a markdown checkbox list item ("- [ ] text" or
 // "- [x] text"; "*" bullets are accepted too) and reports whether the line was
 // one. Bullets without a checkbox, or with an unrecognized mark, are not items.
