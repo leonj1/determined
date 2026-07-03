@@ -302,16 +302,21 @@ func (o *Orchestrator) iterationPrompt() (string, error) {
 }
 
 // stepPrompt builds the execute instruction for a single step: work only that
-// step, meet its acceptance criterion, and check its box when done.
+// step, meet its acceptance criterion, and check its box when done. NOTES.md
+// carries knowledge between otherwise-independent invocations: each iteration
+// reads what earlier steps recorded and appends what later steps need to know.
 func stepPrompt(step Step) string {
 	var b strings.Builder
+	b.WriteString("Read NOTES.md if it exists before starting. ")
 	b.WriteString("Work on exactly this step and no other: ")
 	b.WriteString(sentence(step.Text))
 	if step.DoneWhen != "" {
 		b.WriteString(" Its acceptance criterion: ")
 		b.WriteString(sentence(step.DoneWhen))
 	}
-	b.WriteString(" Mark it `[x]` in STEPS.md when done.")
+	b.WriteString(" Mark it `[x]` in STEPS.md when done. " +
+		"Before finishing, append to NOTES.md any decisions, conventions, or " +
+		"gotchas later steps need to know.")
 	return b.String()
 }
 

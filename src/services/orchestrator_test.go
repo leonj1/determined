@@ -435,9 +435,11 @@ func TestEachIterationTargetsTheNextIncompleteStep(t *testing.T) {
 	}
 	first := runner.prompt(1)
 	for _, want := range []string{
+		"Read NOTES.md if it exists before starting.",
 		"Work on exactly this step and no other: 2. Wire the parser into the loop.",
 		"Its acceptance criterion: go test ./... passes.",
 		"Mark it `[x]` in STEPS.md when done.",
+		"append to NOTES.md any decisions, conventions, or gotchas later steps need to know",
 	} {
 		if !strings.Contains(first, want) {
 			t.Fatalf("expected iteration 1's prompt to contain %q, got:\n%s", want, first)

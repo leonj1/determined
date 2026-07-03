@@ -13,6 +13,14 @@ Each iteration, in the current working directory:
    without a newly checked step in `STEPS.md` → stop and exit **3**. Checking
    any step resets the counter; `0` disables stall detection.
 
+## NOTES.md
+
+Each iteration runs in a fresh tool invocation with no memory of earlier ones,
+so the injected prompt tells the tool to read `NOTES.md` (if it exists) before
+starting, and to append any decisions, conventions, or gotchas later steps need
+to know before finishing. The file lives in the working directory alongside
+`PLAN.md` and `STEPS.md` and is created by the tool itself on first use.
+
 ## Exit codes
 
 | Code | Meaning                                            |
