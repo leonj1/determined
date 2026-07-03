@@ -37,7 +37,7 @@ when its "Done when" condition is verified.
 - [x] 11. Git-checkpoint each verified step. After the verifier (step 9) approves a step, the orchestrator runs `git add -A && git commit -m "determined: step N: <step text>"` when the working directory is a git repository; skip silently (with a terminal note) when it is not. Add flag `--git-checkpoint` (default on) to disable.
   Done when: a test with a fake runner asserts the commit invocation is issued after a verified step and skipped when disabled, and `go test ./...` passes.
 
-- [ ] 12. Make the `claude` tool viable unattended. Change `ClaudeTool.Invocation` in `src/models/tool.go` to run `claude -p "<prompt>" --permission-mode acceptEdits` so print-mode runs do not stall on permission prompts, and document the flag choice and its safety trade-off in README.md.
+- [x] 12. Make the `claude` tool viable unattended. Change `ClaudeTool.Invocation` in `src/models/tool.go` to run `claude -p "<prompt>" --permission-mode acceptEdits` so print-mode runs do not stall on permission prompts, and document the flag choice and its safety trade-off in README.md.
   Done when: `tool_test.go` asserts the new arguments and `go test ./...` passes.
 
 - [ ] 13. Reconcile the README `--auto` documentation with the code. README.md documents an `--auto` flag (default `medium`) that `cmd/determined/main.go` does not define; `src/models/tool.go` hardcodes droid autonomy to `high`. Either add the flag and thread it through `DroidTool`, or remove the flag row and the "Required for unattended runs" note from README.md — pick one and make code and docs agree.

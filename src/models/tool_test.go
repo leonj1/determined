@@ -26,7 +26,7 @@ func TestSelectedToolRunsTheRightCommand(t *testing.T) {
 	}{
 		{"droid", `droid exec "do the work" --auto high`},
 		{"pi", `pi -p "do the work"`},
-		{"claude", `claude -p "do the work"`},
+		{"claude", `claude -p "do the work" --permission-mode acceptEdits`},
 	}
 	for _, c := range cases {
 		tool, err := models.SelectTool(c.tool)

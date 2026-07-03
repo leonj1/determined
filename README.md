@@ -48,7 +48,21 @@ command form with the hardcoded prompt:
 |--------------------|---------------------------------------|
 | `droid` (default)  | `droid exec "<prompt>" --auto <level>` |
 | `pi`               | `pi -p "<prompt>"`                     |
-| `claude`           | `claude -p "<prompt>"`                 |
+| `claude`           | `claude -p "<prompt>" --permission-mode acceptEdits` |
+
+### Why `claude` runs with `--permission-mode acceptEdits`
+
+`claude -p` (print mode) is non-interactive: if the tool hits a permission
+prompt it cannot ask, so without a permission mode every iteration stalls or
+exits before doing any work. `--permission-mode acceptEdits` auto-approves
+file edits in the working directory, which is exactly what an unattended step
+loop needs.
+
+The trade-off: Claude can create and modify files in the project without a
+human confirming each edit. It does **not** auto-approve arbitrary shell
+commands (that would be `bypassPermissions`, which we deliberately avoid).
+Run `determined` in a directory you are prepared to have edited — ideally a
+clean git checkout, so every change is reviewable and revertible.
 
 ## Build & run
 

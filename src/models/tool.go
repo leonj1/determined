@@ -32,13 +32,19 @@ func (PiTool) Invocation(prompt string) Invocation {
 	return Invocation{Binary: "pi", Args: []string{"-p", prompt}}
 }
 
-// ClaudeTool runs the Claude CLI in print mode: `claude -p "<prompt>"`.
+// claudePermissionMode is the permission mode claude runs at. Print-mode runs
+// cannot answer interactive permission prompts, so unattended runs always use
+// "acceptEdits"; it is not user-configurable.
+const claudePermissionMode = "acceptEdits"
+
+// ClaudeTool runs the Claude CLI in print mode:
+// `claude -p "<prompt>" --permission-mode acceptEdits`.
 type ClaudeTool struct{}
 
 func (ClaudeTool) Name() string { return "claude" }
 
 func (ClaudeTool) Invocation(prompt string) Invocation {
-	return Invocation{Binary: "claude", Args: []string{"-p", prompt}}
+	return Invocation{Binary: "claude", Args: []string{"-p", prompt, "--permission-mode", claudePermissionMode}}
 }
 
 // SelectTool returns the Tool named by name.
