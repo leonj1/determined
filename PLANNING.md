@@ -15,6 +15,13 @@ Each round, in the current working directory:
 2. The tool runs (in its non-interactive print mode) and either:
    - writes clarifying questions to `QUESTIONS.md` (a markdown list), or
    - writes a finished `PLAN.md` **and** `STEPS.md`.
+
+   `STEPS.md` must be machine-checkable, and the planning prompt enforces its
+   format: a markdown checkbox list (one `- [ ]` item per step), every step
+   ending with a `Done when:` line stating a concrete acceptance condition —
+   a command to run or a behavior to observe. The execute loop parses these
+   checkboxes to track progress, aim each iteration, verify completed steps,
+   and detect stalls (see [EXECUTION.md](EXECUTION.md)).
 3. If there are questions, `determined` asks you each one on the terminal,
    records the round in `ANSWERS.md`, clears `QUESTIONS.md`, and runs the tool
    again — now with your answers in hand.
@@ -34,8 +41,8 @@ assess/breakdown loop:
    word `NONE` if every step is already small enough.
 2. If `OVERSIZED.md` is `NONE`/empty → refinement is done.
 3. **Break down** — otherwise the tool rewrites `STEPS.md`, splitting the flagged
-   steps into smaller, individually-implementable ones, and `determined`
-   re-assesses. Repeat.
+   steps into smaller, individually-implementable ones — keeping the checkbox
+   format and per-step `Done when:` lines — and `determined` re-assesses. Repeat.
 
 The loop is bounded by `--max-step-passes` (default `5`; `0` disables refinement
 entirely) and by `--max-duration`. If the cap is reached before the steps

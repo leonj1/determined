@@ -1,7 +1,7 @@
 # determined
 
 A Go orchestrator that runs an AI coding tool in a loop until the work is done.
-It is a hardened port of this bash loop:
+It grew out of hardening this bash loop:
 
 ```bash
 while [ ! -e STOP.md ]; do
@@ -10,8 +10,22 @@ done
 ```
 
 `determined` only **orchestrates** invocations — the AI tool still does all the
-work. It adds the safety the one-liner lacks: failure handling, a time budget,
-graceful shutdown, and per-iteration logging.
+work. Unlike the one-liner, it does not trust the tool's word for progress:
+
+- **Parsed progress** — `STEPS.md` is a markdown checkbox list that the
+  orchestrator parses itself each iteration; a `STOP.md` created while
+  unchecked steps remain is deleted and the loop continues.
+- **Per-step prompts** — each invocation is aimed at exactly the next
+  unchecked step, with its `Done when:` acceptance criterion injected.
+- **Independent verification** — after a step is checked, a fresh reviewer
+  invocation confirms the acceptance criterion actually holds, unchecking the
+  step (and recording why in `FIXES.md`) when it does not.
+- **Final audit** — once every box is checked, one more invocation audits the
+  whole plan; only its approval (`STOP.md`) ends the run successfully.
+- **Stall detection, retries, and timeouts** — no-progress iterations,
+  consecutive failures, and single-invocation duration are all bounded.
+- **Memory and checkpoints** — `NOTES.md` carries knowledge between otherwise
+  independent invocations, and each verified step is git-committed.
 
 It has two modes:
 
@@ -42,7 +56,8 @@ unattended runs with `--max-duration`. For more detail, see
 ## Supported tools
 
 Pick the AI coding CLI with `--tool`. Each iteration runs the tool's own
-command form with the hardcoded prompt:
+command form with the prompt built for that iteration (see
+[EXECUTION.md](EXECUTION.md)):
 
 | `--tool`           | Command run each iteration            |
 |--------------------|---------------------------------------|
@@ -93,17 +108,17 @@ codes.
 | `--plan`         | —        | Describe a goal to plan interactively; produces `PLAN.md` + `STEPS.md` instead of running the execute loop. |
 | `--max-step-passes` | `5`   | Max assess/breakdown rounds to shrink oversized steps during planning. `0` disables refinement. **plan only**. |
 | `--max-duration` | `1h`     | Wall-clock budget, checked between iterations. `0` = unlimited. |
+| `--max-iteration-duration` | `15m` | Kill a single tool invocation after this long; the timeout counts as a failed invocation. `0` = unlimited. |
+| `--max-consecutive-failures` | `3` | Abort after this many consecutive failed tool invocations; any success resets the count. |
+| `--max-stalled-iterations` | `3` | Stop (exit `3`) after this many consecutive iterations check no new step. `0` disables stall detection. |
+| `--verify`       | `true`   | After each newly checked step, run an independent verifier invocation that unchecks it (recording why in `FIXES.md`) if its acceptance criterion is not met. |
+| `--git-checkpoint` | `true` | Git-commit the working tree after each verified step when running in a git repository. |
 | `--log-dir`      | `logs`   | Directory for per-iteration log files.                          |
 | `--version`      | —        | Print the binary's semantic version and exit.                  |
 
-The prompt and the `STOP.md` / `PLAN.md` / `STEPS.md` filenames are hardcoded,
-matching the original bash script.
-
-## Known limitation
-
-The only guard against a tool that exits `0` forever without writing `STOP.md`
-(e.g. it keeps "finishing" without marking a step complete) is the wall-clock
-budget. Keep `--max-duration` bounded for unattended runs.
+The protocol filenames (`PLAN.md` / `STEPS.md` / `STOP.md` / `NOTES.md` /
+`FIXES.md`) are hardcoded; the prompt is rebuilt each iteration from the next
+unchecked step in `STEPS.md`.
 
 ## Layout
 

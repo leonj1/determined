@@ -6,7 +6,7 @@ go build -o determined ./cmd/determined
 ./determined --tool pi             # use the pi CLI instead
 ./determined --tool claude         # use the claude CLI instead
 ./determined --max-duration 2h     # raise the time budget
-./determined --max-duration 0      # unlimited (bash parity; Ctrl+C is the only stop)
+./determined --max-duration 0      # no time budget (stall/failure caps still apply)
 ./determined --version             # print the semantic version and exit
 ./determined --plan "build a todo CLI"   # interview, then write PLAN.md / STEPS.md
 ```
