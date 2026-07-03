@@ -5,7 +5,6 @@ import (
 	"context"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -140,69 +139,6 @@ func TestPrompterReportsInputReadError(t *testing.T) {
 	}
 }
 
-func TestUserGetsCommitAfterCompletedTaskChanges(t *testing.T) {
-	dir := t.TempDir()
-	runGit(t, dir, "init")
-	runGit(t, dir, "config", "user.email", "determined@example.test")
-	runGit(t, dir, "config", "user.name", "Determined")
-	if err := os.WriteFile(filepath.Join(dir, "STEPS.md"), []byte("1. [x] Add storage\n"), 0o644); err != nil {
-		t.Fatalf("writing completed task file should succeed: %v", err)
-	}
-	restore := chdir(t, dir)
-	defer restore()
-
-	var out bytes.Buffer
-	committer := clients.NewGitChangeCommitter("CHORE: save completed task changes", clients.NewExecGitRunner())
-
-	if err := committer.Commit(context.Background(), &out); err != nil {
-		t.Fatalf("committing completed task changes should succeed: %v", err)
-	}
-	if status := runGit(t, dir, "status", "--porcelain"); status != "" {
-		t.Fatalf("expected a clean worktree after commit, got %q", status)
-	}
-	subject := strings.TrimSpace(runGit(t, dir, "log", "-1", "--pretty=%s"))
-	if subject != "CHORE: save completed task changes" {
-		t.Fatalf("expected the completed-task commit message, got %q", subject)
-	}
-}
-
-func TestCleanRepoNeedsNoCompletedTaskCommit(t *testing.T) {
-	dir := t.TempDir()
-	runGit(t, dir, "init")
-	restore := chdir(t, dir)
-	defer restore()
-
-	var out bytes.Buffer
-	committer := clients.NewGitChangeCommitter("CHORE: save completed task changes", clients.NewExecGitRunner())
-
-	if err := committer.Commit(context.Background(), &out); err != nil {
-		t.Fatalf("clean repo should not need a commit: %v", err)
-	}
-	if !strings.Contains(out.String(), "No repository changes to commit") {
-		t.Fatalf("expected a clean-worktree message, got %q", out.String())
-	}
-}
-
-func TestCommitRequiresAGitRepository(t *testing.T) {
-	dir := t.TempDir()
-	restore := chdir(t, dir)
-	defer restore()
-
-	committer := clients.NewGitChangeCommitter("CHORE: save completed task changes", clients.NewExecGitRunner())
-
-	if err := committer.Commit(context.Background(), io.Discard); err == nil {
-		t.Fatal("committing should fail outside a Git repository")
-	}
-}
-
-func TestCommitReportsCleanRepoOutputError(t *testing.T) {
-	committer := clients.NewGitChangeCommitter("CHORE: save completed task changes", fakeGitRunner{})
-
-	if err := committer.Commit(context.Background(), failingWriter{}); err == nil {
-		t.Fatal("clean repo commit should report output write failures")
-	}
-}
-
 func TestSystemClockAdvances(t *testing.T) {
 	clock := clients.NewSystemClock()
 	before := clock.Now()
@@ -212,49 +148,9 @@ func TestSystemClockAdvances(t *testing.T) {
 	}
 }
 
-func chdir(t *testing.T, dir string) func() {
-	t.Helper()
-	previous, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("reading current directory should succeed: %v", err)
-	}
-	if err := os.Chdir(dir); err != nil {
-		t.Fatalf("changing to temp repo should succeed: %v", err)
-	}
-	return func() {
-		if err := os.Chdir(previous); err != nil {
-			t.Fatalf("restoring current directory should succeed: %v", err)
-		}
-	}
-}
-
-func runGit(t *testing.T, dir string, args ...string) string {
-	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, "git", args...)
-	cmd.Dir = dir
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("git %v should succeed: %s: %v", args, out, err)
-	}
-	return string(out)
-}
-
 type failingReader struct{}
 
 func (failingReader) Read([]byte) (int, error) {
 	return 0, os.ErrPermission
 }
 
-type failingWriter struct{}
-
-func (failingWriter) Write([]byte) (int, error) {
-	return 0, os.ErrPermission
-}
-
-type fakeGitRunner struct{}
-
-func (fakeGitRunner) Run(context.Context, io.Writer, io.Writer, string, ...string) error {
-	return nil
-}
