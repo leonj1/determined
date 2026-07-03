@@ -31,7 +31,10 @@ const planPrompt = "You are helping plan a software project before any code is w
 	"nothing else. " +
 	"If you DO have enough detail, write a detailed PLAN.md (overview, goals, constraints, " +
 	"architecture) and a STEPS.md containing an ordered list of discrete, individually " +
-	"completable steps, each marked incomplete, and do not write QUESTIONS.md. " +
+	"completable steps, and do not write QUESTIONS.md. " +
+	"STEPS.md MUST be a markdown checkbox list: each step is a single `- [ ]` item, marked " +
+	"incomplete. Every step MUST end with a line beginning `Done when:` stating a concrete, " +
+	"checkable acceptance condition — a command to run or a behavior to observe. " +
 	"Do not implement anything. Do not create STOP.md."
 
 // assessPrompt asks the tool to judge whether each step in STEPS.md is small
@@ -50,7 +53,10 @@ const breakdownPrompt = "Read STEPS.md and OVERSIZED.md. OVERSIZED.md lists step
 	"implement in one pass. Rewrite STEPS.md so each oversized step is broken into smaller, ordered, " +
 	"individually-implementable sub-steps; leave the already-small steps unchanged and preserve the " +
 	"overall order. Every step must be something an AI coding tool can implement correctly in a single " +
-	"focused pass. Do not implement anything. Do not create STOP.md."
+	"focused pass. Keep STEPS.md a markdown checkbox list: each step is a single `- [ ]` item, marked " +
+	"incomplete, and every step MUST end with a line beginning `Done when:` stating a concrete, " +
+	"checkable acceptance condition — a command to run or a behavior to observe. " +
+	"Do not implement anything. Do not create STOP.md."
 
 // version is the semantic version of the binary. It defaults to "dev" for local
 // builds and is overridden at link time via -ldflags="-X main.version=<semver>"
