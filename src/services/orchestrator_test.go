@@ -506,6 +506,142 @@ func TestExecuteFailsFastWhenProtocolFilesMissing(t *testing.T) {
 	}
 }
 
+func TestVerifierApprovalLetsTheLoopAdvance(t *testing.T) {
+	cfg := config(0)
+	cfg.Verify = true
+	fs := stepsFileStore()
+	runner := &fakeRunner{script: func(call int, _ io.Writer) error {
+		switch call {
+		case 1: // work: check step 1
+			fs.Write("STEPS.md", twoStepsFirstChecked)
+		case 2: // verifier approves step 1 by doing nothing
+		case 3: // work: check step 2
+			fs.Write("STEPS.md", twoStepsAllChecked)
+		case 4: // verifier approves step 2
+		}
+		return nil
+	}}
+	o := services.NewOrchestrator(runner, fs, &fakeClock{now: time.Now()}, &fakeLogSink{}, io.Discard, cfg)
+
+	outcome := o.Run(context.Background())
+
+	if outcome != models.OutcomeStopped || outcome.ExitCode() != 0 {
+		t.Fatalf("expected a clean completion, got %v (exit %d)", outcome, outcome.ExitCode())
+	}
+	if runner.calls != 4 {
+		t.Fatalf("expected work + verify per step (4 runs), got %d", runner.calls)
+	}
+	verify := runner.prompt(2)
+	for _, want := range []string{
+		"Step 1 claims complete: 1. Add the widget.",
+		"Acceptance criterion: widget tests pass.",
+		"Verify by reading the code and running the stated check.",
+		"FIXES.md",
+	} {
+		if !strings.Contains(verify, want) {
+			t.Fatalf("expected the verifier prompt to contain %q, got:\n%s", want, verify)
+		}
+	}
+	if !strings.Contains(runner.prompt(3), "2. Document the widget.") {
+		t.Fatalf("expected the loop to advance to step 2 after approval, got:\n%s", runner.prompt(3))
+	}
+}
+
+func TestVerifierRejectionRerunsTheSameStep(t *testing.T) {
+	cfg := config(0)
+	cfg.Verify = true
+	fs := stepsFileStore()
+	fixesAtRerun := false
+	runner := &fakeRunner{script: func(call int, _ io.Writer) error {
+		switch call {
+		case 1: // work: check step 1
+			fs.Write("STEPS.md", twoStepsFirstChecked)
+		case 2: // verifier rejects: uncheck step 1 and record why
+			fs.Write("STEPS.md", twoStepsNoneChecked)
+			fs.Write("FIXES.md", "widget tests actually fail\n")
+		case 3: // work re-runs step 1 with FIXES.md present
+			fixesAtRerun = fs.Exists("FIXES.md")
+			fs.Write("STEPS.md", twoStepsFirstChecked)
+		case 4: // verifier approves this time
+		case 5: // work: check step 2
+			fs.Write("STEPS.md", twoStepsAllChecked)
+		case 6: // verifier approves
+		}
+		return nil
+	}}
+	o := services.NewOrchestrator(runner, fs, &fakeClock{now: time.Now()}, &fakeLogSink{}, io.Discard, cfg)
+
+	outcome := o.Run(context.Background())
+
+	if outcome != models.OutcomeStopped || outcome.ExitCode() != 0 {
+		t.Fatalf("expected the rejected step to be redone and the run to complete, got %v", outcome)
+	}
+	if runner.calls != 6 {
+		t.Fatalf("expected the rejected step to cost an extra work+verify round (6 runs), got %d", runner.calls)
+	}
+	if !strings.Contains(runner.prompt(3), "1. Add the widget.") {
+		t.Fatalf("expected the loop to re-run the unchecked step, got:\n%s", runner.prompt(3))
+	}
+	if !fixesAtRerun {
+		t.Fatal("expected FIXES.md to exist when the step is re-run")
+	}
+}
+
+func TestVerifierRejectionsCountTowardTheStallCap(t *testing.T) {
+	cfg := config(0)
+	cfg.Verify = true
+	cfg.MaxStalledIterations = 2
+	fs := stepsFileStore()
+	runner := &fakeRunner{script: func(call int, _ io.Writer) error {
+		if call%2 == 1 { // work always claims step 1
+			fs.Write("STEPS.md", twoStepsFirstChecked)
+		} else { // verifier always rejects it
+			fs.Write("STEPS.md", twoStepsNoneChecked)
+		}
+		return nil
+	}}
+	o := services.NewOrchestrator(runner, fs, &fakeClock{now: time.Now()}, &fakeLogSink{}, io.Discard, cfg)
+
+	outcome := o.Run(context.Background())
+
+	if outcome != models.OutcomeStalled || outcome.ExitCode() != 3 {
+		t.Fatalf("expected worker/verifier ping-pong to end as a stall, got %v (exit %d)", outcome, outcome.ExitCode())
+	}
+	if runner.calls != 4 {
+		t.Fatalf("expected 2 rejected rounds (work + verify each) before stalling, got %d", runner.calls)
+	}
+}
+
+func TestVerificationDisabledRunsNoVerifier(t *testing.T) {
+	cfg := config(0)
+	cfg.Verify = false
+	fs := stepsFileStore()
+	runner := &fakeRunner{script: func(call int, _ io.Writer) error {
+		switch call {
+		case 1:
+			fs.Write("STEPS.md", twoStepsFirstChecked)
+		case 2:
+			fs.Write("STEPS.md", twoStepsAllChecked)
+		}
+		return nil
+	}}
+	o := services.NewOrchestrator(runner, fs, &fakeClock{now: time.Now()}, &fakeLogSink{}, io.Discard, cfg)
+
+	outcome := o.Run(context.Background())
+
+	if outcome != models.OutcomeStopped {
+		t.Fatalf("expected a clean completion, got %v", outcome)
+	}
+	if runner.calls != 2 {
+		t.Fatalf("expected only the work invocations with --verify off, got %d", runner.calls)
+	}
+	for call := 1; call <= 2; call++ {
+		if strings.Contains(runner.prompt(call), "claims complete") {
+			t.Fatalf("expected no verifier prompts with --verify off, got:\n%s", runner.prompt(call))
+		}
+	}
+}
+
 func TestRunAbortsWhenStepsFileVanishesMidRun(t *testing.T) {
 	fs := stepsFileStore()
 	runner := &fakeRunner{script: func(int, io.Writer) error {

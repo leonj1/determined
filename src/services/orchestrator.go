@@ -79,11 +79,14 @@ func (o *Orchestrator) Run(ctx context.Context) models.Outcome {
 		if outcome, stop := o.preIteration(ctx, deadline); stop {
 			return outcome
 		}
-		completedBefore := o.completedStepCount()
+		before := o.parsedSteps()
 		if outcome, stop := o.runOnce(ctx); stop {
 			return outcome
 		}
-		if o.stalledOut(completedBefore) {
+		if outcome, stop := o.verifyNewSteps(ctx, before); stop {
+			return outcome
+		}
+		if o.stalledOut(CompletedStepCount(before)) {
 			fmt.Fprintf(o.terminal,
 				"determined: no step checked in %d consecutive iterations; stopping\n",
 				o.cfg.MaxStalledIterations)
@@ -174,25 +177,26 @@ func (o *Orchestrator) deletePrematureStop() {
 		o.cfg.StopFile)
 }
 
-// completedStepCount parses the steps file and counts the checked steps. A
-// read failure counts as zero; the surrounding loop surfaces the failure
-// itself on the next runOnce.
-func (o *Orchestrator) completedStepCount() int {
+// parsedSteps reads and parses the steps file. A read failure yields no
+// steps; the surrounding loop surfaces the failure itself on the next runOnce.
+func (o *Orchestrator) parsedSteps() []Step {
 	content, err := o.files.Read(o.cfg.StepsFile)
 	if err != nil {
-		return 0
+		return nil
 	}
-	return CompletedStepCount(ParseSteps(content))
+	return ParseSteps(content)
 }
 
 // stalledOut updates the consecutive-no-progress counter by comparing the
 // completed-step count against its pre-iteration snapshot, and reports whether
-// the stall cap has been hit. Any newly checked step resets the counter.
+// the stall cap has been hit. Any newly checked step resets the counter; a
+// step the verifier unchecked again counts as no progress, since verification
+// runs before this check.
 func (o *Orchestrator) stalledOut(completedBefore int) bool {
 	if o.cfg.MaxStalledIterations <= 0 {
 		return false
 	}
-	if o.completedStepCount() > completedBefore {
+	if CompletedStepCount(o.parsedSteps()) > completedBefore {
 		o.stalled = 0
 		return false
 	}
@@ -200,14 +204,21 @@ func (o *Orchestrator) stalledOut(completedBefore int) bool {
 	return o.stalled >= o.cfg.MaxStalledIterations
 }
 
-// runOnce runs a single invocation, teeing its output to the terminal and a
-// per-iteration log. It reports whether the loop should stop.
+// runOnce runs a single work invocation aimed at the next unchecked step. It
+// reports whether the loop should stop.
 func (o *Orchestrator) runOnce(ctx context.Context) (models.Outcome, bool) {
 	prompt, err := o.iterationPrompt()
 	if err != nil {
 		fmt.Fprintf(o.terminal, "determined: could not read %s: %v\n", o.cfg.StepsFile, err)
 		return models.OutcomeDroidFailed, true
 	}
+	return o.invoke(ctx, prompt)
+}
+
+// invoke runs one tool invocation with the given prompt, teeing its output to
+// the terminal and a fresh per-iteration log. It reports whether the loop
+// should stop.
+func (o *Orchestrator) invoke(ctx context.Context, prompt string) (models.Outcome, bool) {
 	o.iteration++
 	log, err := o.logs.OpenIteration(o.iteration)
 	if err != nil {
@@ -222,6 +233,47 @@ func (o *Orchestrator) runOnce(ctx context.Context) (models.Outcome, bool) {
 	}
 	o.failures = 0
 	return models.OutcomeStopped, false // outcome ignored when stop is false
+}
+
+// verifyNewSteps runs an independent reviewer invocation over every step the
+// last iteration newly checked, comparing the steps file against its
+// pre-iteration snapshot. The verifier unchecks a step whose acceptance
+// criterion is not genuinely met (recording why in FIXES.md), so the loop
+// re-runs it. Ping-pong between worker and verifier is bounded because a
+// rejection leaves the completed count unchanged, which the stall counter
+// (checked right after this pass) treats as a no-progress iteration. A failed
+// verifier invocation counts toward the consecutive-failure cap like any
+// other; the step simply stays checked.
+func (o *Orchestrator) verifyNewSteps(ctx context.Context, before []Step) (models.Outcome, bool) {
+	if !o.cfg.Verify {
+		return models.OutcomeStopped, false
+	}
+	for i, step := range o.parsedSteps() {
+		if !step.Completed || (i < len(before) && before[i].Completed) {
+			continue
+		}
+		fmt.Fprintf(o.terminal, "determined: verifying step %d\n", i+1)
+		if outcome, stop := o.invoke(ctx, verifyPrompt(i+1, step)); stop {
+			return outcome, true
+		}
+	}
+	return models.OutcomeStopped, false // outcome ignored when stop is false
+}
+
+// verifyPrompt builds the reviewer instruction for one newly checked step:
+// confirm the acceptance criterion actually holds, and reopen the step with an
+// explanation in FIXES.md when it does not.
+func verifyPrompt(n int, step Step) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "Step %d claims complete: %s", n, sentence(step.Text))
+	if step.DoneWhen != "" {
+		b.WriteString(" Acceptance criterion: ")
+		b.WriteString(sentence(step.DoneWhen))
+	}
+	b.WriteString(" Verify by reading the code and running the stated check. " +
+		"If not genuinely done, change the step's `[x]` back to `[ ]` in STEPS.md " +
+		"and append what is wrong to FIXES.md; if done, do nothing.")
+	return b.String()
 }
 
 // noParsableStepsPrompt is used when STEPS.md contains no checkbox-format
