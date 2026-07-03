@@ -31,4 +31,8 @@ type Config struct {
 	// step, which unchecks the step (and records why in FIXES.md) when its
 	// acceptance criterion is not genuinely met.
 	Verify bool
+	// GitCheckpoint commits the working tree after each step survives
+	// verification, when the working directory is a git repository. Runs that
+	// go wrong can then be rewound step by step.
+	GitCheckpoint bool
 }

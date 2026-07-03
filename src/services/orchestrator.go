@@ -86,6 +86,7 @@ func (o *Orchestrator) Run(ctx context.Context) models.Outcome {
 		if outcome, stop := o.verifyNewSteps(ctx, before); stop {
 			return outcome
 		}
+		o.checkpointNewSteps(ctx, before)
 		if o.stalledOut(CompletedStepCount(before)) {
 			fmt.Fprintf(o.terminal,
 				"determined: no step checked in %d consecutive iterations; stopping\n",
@@ -274,6 +275,45 @@ func verifyPrompt(n int, step Step) string {
 		"If not genuinely done, change the step's `[x]` back to `[ ]` in STEPS.md " +
 		"and append what is wrong to FIXES.md; if done, do nothing.")
 	return b.String()
+}
+
+// checkpointNewSteps git-commits the working tree once per step that this
+// iteration newly checked and that survived verification (a step the verifier
+// rejected is unchecked again by now, so it is never committed). Runs after
+// the verify pass so each commit captures a reviewed state, giving a rewind
+// point per step. Skipped outside a git repository with a terminal note; a
+// failed git command is noted and ignored, since checkpoints are a convenience
+// and must not end the run.
+func (o *Orchestrator) checkpointNewSteps(ctx context.Context, before []Step) {
+	if !o.cfg.GitCheckpoint {
+		return
+	}
+	for i, step := range o.parsedSteps() {
+		if !step.Completed || (i < len(before) && before[i].Completed) {
+			continue
+		}
+		if !o.files.Exists(".git") {
+			fmt.Fprintln(o.terminal,
+				"determined: not a git repository; skipping git checkpoint")
+			return
+		}
+		o.gitCommit(ctx, i+1, step)
+	}
+}
+
+// gitCommit stages everything and commits it as the checkpoint for one step.
+func (o *Orchestrator) gitCommit(ctx context.Context, n int, step Step) {
+	message := fmt.Sprintf("determined: step %d: %s", n, strings.TrimSpace(step.Text))
+	for _, inv := range []models.Invocation{
+		{Binary: "git", Args: []string{"add", "-A"}},
+		{Binary: "git", Args: []string{"commit", "-m", message}},
+	} {
+		if err := o.runner.Run(ctx, inv, o.terminal); err != nil {
+			fmt.Fprintf(o.terminal, "determined: git checkpoint for step %d failed: %v\n", n, err)
+			return
+		}
+	}
+	fmt.Fprintf(o.terminal, "determined: git checkpoint committed for step %d\n", n)
 }
 
 // noParsableStepsPrompt is used when STEPS.md contains no checkbox-format

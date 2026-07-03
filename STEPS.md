@@ -34,7 +34,7 @@ when its "Done when" condition is verified.
 - [x] 10. Carry knowledge between iterations via NOTES.md. Extend the injected execute prompt: "Read NOTES.md if it exists before starting. Before finishing, append to NOTES.md any decisions, conventions, or gotchas later steps need to know." Mention NOTES.md in EXECUTION.md.
   Done when: the injected prompt includes the NOTES.md instructions, covered by a prompt-construction test, and `go test ./...` passes.
 
-- [ ] 11. Git-checkpoint each verified step. After the verifier (step 9) approves a step, the orchestrator runs `git add -A && git commit -m "determined: step N: <step text>"` when the working directory is a git repository; skip silently (with a terminal note) when it is not. Add flag `--git-checkpoint` (default on) to disable.
+- [x] 11. Git-checkpoint each verified step. After the verifier (step 9) approves a step, the orchestrator runs `git add -A && git commit -m "determined: step N: <step text>"` when the working directory is a git repository; skip silently (with a terminal note) when it is not. Add flag `--git-checkpoint` (default on) to disable.
   Done when: a test with a fake runner asserts the commit invocation is issued after a verified step and skipped when disabled, and `go test ./...` passes.
 
 - [ ] 12. Make the `claude` tool viable unattended. Change `ClaudeTool.Invocation` in `src/models/tool.go` to run `claude -p "<prompt>" --permission-mode acceptEdits` so print-mode runs do not stall on permission prompts, and document the flag choice and its safety trade-off in README.md.

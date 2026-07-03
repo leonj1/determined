@@ -644,6 +644,151 @@ func TestVerificationDisabledRunsNoVerifier(t *testing.T) {
 	}
 }
 
+// gitInvocations returns the recorded invocations that ran the git binary.
+func (r *fakeRunner) gitInvocations() []models.Invocation {
+	var git []models.Invocation
+	for _, inv := range r.invocations {
+		if inv.Binary == "git" {
+			git = append(git, inv)
+		}
+	}
+	return git
+}
+
+func TestVerifiedStepIsGitCheckpointed(t *testing.T) {
+	cfg := config(0)
+	cfg.Verify = true
+	cfg.GitCheckpoint = true
+	fs := stepsFileStore()
+	fs.Write(".git", "")
+	runner := &fakeRunner{script: func(call int, _ io.Writer) error {
+		switch call {
+		case 1: // work: check step 1
+			fs.Write("STEPS.md", twoStepsFirstChecked)
+		case 2: // verifier approves step 1
+		// 3, 4: git add + git commit checkpoint step 1
+		case 5: // work: check step 2
+			fs.Write("STEPS.md", twoStepsAllChecked)
+		case 6: // verifier approves step 2
+			// 7, 8: git add + git commit checkpoint step 2
+		}
+		return nil
+	}}
+	o := services.NewOrchestrator(runner, fs, &fakeClock{now: time.Now()}, &fakeLogSink{}, io.Discard, cfg)
+
+	outcome := o.Run(context.Background())
+
+	if outcome != models.OutcomeStopped || outcome.ExitCode() != 0 {
+		t.Fatalf("expected a clean completion, got %v (exit %d)", outcome, outcome.ExitCode())
+	}
+	git := runner.gitInvocations()
+	if len(git) != 4 {
+		t.Fatalf("expected add+commit per verified step (4 git runs), got %d", len(git))
+	}
+	wantArgs := [][]string{
+		{"add", "-A"},
+		{"commit", "-m", "determined: step 1: 1. Add the widget."},
+		{"add", "-A"},
+		{"commit", "-m", "determined: step 2: 2. Document the widget."},
+	}
+	for i, want := range wantArgs {
+		if got := strings.Join(git[i].Args, " "); got != strings.Join(want, " ") {
+			t.Fatalf("git invocation %d: expected %q, got %q", i+1, strings.Join(want, " "), got)
+		}
+	}
+	if runner.invocations[2].Binary != "git" || runner.invocations[3].Binary != "git" {
+		t.Fatal("expected the checkpoint to run right after the verifier approves the step")
+	}
+}
+
+func TestGitCheckpointDisabledIssuesNoGitCommands(t *testing.T) {
+	cfg := config(0)
+	cfg.Verify = true
+	cfg.GitCheckpoint = false
+	fs := stepsFileStore()
+	fs.Write(".git", "")
+	runner := &fakeRunner{script: func(call int, _ io.Writer) error {
+		switch call {
+		case 1: // work: check step 1
+			fs.Write("STEPS.md", twoStepsFirstChecked)
+		case 3: // work: check step 2 (2 and 4 are verifier approvals)
+			fs.Write("STEPS.md", twoStepsAllChecked)
+		}
+		return nil
+	}}
+	o := services.NewOrchestrator(runner, fs, &fakeClock{now: time.Now()}, &fakeLogSink{}, io.Discard, cfg)
+
+	outcome := o.Run(context.Background())
+
+	if outcome != models.OutcomeStopped {
+		t.Fatalf("expected a clean completion, got %v", outcome)
+	}
+	if got := runner.gitInvocations(); len(got) != 0 {
+		t.Fatalf("expected no git invocations with --git-checkpoint off, got %d", len(got))
+	}
+	if runner.calls != 4 {
+		t.Fatalf("expected only work + verify per step (4 runs), got %d", runner.calls)
+	}
+}
+
+func TestGitCheckpointSkippedOutsideGitRepository(t *testing.T) {
+	cfg := config(0)
+	cfg.Verify = true
+	cfg.GitCheckpoint = true
+	fs := stepsFileStore() // no .git seeded
+	var terminal bytes.Buffer
+	runner := &fakeRunner{script: func(call int, _ io.Writer) error {
+		switch call {
+		case 1: // work: check step 1
+			fs.Write("STEPS.md", twoStepsFirstChecked)
+		case 3: // work: check step 2 (2 and 4 are verifier approvals)
+			fs.Write("STEPS.md", twoStepsAllChecked)
+		}
+		return nil
+	}}
+	o := services.NewOrchestrator(runner, fs, &fakeClock{now: time.Now()}, &fakeLogSink{}, &terminal, cfg)
+
+	outcome := o.Run(context.Background())
+
+	if outcome != models.OutcomeStopped {
+		t.Fatalf("expected the run to complete without a repository, got %v", outcome)
+	}
+	if got := runner.gitInvocations(); len(got) != 0 {
+		t.Fatalf("expected no git invocations outside a git repository, got %d", len(got))
+	}
+	if !strings.Contains(terminal.String(), "not a git repository; skipping git checkpoint") {
+		t.Fatalf("expected a terminal note about the skipped checkpoint, got:\n%s", terminal.String())
+	}
+}
+
+func TestRejectedStepIsNotCheckpointed(t *testing.T) {
+	cfg := config(0)
+	cfg.Verify = true
+	cfg.GitCheckpoint = true
+	cfg.MaxStalledIterations = 1
+	fs := stepsFileStore()
+	fs.Write(".git", "")
+	runner := &fakeRunner{script: func(call int, _ io.Writer) error {
+		switch call {
+		case 1: // work: check step 1
+			fs.Write("STEPS.md", twoStepsFirstChecked)
+		case 2: // verifier rejects it
+			fs.Write("STEPS.md", twoStepsNoneChecked)
+		}
+		return nil
+	}}
+	o := services.NewOrchestrator(runner, fs, &fakeClock{now: time.Now()}, &fakeLogSink{}, io.Discard, cfg)
+
+	outcome := o.Run(context.Background())
+
+	if outcome != models.OutcomeStalled {
+		t.Fatalf("expected the rejected round to end as a stall, got %v", outcome)
+	}
+	if got := runner.gitInvocations(); len(got) != 0 {
+		t.Fatalf("expected no checkpoint for a step the verifier rejected, got %d git invocations", len(got))
+	}
+}
+
 func TestRunAbortsWhenStepsFileVanishesMidRun(t *testing.T) {
 	fs := stepsFileStore()
 	runner := &fakeRunner{script: func(int, io.Writer) error {

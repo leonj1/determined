@@ -73,6 +73,8 @@ func main() {
 		"kill a single tool invocation after this long, counting it as a failed invocation; 0 means unlimited")
 	verify := flag.Bool("verify", true,
 		"after each newly checked step, run an independent verifier invocation that unchecks it (recording why in FIXES.md) if its acceptance criterion is not met")
+	gitCheckpoint := flag.Bool("git-checkpoint", true,
+		"git-commit the working tree after each verified step when running in a git repository")
 	showVersion := flag.Bool("version", false, "print the version and exit")
 	flag.Parse()
 
@@ -97,7 +99,7 @@ func main() {
 	if *plan != "" {
 		outcome = runPlan(ctx, selected, *plan, *budget, *maxStepPasses, clock, logs)
 	} else {
-		outcome = runLoop(ctx, selected, *budget, *maxStalled, *maxFailures, *maxIterationDuration, *verify, clock, logs)
+		outcome = runLoop(ctx, selected, *budget, *maxStalled, *maxFailures, *maxIterationDuration, *verify, *gitCheckpoint, clock, logs)
 	}
 
 	fmt.Fprintf(os.Stderr, "\ndetermined: %s\n", outcome)
@@ -105,7 +107,7 @@ func main() {
 }
 
 // runLoop runs the unattended execute loop against PLAN.md / STEPS.md.
-func runLoop(ctx context.Context, tool models.Tool, budget time.Duration, maxStalled, maxFailures int, maxIterationDuration time.Duration, verify bool, clock services.Clock, logs services.LogSink) models.Outcome {
+func runLoop(ctx context.Context, tool models.Tool, budget time.Duration, maxStalled, maxFailures int, maxIterationDuration time.Duration, verify, gitCheckpoint bool, clock services.Clock, logs services.LogSink) models.Outcome {
 	cfg := models.Config{
 		StopFile:               "STOP.md",
 		PlanFile:               "PLAN.md",
@@ -116,6 +118,7 @@ func runLoop(ctx context.Context, tool models.Tool, budget time.Duration, maxSta
 		MaxConsecutiveFailures: maxFailures,
 		MaxIterationDuration:   maxIterationDuration,
 		Verify:                 verify,
+		GitCheckpoint:          gitCheckpoint,
 	}
 	orchestrator := services.NewOrchestrator(
 		clients.NewExecCommandRunner(),
