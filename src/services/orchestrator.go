@@ -215,7 +215,9 @@ func (o *Orchestrator) runOnce(ctx context.Context) (models.Outcome, bool) {
 	}
 	defer log.Close()
 	out := io.MultiWriter(o.terminal, log)
-	if err := o.runner.Run(ctx, o.cfg.Tool.Invocation(prompt), out); err != nil {
+	runCtx, cancel := o.iterationContext(ctx)
+	defer cancel()
+	if err := o.runner.Run(runCtx, o.cfg.Tool.Invocation(prompt), out); err != nil {
 		return o.recordFailure(ctx, err)
 	}
 	o.failures = 0
@@ -269,6 +271,17 @@ func sentence(s string) string {
 		s += "."
 	}
 	return s
+}
+
+// iterationContext bounds a single invocation by cfg.MaxIterationDuration so
+// a hung tool cannot hang the loop forever. recordFailure inspects the parent
+// ctx, not this one, so a timeout surfaces as an ordinary retryable failure
+// rather than an interruption.
+func (o *Orchestrator) iterationContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	if o.cfg.MaxIterationDuration <= 0 {
+		return ctx, func() {}
+	}
+	return context.WithTimeout(ctx, o.cfg.MaxIterationDuration)
 }
 
 // recordFailure decides what a failed invocation means for the run. An

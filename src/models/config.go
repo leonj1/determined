@@ -23,4 +23,8 @@ type Config struct {
 	// many consecutive failed tool invocations; any success resets the count.
 	// Values <= 1 abort on the first failure (no retries).
 	MaxConsecutiveFailures int
+	// MaxIterationDuration bounds a single tool invocation; one that runs
+	// longer is killed and counts as a failed invocation toward
+	// MaxConsecutiveFailures. 0 means unlimited.
+	MaxIterationDuration time.Duration
 }

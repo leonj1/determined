@@ -59,6 +59,16 @@ func (r *fakeRunner) prompt(call int) string {
 	return r.invocations[call-1].Args[1]
 }
 
+// hangingRunner simulates a hung tool: it never returns until the invocation
+// context expires, like a real child killed by exec.CommandContext.
+type hangingRunner struct{ calls int }
+
+func (r *hangingRunner) Run(ctx context.Context, _ models.Invocation, _ io.Writer) error {
+	r.calls++
+	<-ctx.Done()
+	return ctx.Err()
+}
+
 func config(budget time.Duration) models.Config {
 	return models.Config{
 		StopFile:  "STOP.md",
@@ -253,6 +263,27 @@ func TestSuccessfulInvocationResetsTheFailureCounter(t *testing.T) {
 	}
 	if runner.calls != 4 {
 		t.Fatalf("expected the success to reset the counter (fail + success + 2 fails = 4 runs), got %d", runner.calls)
+	}
+}
+
+func TestHungInvocationTimesOutAndCountsAsFailure(t *testing.T) {
+	cfg := config(0)
+	cfg.MaxConsecutiveFailures = 2
+	cfg.MaxIterationDuration = 5 * time.Millisecond
+	var terminal bytes.Buffer
+	runner := &hangingRunner{}
+	o := services.NewOrchestrator(runner, stepsFileStore(), &fakeClock{now: time.Now()}, &fakeLogSink{}, &terminal, cfg)
+
+	outcome := o.Run(context.Background())
+
+	if outcome != models.OutcomeDroidFailed || outcome.ExitCode() != 1 {
+		t.Fatalf("expected timed-out invocations to exhaust the failure cap, got %v (exit %d)", outcome, outcome.ExitCode())
+	}
+	if runner.calls != 2 {
+		t.Fatalf("expected each timeout to be retried as a failure until the cap (2 runs), got %d", runner.calls)
+	}
+	if !strings.Contains(terminal.String(), "retrying") {
+		t.Fatalf("expected the first timeout to be reported as a retryable failure, got:\n%s", terminal.String())
 	}
 }
 
