@@ -10,7 +10,8 @@ type Invocation struct {
 
 // Config holds everything one orchestrator run needs.
 type Config struct {
-	StopFile   string
-	Invocation Invocation
-	Budget     time.Duration // wall-clock budget; 0 means unlimited
+	StopFile  string
+	StepsFile string
+	Tool      Tool          // builds each iteration's invocation from the injected prompt
+	Budget    time.Duration // wall-clock budget; 0 means unlimited
 }
