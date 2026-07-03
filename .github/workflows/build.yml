@@ -1,9 +1,9 @@
 name: build
 
-# Build the determined binary on every push to the default branch. Each build
+# Build the determined binaries on every push to the default branch. Each build
 # is stamped with a unique semantic version (MAJOR.MINOR from the VERSION file,
-# PATCH from the run number), compiled via `make build` (Dockerfile.build), and
-# published as both a workflow artifact and a tagged GitHub Release.
+# PATCH from the run number), cross-compiled via `make build` (Dockerfile.build),
+# and published as both workflow artifacts and tagged GitHub Release assets.
 on:
   push:
     branches: [master]
@@ -27,20 +27,46 @@ jobs:
           echo "version=${version}" >>"$GITHUB_OUTPUT"
           echo "Building determined ${version}"
 
-      - name: Build binary
-        run: make build VERSION=${{ steps.version.outputs.version }}
-
-      - name: Verify version stamp
+      - name: Build binaries
         run: |
-          got="$(./bin/determined --version)"
-          echo "$got"
-          test "$got" = "determined ${{ steps.version.outputs.version }}"
+          set -euo pipefail
+          make clean
+
+          targets=(
+            "linux arm64 determined-linux-arm64"
+            "linux amd64 determined-linux-amd64"
+            "darwin arm64 determined-darwin-arm64"
+          )
+
+          for target in "${targets[@]}"; do
+            read -r target_os target_arch artifact_name <<<"$target"
+            output_dir="bin/.${artifact_name}"
+            rm -rf "${output_dir}"
+            make build \
+              BIN_DIR="${output_dir}" \
+              VERSION=${{ steps.version.outputs.version }} \
+              TARGETOS="${target_os}" \
+              TARGETARCH="${target_arch}"
+            mv "${output_dir}/determined" "bin/${artifact_name}"
+            rm -rf "${output_dir}"
+          done
+
+      - name: Verify version stamps
+        run: |
+          set -euo pipefail
+
+          grep -aq "${{ steps.version.outputs.version }}" bin/determined-linux-arm64
+          grep -aq "${{ steps.version.outputs.version }}" bin/determined-linux-amd64
+          grep -aq "${{ steps.version.outputs.version }}" bin/determined-darwin-arm64
 
       - name: Upload artifact
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: determined-${{ steps.version.outputs.version }}
-          path: bin/determined
+          path: |
+            bin/determined-linux-arm64
+            bin/determined-linux-amd64
+            bin/determined-darwin-arm64
           if-no-files-found: error
 
       - name: Publish release
@@ -49,7 +75,9 @@ jobs:
         run: |
           tag="v${{ steps.version.outputs.version }}"
           gh release create "$tag" \
-            bin/determined \
+            bin/determined-linux-arm64 \
+            bin/determined-linux-amd64 \
+            bin/determined-darwin-arm64 \
             --title "$tag" \
             --target "$GITHUB_SHA" \
             --notes "Automated build of determined ${{ steps.version.outputs.version }} from ${GITHUB_SHA}."

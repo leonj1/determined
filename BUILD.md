@@ -19,9 +19,10 @@ semantic version, dropping the result at `bin/determined`:
 ```bash
 make build                 # uses the seed in ./VERSION (1.0.0)
 make build VERSION=1.2.3    # override the version
+make build TARGETOS=darwin TARGETARCH=arm64
 ```
 
 The semver seed lives in the `VERSION` file (major.minor). On every push to the
-default branch, the `build` GitHub Actions workflow stamps the binary with
-`MAJOR.MINOR.<run-number>`, uploads it as a workflow artifact, and publishes a
-tagged GitHub Release.
+default branch, the `build` GitHub Actions workflow stamps Linux ARM64, Linux
+AMD64, and macOS ARM64 binaries with `MAJOR.MINOR.<run-number>`, uploads them as
+a workflow artifact, and publishes them as tagged GitHub Release assets.

@@ -12,8 +12,10 @@ RUN go mod download
 # Build a static, stripped binary. VERSION is injected into main.version so the
 # binary can report its semantic version via `determined --version`.
 ARG VERSION=dev
+ARG TARGETOS
+ARG TARGETARCH
 COPY . .
-RUN CGO_ENABLED=0 go build -trimpath \
+RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} go build -trimpath \
 	-ldflags="-s -w -X main.version=${VERSION}" \
 	-o /out/determined ./cmd/determined
 

@@ -34,3 +34,13 @@ func (s FileLogSink) OpenIteration(iteration int) (io.WriteCloser, error) {
 	name := fmt.Sprintf("iter-%04d-%s.log", iteration, stamp)
 	return os.Create(filepath.Join(s.dir, name))
 }
+
+// OpenVerification creates a separate verifier log for the iteration.
+func (s FileLogSink) OpenVerification(iteration int) (io.WriteCloser, error) {
+	if err := os.MkdirAll(s.dir, 0o755); err != nil {
+		return nil, fmt.Errorf("create log dir: %w", err)
+	}
+	stamp := s.clock.Now().Format("20060102-150405")
+	name := fmt.Sprintf("iter-%04d-verify-%s.log", iteration, stamp)
+	return os.Create(filepath.Join(s.dir, name))
+}

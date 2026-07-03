@@ -9,10 +9,13 @@ clarifying questions first**, mediating a file-based interview:
 ./determined --plan "build a todo CLI" --tool claude
 ```
 
-Each round, in the current working directory:
+In the current working directory:
 
-1. Your goal is written to `GOAL.md`.
-2. The tool runs (in its non-interactive print mode) and either:
+1. Your goal is written to `GOAL.md`. If `GOAL.md` already exists,
+   `determined` asks whether to use it instead of replacing it.
+   If the `--plan` value is a file path, or `Read <path>`, that file's
+   contents are copied into `GOAL.md` for the new session.
+2. Each round, the tool runs (in its non-interactive print mode) and either:
    - writes clarifying questions to `QUESTIONS.md` (a markdown list), or
    - writes a finished `PLAN.md` **and** `STEPS.md`.
 

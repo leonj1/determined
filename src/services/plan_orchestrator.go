@@ -39,7 +39,8 @@ type PlanOrchestrator struct {
 	terminal io.Writer
 	cfg      models.PlanConfig
 
-	iteration int
+	iteration  int
+	goalSeeded bool
 }
 
 // NewPlanOrchestrator wires a PlanOrchestrator from its dependencies.
@@ -65,10 +66,6 @@ func NewPlanOrchestrator(
 
 // Run executes the planning loop and returns the terminal outcome.
 func (o *PlanOrchestrator) Run(ctx context.Context) models.Outcome {
-	if err := o.files.Write(o.cfg.GoalFile, o.cfg.Goal+"\n"); err != nil {
-		fmt.Fprintf(o.terminal, "determined: could not write %s: %v\n", o.cfg.GoalFile, err)
-		return models.OutcomeDroidFailed
-	}
 	deadline := o.deadline()
 	for {
 		switch {
@@ -78,6 +75,9 @@ func (o *PlanOrchestrator) Run(ctx context.Context) models.Outcome {
 			return o.refine(ctx, deadline)
 		case o.budgetExceeded(deadline):
 			return models.OutcomeBudgetExceeded
+		}
+		if outcome, stop := o.seedGoal(); stop {
+			return outcome
 		}
 
 		if outcome, stop := o.runInvocation(ctx, o.cfg.Invocation); stop {
@@ -95,6 +95,77 @@ func (o *PlanOrchestrator) Run(ctx context.Context) models.Outcome {
 		}
 		// The tool wrote neither questions nor a plan: it cannot make progress.
 		return models.OutcomePlanStalled
+	}
+}
+
+// seedGoal ensures the planning tool has a goal to read without silently
+// replacing a goal file the user may have prepared by hand.
+func (o *PlanOrchestrator) seedGoal() (models.Outcome, bool) {
+	if o.goalSeeded {
+		return models.OutcomePlanReady, false
+	}
+	if o.files.Exists(o.cfg.GoalFile) {
+		useExisting, err := o.useExistingGoal()
+		if err != nil {
+			fmt.Fprintf(o.terminal, "determined: could not read your answer: %v\n", err)
+			return models.OutcomeInterrupted, true
+		}
+		if useExisting {
+			o.goalSeeded = true
+			return models.OutcomePlanReady, false
+		}
+	}
+	goal, err := o.goalContent()
+	if err != nil {
+		fmt.Fprintf(o.terminal, "determined: %v\n", err)
+		return models.OutcomeDroidFailed, true
+	}
+	if err := o.files.Write(o.cfg.GoalFile, goal); err != nil {
+		fmt.Fprintf(o.terminal, "determined: could not write %s: %v\n", o.cfg.GoalFile, err)
+		return models.OutcomeDroidFailed, true
+	}
+	o.goalSeeded = true
+	return models.OutcomePlanReady, false
+}
+
+func (o *PlanOrchestrator) goalContent() (string, error) {
+	source := o.goalSourcePath()
+	if source == "" {
+		return o.cfg.Goal + "\n", nil
+	}
+	content, err := o.files.Read(source)
+	if err != nil {
+		return "", fmt.Errorf("could not read goal source %s: %w", source, err)
+	}
+	return content, nil
+}
+
+func (o *PlanOrchestrator) goalSourcePath() string {
+	goal := strings.TrimSpace(o.cfg.Goal)
+	words := strings.Fields(goal)
+	if len(words) == 1 && o.files.Exists(words[0]) {
+		return words[0]
+	}
+	if len(words) > 1 && strings.EqualFold(words[0], "read") {
+		return strings.TrimSpace(goal[len(words[0]):])
+	}
+	return ""
+}
+
+func (o *PlanOrchestrator) useExistingGoal() (bool, error) {
+	for {
+		answer, err := o.prompter.Ask(fmt.Sprintf("%s already exists. Use it for this plan? [y/N]", o.cfg.GoalFile))
+		if err != nil {
+			return false, err
+		}
+		switch strings.ToLower(strings.TrimSpace(answer)) {
+		case "y", "yes":
+			return true, nil
+		case "", "n", "no":
+			return false, nil
+		default:
+			fmt.Fprintln(o.terminal, "determined: answer yes or no")
+		}
 	}
 }
 
