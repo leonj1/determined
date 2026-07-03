@@ -27,11 +27,14 @@ type LogSink interface {
 }
 
 // Orchestrator runs the AI coding tool in a loop until every step in the
-// steps file is checked complete, too many invocations fail in a row, the time
-// budget is exhausted, progress stalls, or a signal interrupts it. Each iteration it re-reads the steps
-// file and aims the tool at exactly the next unchecked step. Completion is
-// decided by the parsed checkboxes, never by the tool: a STOP.md created
-// while unchecked steps remain is deleted and the loop continues.
+// steps file is checked complete and a final whole-plan audit approves, too
+// many invocations fail in a row, the time budget is exhausted, progress
+// stalls, or a signal interrupts it. Each iteration it re-reads the steps
+// file and aims the tool at exactly the next unchecked step; once every box
+// is checked, the next iteration is an audit of the whole plan instead. The
+// run ends successfully only when all steps are checked AND the audit has
+// created STOP.md: a STOP.md created while unchecked steps remain is deleted
+// and the loop continues.
 type Orchestrator struct {
 	runner   CommandRunner
 	files    FileStore
@@ -129,9 +132,11 @@ func (o *Orchestrator) preIteration(ctx context.Context, deadline time.Time) (mo
 }
 
 // checkCompletion decides whether the run is finished by parsing the steps
-// file. The checkboxes are the authority, not STOP.md: the sentinel is written
-// on completion only for compatibility, and one that appears while unchecked
-// steps remain is deleted so the loop keeps going.
+// file. Checked boxes alone are not success: the run ends cleanly only when
+// every step is checked AND the whole-plan audit has recorded its approval as
+// STOP.md. All boxes checked without STOP.md means the audit still has to run
+// (the next iteration is the audit), and a STOP.md that appears while
+// unchecked steps remain is deleted so the loop keeps going.
 func (o *Orchestrator) checkCompletion() (models.Outcome, bool) {
 	content, err := o.files.Read(o.cfg.StepsFile)
 	if err != nil {
@@ -140,8 +145,9 @@ func (o *Orchestrator) checkCompletion() (models.Outcome, bool) {
 	steps := ParseSteps(content)
 	switch {
 	case AllStepsComplete(steps):
-		o.writeStopSentinel()
-		return models.OutcomeStopped, true
+		if o.files.Exists(o.cfg.StopFile) {
+			return models.OutcomeStopped, true
+		}
 	case len(steps) > 0:
 		o.deletePrematureStop()
 	case o.files.Exists(o.cfg.StopFile):
@@ -150,17 +156,6 @@ func (o *Orchestrator) checkCompletion() (models.Outcome, bool) {
 		return models.OutcomeStopped, true
 	}
 	return models.OutcomeStopped, false
-}
-
-// writeStopSentinel records completion in STOP.md for compatibility with
-// anything watching for the sentinel. Best-effort: the run is already over.
-func (o *Orchestrator) writeStopSentinel() {
-	if o.files.Exists(o.cfg.StopFile) {
-		return
-	}
-	if err := o.files.Write(o.cfg.StopFile, "All steps in STEPS.md are checked complete.\n"); err != nil {
-		fmt.Fprintf(o.terminal, "determined: could not write %s: %v\n", o.cfg.StopFile, err)
-	}
 }
 
 // deletePrematureStop removes a STOP.md created while unchecked steps remain,
@@ -191,18 +186,28 @@ func (o *Orchestrator) parsedSteps() []Step {
 // stalledOut updates the consecutive-no-progress counter by comparing the
 // completed-step count against its pre-iteration snapshot, and reports whether
 // the stall cap has been hit. Any newly checked step resets the counter; a
-// step the verifier unchecked again counts as no progress, since verification
-// runs before this check.
+// step the verifier or audit unchecked again counts as no progress, since
+// both run before this check, so worker/reviewer ping-pong is bounded. A
+// completed run (all boxes checked and the audit's STOP.md present) is never
+// a stall: the approving audit checks no new step, and the next
+// checkCompletion ends the run.
 func (o *Orchestrator) stalledOut(completedBefore int) bool {
 	if o.cfg.MaxStalledIterations <= 0 {
 		return false
 	}
-	if CompletedStepCount(o.parsedSteps()) > completedBefore {
+	steps := o.parsedSteps()
+	if CompletedStepCount(steps) > completedBefore || o.runComplete(steps) {
 		o.stalled = 0
 		return false
 	}
 	o.stalled++
 	return o.stalled >= o.cfg.MaxStalledIterations
+}
+
+// runComplete reports whether the run's success condition holds: every step
+// checked and the whole-plan audit's STOP.md approval present.
+func (o *Orchestrator) runComplete(steps []Step) bool {
+	return AllStepsComplete(steps) && o.files.Exists(o.cfg.StopFile)
 }
 
 // runOnce runs a single work invocation aimed at the next unchecked step. It
@@ -325,16 +330,32 @@ const noParsableStepsPrompt = "Read STEPS.md. It contains no checkbox-format ste
 	"a `Done when:` line stating a checkable acceptance condition. " +
 	"If the work is genuinely finished, create STOP.md. Do not start new work."
 
-// iterationPrompt reads the steps file and builds this iteration's instruction,
-// aiming the tool at exactly the next unchecked step. When the run reaches
-// here, at least one step is unchecked (checkCompletion ends the run first
-// otherwise), so a missing next step means the file had no parseable steps.
+// auditPrompt is the final whole-plan review run once every step is checked.
+// The audit either confirms the implementation satisfies the plan by creating
+// STOP.md — the only thing that lets an all-checked run end successfully — or
+// reopens the steps that fall short, sending the loop back to step execution.
+const auditPrompt = "All steps in STEPS.md are checked complete. Read PLAN.md and STEPS.md. " +
+	"Audit whether the implementation genuinely satisfies the plan. " +
+	"If a step is not actually satisfied, change its `[x]` back to `[ ]` in STEPS.md " +
+	"and append the reason to FIXES.md. If everything is satisfied, create STOP.md. " +
+	"Do not start work beyond this audit."
+
+// iterationPrompt reads the steps file and builds this iteration's instruction:
+// the whole-plan audit when every box is checked (checkCompletion only ends
+// the run once the audit's STOP.md exists), otherwise the next unchecked
+// step. A missing next step then means the file had no parseable steps.
 func (o *Orchestrator) iterationPrompt() (string, error) {
 	content, err := o.files.Read(o.cfg.StepsFile)
 	if err != nil {
 		return "", err
 	}
-	step, ok := NextIncompleteStep(ParseSteps(content))
+	steps := ParseSteps(content)
+	if AllStepsComplete(steps) {
+		fmt.Fprintln(o.terminal,
+			"determined: all steps checked; auditing the whole plan before declaring success")
+		return auditPrompt, nil
+	}
+	step, ok := NextIncompleteStep(steps)
 	if !ok {
 		return noParsableStepsPrompt, nil
 	}
