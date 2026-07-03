@@ -46,9 +46,15 @@ command form with the hardcoded prompt:
 
 | `--tool`           | Command run each iteration            |
 |--------------------|---------------------------------------|
-| `droid` (default)  | `droid exec "<prompt>" --auto <level>` |
+| `droid` (default)  | `droid exec "<prompt>" --auto high` |
 | `pi`               | `pi -p "<prompt>"`                     |
 | `claude`           | `claude -p "<prompt>" --permission-mode acceptEdits` |
+
+### Why `droid` runs with `--auto high`
+
+`droid exec` needs an autonomy level to run unattended — without one it stops
+on a permission prompt and the loop aborts on iteration 1. `determined` always
+passes `--auto high`; the level is not user-configurable.
 
 ### Why `claude` runs with `--permission-mode acceptEdits`
 
@@ -89,7 +95,6 @@ codes.
 | `--max-duration` | `1h`     | Wall-clock budget, checked between iterations. `0` = unlimited. |
 | `--log-dir`      | `logs`   | Directory for per-iteration log files.                          |
 | `--version`      | —        | Print the binary's semantic version and exit.                  |
-| `--auto`         | `medium` | `droid` autonomy level (`low`/`medium`/`high`), **droid only**. Required for unattended runs — without it `droid exec` stops on a permission prompt and the loop aborts on iteration 1. Ignored by `pi`/`claude`. |
 
 The prompt and the `STOP.md` / `PLAN.md` / `STEPS.md` filenames are hardcoded,
 matching the original bash script.
