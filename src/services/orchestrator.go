@@ -306,6 +306,11 @@ func (o *Orchestrator) checkpointNewSteps(ctx context.Context, before []Step) {
 	}
 }
 
+// gitCheckpointTimeout bounds each git checkpoint command so a hung git
+// operation cannot block the run: checkpoints are a convenience and must never
+// stall the loop indefinitely.
+const gitCheckpointTimeout = 2 * time.Minute
+
 // gitCommit stages everything and commits it as the checkpoint for one step.
 func (o *Orchestrator) gitCommit(ctx context.Context, n int, step Step) {
 	message := fmt.Sprintf("determined: step %d: %s", n, strings.TrimSpace(step.Text))
@@ -313,7 +318,10 @@ func (o *Orchestrator) gitCommit(ctx context.Context, n int, step Step) {
 		{Binary: "git", Args: []string{"add", "-A"}},
 		{Binary: "git", Args: []string{"commit", "-m", message}},
 	} {
-		if err := o.runner.Run(ctx, inv, o.terminal); err != nil {
+		runCtx, cancel := context.WithTimeout(ctx, gitCheckpointTimeout)
+		err := o.runner.Run(runCtx, inv, o.terminal)
+		cancel()
+		if err != nil {
 			fmt.Fprintf(o.terminal, "determined: git checkpoint for step %d failed: %v\n", n, err)
 			return
 		}
