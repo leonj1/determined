@@ -19,4 +19,8 @@ type Config struct {
 	// consecutive iterations complete without a newly checked step; 0 disables
 	// stall detection.
 	MaxStalledIterations int
+	// MaxConsecutiveFailures ends the run with OutcomeDroidFailed after this
+	// many consecutive failed tool invocations; any success resets the count.
+	// Values <= 1 abort on the first failure (no retries).
+	MaxConsecutiveFailures int
 }

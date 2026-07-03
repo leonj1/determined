@@ -22,7 +22,7 @@ when its "Done when" condition is verified.
 - [x] 6. Add stall detection. Before each iteration, snapshot the parsed completed-step count; if a configurable number of consecutive iterations (default 3, flag `--max-stalled-iterations`) complete without a newly checked step, end the run with a new `OutcomeStalled` outcome and distinct exit code. Update EXECUTION.md's exit-code table.
   Done when: a test drives N no-progress iterations and observes `OutcomeStalled`, and `go test ./...` passes.
 
-- [ ] 7. Retry failed invocations instead of aborting. On a non-zero tool exit, retry the same iteration up to a cap of consecutive failures (default 3, flag `--max-consecutive-failures`), resetting the counter after any success. Only after the cap is hit does the run end with `OutcomeDroidFailed`. Interruptions (`ctx.Err()`) still stop immediately.
+- [x] 7. Retry failed invocations instead of aborting. On a non-zero tool exit, retry the same iteration up to a cap of consecutive failures (default 3, flag `--max-consecutive-failures`), resetting the counter after any success. Only after the cap is hit does the run end with `OutcomeDroidFailed`. Interruptions (`ctx.Err()`) still stop immediately.
   Done when: tests cover retry-then-succeed and cap-exhausted-then-abort, and `go test ./...` passes.
 
 - [ ] 8. Add a per-invocation timeout. New flag `--max-iteration-duration` (default 15m, 0 = unlimited) wraps each `runner.Run` in `context.WithTimeout` so a hung tool invocation cannot hang the loop forever. A timed-out invocation counts as a failed invocation for step 7's retry logic, not an interruption.

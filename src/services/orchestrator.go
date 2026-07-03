@@ -27,8 +27,8 @@ type LogSink interface {
 }
 
 // Orchestrator runs the AI coding tool in a loop until every step in the
-// steps file is checked complete, an invocation fails, the time budget is
-// exhausted, progress stalls, or a signal interrupts it. Each iteration it re-reads the steps
+// steps file is checked complete, too many invocations fail in a row, the time
+// budget is exhausted, progress stalls, or a signal interrupts it. Each iteration it re-reads the steps
 // file and aims the tool at exactly the next unchecked step. Completion is
 // decided by the parsed checkboxes, never by the tool: a STOP.md created
 // while unchecked steps remain is deleted and the loop continues.
@@ -44,6 +44,10 @@ type Orchestrator struct {
 	// stalled counts consecutive iterations that checked no new step; hitting
 	// cfg.MaxStalledIterations ends the run with OutcomeStalled.
 	stalled int
+	// failures counts consecutive failed tool invocations; hitting
+	// cfg.MaxConsecutiveFailures ends the run with OutcomeDroidFailed. Any
+	// successful invocation resets it.
+	failures int
 }
 
 // NewOrchestrator wires an orchestrator from its dependencies.
@@ -212,8 +216,9 @@ func (o *Orchestrator) runOnce(ctx context.Context) (models.Outcome, bool) {
 	defer log.Close()
 	out := io.MultiWriter(o.terminal, log)
 	if err := o.runner.Run(ctx, o.cfg.Tool.Invocation(prompt), out); err != nil {
-		return o.classifyFailure(ctx), true
+		return o.recordFailure(ctx, err)
 	}
+	o.failures = 0
 	return models.OutcomeStopped, false // outcome ignored when stop is false
 }
 
@@ -266,13 +271,26 @@ func sentence(s string) string {
 	return s
 }
 
-// classifyFailure distinguishes a genuine tool failure from an interruption,
-// since a cancelled context kills the child and surfaces as an error too.
-func (o *Orchestrator) classifyFailure(ctx context.Context) models.Outcome {
+// recordFailure decides what a failed invocation means for the run. An
+// interruption stops immediately, since a cancelled context kills the child
+// and surfaces as an error too. A genuine tool failure (rate limit, crash) is
+// often transient, so the same iteration is retried until
+// cfg.MaxConsecutiveFailures failures occur with no success in between.
+func (o *Orchestrator) recordFailure(ctx context.Context, err error) (models.Outcome, bool) {
 	if ctx.Err() != nil {
-		return models.OutcomeInterrupted
+		return models.OutcomeInterrupted, true
 	}
-	return models.OutcomeDroidFailed
+	o.failures++
+	if o.failures >= o.cfg.MaxConsecutiveFailures {
+		fmt.Fprintf(o.terminal,
+			"determined: tool invocation failed %d consecutive times; stopping: %v\n",
+			o.failures, err)
+		return models.OutcomeDroidFailed, true
+	}
+	fmt.Fprintf(o.terminal,
+		"determined: tool invocation failed (%d of %d consecutive before aborting): %v; retrying\n",
+		o.failures, o.cfg.MaxConsecutiveFailures, err)
+	return models.OutcomeStopped, false // outcome ignored when stop is false
 }
 
 // deadline returns the wall-clock instant the run must stop by, or the zero

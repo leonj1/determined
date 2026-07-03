@@ -175,6 +175,87 @@ func TestRunAbortsWhenToolFails(t *testing.T) {
 	}
 }
 
+func TestFailedInvocationsAreRetriedUntilSuccess(t *testing.T) {
+	cfg := config(0)
+	cfg.MaxConsecutiveFailures = 3
+	fs := stepsFileStore()
+	var terminal bytes.Buffer
+	runner := &fakeRunner{script: func(call int, _ io.Writer) error {
+		switch call {
+		case 1, 2:
+			return errors.New("droid: rate limited")
+		case 3:
+			fs.Write("STEPS.md", twoStepsFirstChecked)
+		case 4:
+			fs.Write("STEPS.md", twoStepsAllChecked)
+		}
+		return nil
+	}}
+	o := services.NewOrchestrator(runner, fs, &fakeClock{now: time.Now()}, &fakeLogSink{}, &terminal, cfg)
+
+	outcome := o.Run(context.Background())
+
+	if outcome != models.OutcomeStopped || outcome.ExitCode() != 0 {
+		t.Fatalf("expected retries to carry the run to completion, got %v (exit %d)", outcome, outcome.ExitCode())
+	}
+	if runner.calls != 4 {
+		t.Fatalf("expected 2 failed attempts, a retry that succeeds, then the final step (4 runs), got %d", runner.calls)
+	}
+	for call := 1; call <= 3; call++ {
+		if !strings.Contains(runner.prompt(call), "1. Add the widget.") {
+			t.Fatalf("expected attempt %d to retry the same step, got:\n%s", call, runner.prompt(call))
+		}
+	}
+	if got := strings.Count(terminal.String(), "retrying"); got != 2 {
+		t.Fatalf("expected a retry notice per failure (2), got %d in:\n%s", got, terminal.String())
+	}
+}
+
+func TestRunAbortsAfterConsecutiveFailureCapExhausted(t *testing.T) {
+	cfg := config(0)
+	cfg.MaxConsecutiveFailures = 3
+	var terminal bytes.Buffer
+	runner := &fakeRunner{script: func(int, io.Writer) error {
+		return errors.New("droid: rate limited")
+	}}
+	o := services.NewOrchestrator(runner, stepsFileStore(), &fakeClock{now: time.Now()}, &fakeLogSink{}, &terminal, cfg)
+
+	outcome := o.Run(context.Background())
+
+	if outcome != models.OutcomeDroidFailed || outcome.ExitCode() != 1 {
+		t.Fatalf("expected an abort with exit 1 once the cap is exhausted, got %v (exit %d)", outcome, outcome.ExitCode())
+	}
+	if runner.calls != 3 {
+		t.Fatalf("expected exactly the cap of 3 consecutive attempts, got %d", runner.calls)
+	}
+	if !strings.Contains(terminal.String(), "failed 3 consecutive times") {
+		t.Fatalf("expected a terminal message explaining the abort, got:\n%s", terminal.String())
+	}
+}
+
+func TestSuccessfulInvocationResetsTheFailureCounter(t *testing.T) {
+	cfg := config(0)
+	cfg.MaxConsecutiveFailures = 2
+	fs := stepsFileStore()
+	runner := &fakeRunner{script: func(call int, _ io.Writer) error {
+		if call == 2 { // one failure, a success, then two more failures
+			fs.Write("STEPS.md", twoStepsFirstChecked)
+			return nil
+		}
+		return errors.New("droid: rate limited")
+	}}
+	o := services.NewOrchestrator(runner, fs, &fakeClock{now: time.Now()}, &fakeLogSink{}, io.Discard, cfg)
+
+	outcome := o.Run(context.Background())
+
+	if outcome != models.OutcomeDroidFailed {
+		t.Fatalf("expected the second failure streak to exhaust the cap, got %v", outcome)
+	}
+	if runner.calls != 4 {
+		t.Fatalf("expected the success to reset the counter (fail + success + 2 fails = 4 runs), got %d", runner.calls)
+	}
+}
+
 func TestRunStopsWhenTimeBudgetExhausted(t *testing.T) {
 	clock := &fakeClock{now: time.Now()}
 	runner := &fakeRunner{script: func(int, io.Writer) error {
@@ -272,6 +353,8 @@ func TestRunEndsImmediatelyWhenAllStepsAlreadyChecked(t *testing.T) {
 }
 
 func TestRunStopsWhenInterrupted(t *testing.T) {
+	cfg := config(0)
+	cfg.MaxConsecutiveFailures = 3 // an interruption must stop the run, never be retried
 	ctx, cancel := context.WithCancel(context.Background())
 	runner := &fakeRunner{script: func(call int, _ io.Writer) error {
 		if call == 2 {
@@ -280,12 +363,15 @@ func TestRunStopsWhenInterrupted(t *testing.T) {
 		}
 		return nil
 	}}
-	o := services.NewOrchestrator(runner, stepsFileStore(), &fakeClock{now: time.Now()}, &fakeLogSink{}, io.Discard, config(0))
+	o := services.NewOrchestrator(runner, stepsFileStore(), &fakeClock{now: time.Now()}, &fakeLogSink{}, io.Discard, cfg)
 
 	outcome := o.Run(ctx)
 
 	if outcome != models.OutcomeInterrupted || outcome.ExitCode() != 1 {
 		t.Fatalf("expected an interrupted stop with exit 1, got %v (exit %d)", outcome, outcome.ExitCode())
+	}
+	if runner.calls != 2 {
+		t.Fatalf("expected no retry after an interruption, got %d runs", runner.calls)
 	}
 }
 
