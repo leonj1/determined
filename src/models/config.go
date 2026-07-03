@@ -10,10 +10,29 @@ type Invocation struct {
 
 // Config holds everything one orchestrator run needs.
 type Config struct {
-	StopFile                 string
-	StepsFile                string
-	VerificationFeedbackFile string
-	Invocation               Invocation
-	Budget                   time.Duration // wall-clock budget; 0 means unlimited
-	MaxVerificationRetries   int
+	StopFile  string
+	PlanFile  string // must exist at startup; execute mode refuses to run without a plan
+	StepsFile string
+	Tool      Tool          // builds each iteration's invocation from the injected prompt
+	Budget    time.Duration // wall-clock budget; 0 means unlimited
+	// MaxStalledIterations ends the run with OutcomeStalled after this many
+	// consecutive iterations complete without a newly checked step; 0 disables
+	// stall detection.
+	MaxStalledIterations int
+	// MaxConsecutiveFailures ends the run with OutcomeDroidFailed after this
+	// many consecutive failed tool invocations; any success resets the count.
+	// Values <= 1 abort on the first failure (no retries).
+	MaxConsecutiveFailures int
+	// MaxIterationDuration bounds a single tool invocation; one that runs
+	// longer is killed and counts as a failed invocation toward
+	// MaxConsecutiveFailures. 0 means unlimited.
+	MaxIterationDuration time.Duration
+	// Verify runs an independent reviewer invocation after each newly checked
+	// step, which unchecks the step (and records why in FIXES.md) when its
+	// acceptance criterion is not genuinely met.
+	Verify bool
+	// GitCheckpoint commits the working tree after each step survives
+	// verification, when the working directory is a git repository. Runs that
+	// go wrong can then be rewound step by step.
+	GitCheckpoint bool
 }

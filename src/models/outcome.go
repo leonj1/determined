@@ -17,21 +17,27 @@ const (
 	// OutcomePlanStalled means a plan iteration produced neither clarifying
 	// questions nor a finished plan, so the loop could not make progress.
 	OutcomePlanStalled
-	// OutcomeCommitFailed means a task was marked complete, but committing the
-	// resulting repository changes failed.
-	OutcomeCommitFailed
-	// OutcomeVerificationFailed means completed-task changes could not be
-	// approved after the allowed repair attempts.
-	OutcomeVerificationFailed
+	// OutcomeMissingFiles means execute mode started without the protocol
+	// files a run needs (PLAN.md / STEPS.md), so no tool was ever invoked.
+	OutcomeMissingFiles
+	// OutcomeStalled means too many consecutive iterations completed without
+	// a newly checked step, so the run ended instead of looping forever.
+	OutcomeStalled
 )
 
 // ExitCode maps an outcome to a process exit code: 0 only when the work
-// completed cleanly (stop file created, or a plan was produced), 1 otherwise.
+// completed cleanly (stop file created, or a plan was produced), 3 when the
+// run stalled without progress, 1 for every other termination. Stalling gets
+// its own code so callers can tell "stuck" apart from "failed".
 func (o Outcome) ExitCode() int {
-	if o == OutcomeStopped || o == OutcomePlanReady {
+	switch o {
+	case OutcomeStopped, OutcomePlanReady:
 		return 0
+	case OutcomeStalled:
+		return 3
+	default:
+		return 1
 	}
-	return 1
 }
 
 func (o Outcome) String() string {
@@ -48,10 +54,10 @@ func (o Outcome) String() string {
 		return "plan ready (PLAN.md and STEPS.md created)"
 	case OutcomePlanStalled:
 		return "aborted (tool produced neither questions nor a plan)"
-	case OutcomeCommitFailed:
-		return "aborted (failed to commit completed task changes)"
-	case OutcomeVerificationFailed:
-		return "aborted (verification did not approve completed task changes)"
+	case OutcomeMissingFiles:
+		return "aborted (required protocol file missing)"
+	case OutcomeStalled:
+		return "stalled (consecutive iterations checked no new step)"
 	default:
 		return "unknown"
 	}

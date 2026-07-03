@@ -14,15 +14,6 @@ import (
 	"determined/src/services"
 )
 
-// prompt is the hardcoded instruction handed to the AI coding tool each
-// iteration of the execute loop, ported verbatim from the original bash loop.
-const prompt = "Read PLAN.md and STEPS.md. Find the first step that has needs to be completed. " +
-	"If VERIFICATION.md exists, read it first; it explains why the previous attempt was insufficient. " +
-	"Implement that step. Mark the step completed when you are done. Only work on one step. " +
-	"When there are no more steps then create STOP.md"
-
-const commitMessage = "CHORE: save completed task changes"
-
 // planPrompt is the instruction handed to the tool each round of the attended
 // planning loop. It drives the QUESTIONS.md / ANSWERS.md protocol the
 // PlanOrchestrator mediates.
@@ -34,7 +25,10 @@ const planPrompt = "You are helping plan a software project before any code is w
 	"nothing else. " +
 	"If you DO have enough detail, write a detailed PLAN.md (overview, goals, constraints, " +
 	"architecture) and a STEPS.md containing an ordered list of discrete, individually " +
-	"completable steps, each marked incomplete, and do not write QUESTIONS.md. " +
+	"completable steps, and do not write QUESTIONS.md. " +
+	"STEPS.md MUST be a markdown checkbox list: each step is a single `- [ ]` item, marked " +
+	"incomplete. Every step MUST end with a line beginning `Done when:` stating a concrete, " +
+	"checkable acceptance condition — a command to run or a behavior to observe. " +
 	"Do not implement anything. Do not create STOP.md."
 
 // assessPrompt asks the tool to judge whether each step in STEPS.md is small
@@ -53,7 +47,10 @@ const breakdownPrompt = "Read STEPS.md and OVERSIZED.md. OVERSIZED.md lists step
 	"implement in one pass. Rewrite STEPS.md so each oversized step is broken into smaller, ordered, " +
 	"individually-implementable sub-steps; leave the already-small steps unchanged and preserve the " +
 	"overall order. Every step must be something an AI coding tool can implement correctly in a single " +
-	"focused pass. Do not implement anything. Do not create STOP.md."
+	"focused pass. Keep STEPS.md a markdown checkbox list: each step is a single `- [ ]` item, marked " +
+	"incomplete, and every step MUST end with a line beginning `Done when:` stating a concrete, " +
+	"checkable acceptance condition — a command to run or a behavior to observe. " +
+	"Do not implement anything. Do not create STOP.md."
 
 // version is the semantic version of the binary. It defaults to "dev" for local
 // builds and is overridden at link time via -ldflags="-X main.version=<semver>"
@@ -68,8 +65,16 @@ func main() {
 	plan := flag.String("plan", "", "describe a goal to plan interactively, producing PLAN.md and STEPS.md")
 	maxStepPasses := flag.Int("max-step-passes", 5,
 		"max assess/breakdown rounds to shrink oversized steps during planning; 0 disables")
-	maxVerificationRetries := flag.Int("max-verification-retries", 3,
-		"max verifier repair attempts per step during execution")
+	maxStalled := flag.Int("max-stalled-iterations", 3,
+		"stop with exit 3 after this many consecutive iterations check no new step; 0 disables")
+	maxFailures := flag.Int("max-consecutive-failures", 3,
+		"abort with exit 1 after this many consecutive failed tool invocations; a success resets the count")
+	maxIterationDuration := flag.Duration("max-iteration-duration", 15*time.Minute,
+		"kill a single tool invocation after this long, counting it as a failed invocation; 0 means unlimited")
+	verify := flag.Bool("verify", true,
+		"after each newly checked step, run an independent verifier invocation that unchecks it (recording why in FIXES.md) if its acceptance criterion is not met")
+	gitCheckpoint := flag.Bool("git-checkpoint", true,
+		"git-commit the working tree after each verified step when running in a git repository")
 	showVersion := flag.Bool("version", false, "print the version and exit")
 	flag.Parse()
 
@@ -94,7 +99,7 @@ func main() {
 	if *plan != "" {
 		outcome = runPlan(ctx, selected, *plan, *budget, *maxStepPasses, clock, logs)
 	} else {
-		outcome = runLoop(ctx, selected, *budget, *maxVerificationRetries, clock, logs)
+		outcome = runLoop(ctx, selected, *budget, *maxStalled, *maxFailures, *maxIterationDuration, *verify, *gitCheckpoint, clock, logs)
 	}
 
 	fmt.Fprintf(os.Stderr, "\ndetermined: %s\n", outcome)
@@ -102,28 +107,21 @@ func main() {
 }
 
 // runLoop runs the unattended execute loop against PLAN.md / STEPS.md.
-func runLoop(
-	ctx context.Context,
-	tool models.Tool,
-	budget time.Duration,
-	maxVerificationRetries int,
-	clock services.Clock,
-	logs services.LogSink,
-) models.Outcome {
-	runner := clients.NewExecCommandRunner()
+func runLoop(ctx context.Context, tool models.Tool, budget time.Duration, maxStalled, maxFailures int, maxIterationDuration time.Duration, verify, gitCheckpoint bool, clock services.Clock, logs services.LogSink) models.Outcome {
 	cfg := models.Config{
-		StopFile:                 "STOP.md",
-		StepsFile:                "STEPS.md",
-		VerificationFeedbackFile: "VERIFICATION.md",
-		Invocation:               tool.Invocation(prompt),
-		Budget:                   budget,
-		MaxVerificationRetries:   maxVerificationRetries,
+		StopFile:               "STOP.md",
+		PlanFile:               "PLAN.md",
+		StepsFile:              "STEPS.md",
+		Tool:                   tool,
+		Budget:                 budget,
+		MaxStalledIterations:   maxStalled,
+		MaxConsecutiveFailures: maxFailures,
+		MaxIterationDuration:   maxIterationDuration,
+		Verify:                 verify,
+		GitCheckpoint:          gitCheckpoint,
 	}
-	orchestrator := services.NewVerifiedOrchestrator(
-		runner,
-		clients.NewOsStopSignal(),
-		clients.NewGitChangeCommitter(commitMessage, clients.NewExecGitRunner()),
-		services.NewToolChangeVerifier(runner, tool),
+	orchestrator := services.NewOrchestrator(
+		clients.NewExecCommandRunner(),
 		clients.NewOsFileStore(),
 		clock,
 		logs,

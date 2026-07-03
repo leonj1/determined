@@ -4,45 +4,16 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"regexp"
 	"strings"
 	"time"
 
 	"determined/src/models"
 )
 
-var (
-	stepPartsPattern = regexp.MustCompile(`^\s*(?:[-*+]\s+|\d+[.)]\s+)(?:\[([ xX])\]\s*)?(.*\S)\s*$`)
-)
-
-const defaultMaxVerificationRetries = 3
-
 // CommandRunner runs one AI-coding-tool invocation, streaming its combined
 // stdout and stderr to out. The real implementation is clients.ExecCommandRunner.
 type CommandRunner interface {
 	Run(ctx context.Context, inv models.Invocation, out io.Writer) error
-}
-
-// StopSignal reports whether the completion sentinel file exists.
-type StopSignal interface {
-	Exists(path string) bool
-}
-
-// ChangeCommitter commits repository changes created by a completed task.
-type ChangeCommitter interface {
-	Commit(ctx context.Context, out io.Writer) error
-}
-
-// ChangeVerifier approves or rejects repository changes for a completed step.
-type ChangeVerifier interface {
-	Verify(ctx context.Context, step models.Step, out io.Writer) (models.VerificationResult, error)
-}
-
-// StepStore manages protocol files used by the execute loop.
-type StepStore interface {
-	Read(path string) (string, error)
-	Write(path, content string) error
-	Remove(path string) error
 }
 
 // Clock reads wall-clock time.
@@ -55,99 +26,205 @@ type LogSink interface {
 	OpenIteration(iteration int) (io.WriteCloser, error)
 }
 
-// VerificationLogSink optionally writes verifier output to a separate log.
-type VerificationLogSink interface {
-	OpenVerification(iteration int) (io.WriteCloser, error)
-}
-
-// Orchestrator runs the AI coding tool in a loop until it signals completion,
-// an invocation fails, the time budget is exhausted, or a signal interrupts it.
+// Orchestrator runs the AI coding tool in a loop until every step in the
+// steps file is checked complete and a final whole-plan audit approves, too
+// many invocations fail in a row, the time budget is exhausted, progress
+// stalls, or a signal interrupts it. Each iteration it re-reads the steps
+// file and aims the tool at exactly the next unchecked step; once every box
+// is checked, the next iteration is an audit of the whole plan instead. The
+// run ends successfully only when all steps are checked AND the audit has
+// created STOP.md: a STOP.md created while unchecked steps remain is deleted
+// and the loop continues.
 type Orchestrator struct {
 	runner   CommandRunner
-	stop     StopSignal
-	commits  ChangeCommitter
-	verifier ChangeVerifier
-	steps    StepStore
+	files    FileStore
 	clock    Clock
 	logs     LogSink
 	terminal io.Writer
 	cfg      models.Config
 
-	iteration         int
-	completedDuration time.Duration
-	verifyRetries     map[int]int
+	iteration int
+	// stalled counts consecutive iterations that checked no new step; hitting
+	// cfg.MaxStalledIterations ends the run with OutcomeStalled.
+	stalled int
+	// failures counts consecutive failed tool invocations; hitting
+	// cfg.MaxConsecutiveFailures ends the run with OutcomeDroidFailed. Any
+	// successful invocation resets it.
+	failures int
 }
 
 // NewOrchestrator wires an orchestrator from its dependencies.
 func NewOrchestrator(
 	runner CommandRunner,
-	stop StopSignal,
-	commits ChangeCommitter,
-	steps StepStore,
-	clock Clock,
-	logs LogSink,
-	terminal io.Writer,
-	cfg models.Config,
-) *Orchestrator {
-	return NewVerifiedOrchestrator(runner, stop, commits, nil, steps, clock, logs, terminal, cfg)
-}
-
-// NewVerifiedOrchestrator wires an orchestrator with a completed-step verifier.
-func NewVerifiedOrchestrator(
-	runner CommandRunner,
-	stop StopSignal,
-	commits ChangeCommitter,
-	verifier ChangeVerifier,
-	steps StepStore,
+	files FileStore,
 	clock Clock,
 	logs LogSink,
 	terminal io.Writer,
 	cfg models.Config,
 ) *Orchestrator {
 	return &Orchestrator{
-		runner:        runner,
-		stop:          stop,
-		commits:       commits,
-		verifier:      verifier,
-		steps:         steps,
-		clock:         clock,
-		logs:          logs,
-		terminal:      terminal,
-		cfg:           cfg,
-		verifyRetries: map[int]int{},
+		runner:   runner,
+		files:    files,
+		clock:    clock,
+		logs:     logs,
+		terminal: terminal,
+		cfg:      cfg,
 	}
 }
 
 // Run executes the loop and returns the terminal outcome.
 func (o *Orchestrator) Run(ctx context.Context) models.Outcome {
+	if !o.protocolFilesPresent() {
+		return models.OutcomeMissingFiles
+	}
 	deadline := o.deadline()
 	for {
 		if outcome, stop := o.preIteration(ctx, deadline); stop {
 			return outcome
 		}
+		before := o.parsedSteps()
 		if outcome, stop := o.runOnce(ctx); stop {
 			return outcome
 		}
+		if outcome, stop := o.verifyNewSteps(ctx, before); stop {
+			return outcome
+		}
+		o.checkpointNewSteps(ctx, before)
+		if o.stalledOut(CompletedStepCount(before)) {
+			fmt.Fprintf(o.terminal,
+				"determined: no step checked in %d consecutive iterations; stopping\n",
+				o.cfg.MaxStalledIterations)
+			return models.OutcomeStalled
+		}
 	}
+}
+
+// protocolFilesPresent verifies the plan-produced files exist before any tool
+// run, naming each missing one. Without them the loop has nothing to aim the
+// tool at, so failing fast beats burning iterations on an unplanned directory.
+// A stale STOP.md is not checked here: the first preIteration deletes it (with
+// a warning) whenever unchecked steps remain.
+func (o *Orchestrator) protocolFilesPresent() bool {
+	present := true
+	for _, f := range []string{o.cfg.PlanFile, o.cfg.StepsFile} {
+		if !o.files.Exists(f) {
+			fmt.Fprintf(o.terminal,
+				"determined: %s not found; run `determined --plan \"<goal>\"` to create it first\n", f)
+			present = false
+		}
+	}
+	return present
 }
 
 // preIteration applies the between-iteration guards before starting more work.
 // The budget is checked here, so a running invocation always finishes first.
 func (o *Orchestrator) preIteration(ctx context.Context, deadline time.Time) (models.Outcome, bool) {
-	switch {
-	case ctx.Err() != nil:
+	if ctx.Err() != nil {
 		return models.OutcomeInterrupted, true
-	case o.stop.Exists(o.cfg.StopFile):
-		return models.OutcomeStopped, true
-	case o.budgetExceeded(deadline):
+	}
+	if outcome, stop := o.checkCompletion(); stop {
+		return outcome, true
+	}
+	if o.budgetExceeded(deadline) {
 		return models.OutcomeBudgetExceeded, true
 	}
 	return models.OutcomeStopped, false // outcome ignored when stop is false
 }
 
-// runOnce runs a single invocation, teeing its output to the terminal and a
-// per-iteration log. It reports whether the loop should stop.
+// checkCompletion decides whether the run is finished by parsing the steps
+// file. Checked boxes alone are not success: the run ends cleanly only when
+// every step is checked AND the whole-plan audit has recorded its approval as
+// STOP.md. All boxes checked without STOP.md means the audit still has to run
+// (the next iteration is the audit), and a STOP.md that appears while
+// unchecked steps remain is deleted so the loop keeps going.
+func (o *Orchestrator) checkCompletion() (models.Outcome, bool) {
+	content, err := o.files.Read(o.cfg.StepsFile)
+	if err != nil {
+		return models.OutcomeStopped, false // runOnce reports the read failure
+	}
+	steps := ParseSteps(content)
+	switch {
+	case AllStepsComplete(steps):
+		if o.files.Exists(o.cfg.StopFile) {
+			return models.OutcomeStopped, true
+		}
+	case len(steps) > 0:
+		o.deletePrematureStop()
+	case o.files.Exists(o.cfg.StopFile):
+		// No parseable checkboxes to judge by, so fall back to trusting the
+		// sentinel; otherwise a stepless STEPS.md could never end the run.
+		return models.OutcomeStopped, true
+	}
+	return models.OutcomeStopped, false
+}
+
+// deletePrematureStop removes a STOP.md created while unchecked steps remain,
+// warning the user that the tool tried to declare completion early.
+func (o *Orchestrator) deletePrematureStop() {
+	if !o.files.Exists(o.cfg.StopFile) {
+		return
+	}
+	if err := o.files.Remove(o.cfg.StopFile); err != nil {
+		fmt.Fprintf(o.terminal, "determined: could not delete premature %s: %v\n", o.cfg.StopFile, err)
+		return
+	}
+	fmt.Fprintf(o.terminal,
+		"determined: warning: %s existed while unchecked steps remain; deleted it and continuing\n",
+		o.cfg.StopFile)
+}
+
+// parsedSteps reads and parses the steps file. A read failure yields no
+// steps; the surrounding loop surfaces the failure itself on the next runOnce.
+func (o *Orchestrator) parsedSteps() []Step {
+	content, err := o.files.Read(o.cfg.StepsFile)
+	if err != nil {
+		return nil
+	}
+	return ParseSteps(content)
+}
+
+// stalledOut updates the consecutive-no-progress counter by comparing the
+// completed-step count against its pre-iteration snapshot, and reports whether
+// the stall cap has been hit. Any newly checked step resets the counter; a
+// step the verifier or audit unchecked again counts as no progress, since
+// both run before this check, so worker/reviewer ping-pong is bounded. A
+// completed run (all boxes checked and the audit's STOP.md present) is never
+// a stall: the approving audit checks no new step, and the next
+// checkCompletion ends the run.
+func (o *Orchestrator) stalledOut(completedBefore int) bool {
+	if o.cfg.MaxStalledIterations <= 0 {
+		return false
+	}
+	steps := o.parsedSteps()
+	if CompletedStepCount(steps) > completedBefore || o.runComplete(steps) {
+		o.stalled = 0
+		return false
+	}
+	o.stalled++
+	return o.stalled >= o.cfg.MaxStalledIterations
+}
+
+// runComplete reports whether the run's success condition holds: every step
+// checked and the whole-plan audit's STOP.md approval present.
+func (o *Orchestrator) runComplete(steps []Step) bool {
+	return AllStepsComplete(steps) && o.files.Exists(o.cfg.StopFile)
+}
+
+// runOnce runs a single work invocation aimed at the next unchecked step. It
+// reports whether the loop should stop.
 func (o *Orchestrator) runOnce(ctx context.Context) (models.Outcome, bool) {
+	prompt, err := o.iterationPrompt()
+	if err != nil {
+		fmt.Fprintf(o.terminal, "determined: could not read %s: %v\n", o.cfg.StepsFile, err)
+		return models.OutcomeDroidFailed, true
+	}
+	return o.invoke(ctx, prompt)
+}
+
+// invoke runs one tool invocation with the given prompt, teeing its output to
+// the terminal and a fresh per-iteration log. It reports whether the loop
+// should stop.
+func (o *Orchestrator) invoke(ctx context.Context, prompt string) (models.Outcome, bool) {
 	o.iteration++
 	log, err := o.logs.OpenIteration(o.iteration)
 	if err != nil {
@@ -155,159 +232,196 @@ func (o *Orchestrator) runOnce(ctx context.Context) (models.Outcome, bool) {
 	}
 	defer log.Close()
 	out := io.MultiWriter(o.terminal, log)
-	before, beforeOK := o.stepSnapshot()
-	step := o.nextStep(before.progress)
-	fmt.Fprintln(out, step.Started())
-	started := o.clock.Now()
-	if err := o.runner.Run(ctx, o.cfg.Invocation, out); err != nil {
-		return o.classifyFailure(ctx), true
+	runCtx, cancel := o.iterationContext(ctx)
+	defer cancel()
+	if err := o.runner.Run(runCtx, o.cfg.Tool.Invocation(prompt), out); err != nil {
+		return o.recordFailure(ctx, err)
 	}
-	o.completedDuration += o.clock.Now().Sub(started)
-	fmt.Fprintln(out, step.Completed())
-	if eta, ok := o.eta(step); ok {
-		fmt.Fprintf(out, "ETA: %s remaining (%s)\n", formatDuration(eta), step.RemainingText())
+	o.failures = 0
+	return models.OutcomeStopped, false // outcome ignored when stop is false
+}
+
+// verifyNewSteps runs an independent reviewer invocation over every step the
+// last iteration newly checked, comparing the steps file against its
+// pre-iteration snapshot. The verifier unchecks a step whose acceptance
+// criterion is not genuinely met (recording why in FIXES.md), so the loop
+// re-runs it. Ping-pong between worker and verifier is bounded because a
+// rejection leaves the completed count unchanged, which the stall counter
+// (checked right after this pass) treats as a no-progress iteration. A failed
+// verifier invocation counts toward the consecutive-failure cap like any
+// other; the step simply stays checked.
+func (o *Orchestrator) verifyNewSteps(ctx context.Context, before []Step) (models.Outcome, bool) {
+	if !o.cfg.Verify {
+		return models.OutcomeStopped, false
 	}
-	if outcome, stop := o.finishCompletedTask(ctx, beforeOK, before, out); stop {
-		return outcome, true
+	for i, step := range o.parsedSteps() {
+		if !step.Completed || (i < len(before) && before[i].Completed) {
+			continue
+		}
+		fmt.Fprintf(o.terminal, "determined: verifying step %d\n", i+1)
+		if outcome, stop := o.invoke(ctx, verifyPrompt(i+1, step)); stop {
+			return outcome, true
+		}
 	}
 	return models.OutcomeStopped, false // outcome ignored when stop is false
 }
 
-func (o *Orchestrator) nextStep(progress stepProgress) stepRun {
-	number := o.iteration
-	if progress.completed+1 > number {
-		number = progress.completed + 1
+// verifyPrompt builds the reviewer instruction for one newly checked step:
+// confirm the acceptance criterion actually holds, and reopen the step with an
+// explanation in FIXES.md when it does not.
+func verifyPrompt(n int, step Step) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "Step %d claims complete: %s", n, sentence(step.Text))
+	if step.DoneWhen != "" {
+		b.WriteString(" Acceptance criterion: ")
+		b.WriteString(sentence(step.DoneWhen))
 	}
-	if progress.total > 0 && number > progress.total {
-		number = progress.total
-	}
-	return stepRun{number: number, total: progress.total}
+	b.WriteString(" Verify by reading the code and running the stated check. " +
+		"If not genuinely done, change the step's `[x]` back to `[ ]` in STEPS.md " +
+		"and append what is wrong to FIXES.md; if done, do nothing.")
+	return b.String()
 }
 
-func (o *Orchestrator) finishCompletedTask(
-	ctx context.Context,
-	beforeOK bool,
-	before stepSnapshot,
-	out io.Writer,
-) (models.Outcome, bool) {
-	after, afterOK := o.stepSnapshot()
-	if !beforeOK || !afterOK {
-		return models.OutcomeStopped, false
+// checkpointNewSteps git-commits the working tree once per step that this
+// iteration newly checked and that survived verification (a step the verifier
+// rejected is unchecked again by now, so it is never committed). Runs after
+// the verify pass so each commit captures a reviewed state, giving a rewind
+// point per step. Skipped outside a git repository with a terminal note; a
+// failed git command is noted and ignored, since checkpoints are a convenience
+// and must not end the run.
+func (o *Orchestrator) checkpointNewSteps(ctx context.Context, before []Step) {
+	if !o.cfg.GitCheckpoint {
+		return
 	}
-	if !before.hasIncomplete {
-		return models.OutcomeStopped, false
-	}
-	if !after.stepCompleted(before.incomplete.Number) {
-		if after.progress.completed <= before.progress.completed {
-			return models.OutcomeStopped, false
+	for i, step := range o.parsedSteps() {
+		if !step.Completed || (i < len(before) && before[i].Completed) {
+			continue
 		}
-		reason := "The coding run marked a different STEPS.md item complete. Rework the intended step instead."
-		return o.rejectCompletedTask(ctx, before, reason, out)
+		if !o.files.Exists(".git") {
+			fmt.Fprintln(o.terminal,
+				"determined: not a git repository; skipping git checkpoint")
+			return
+		}
+		o.gitCommit(ctx, i+1, step)
 	}
-	outcome, stop, approved := o.verifyCompletedTask(ctx, before, out)
-	if stop {
-		return outcome, true
-	}
-	if !approved {
-		return models.OutcomeStopped, false
-	}
-	if err := o.clearVerificationFeedback(); err != nil {
-		return models.OutcomeCommitFailed, true
-	}
-	fmt.Fprintln(out, "Committing completed task changes")
-	if err := o.commits.Commit(ctx, out); err != nil {
-		return models.OutcomeCommitFailed, true
-	}
-	return models.OutcomeStopped, false
 }
 
-func (o *Orchestrator) verifyCompletedTask(
-	ctx context.Context,
-	before stepSnapshot,
-	out io.Writer,
-) (models.Outcome, bool, bool) {
-	if o.verifier == nil {
-		return models.OutcomeStopped, false, true
-	}
-	fmt.Fprintf(out, "Verifying Step %d\n", before.incomplete.Number)
-	verifyOut, closeLog, err := o.verifierOutput()
-	if err != nil {
-		return models.OutcomeVerificationFailed, true, false
-	}
-	defer closeLog()
-	result, err := o.verifier.Verify(ctx, before.incomplete, verifyOut)
-	if err != nil {
-		return o.classifyFailure(ctx), true, false
-	}
-	if result.Passed() {
-		fmt.Fprintf(out, "Verified Step %d\n", before.incomplete.Number)
-		o.verifyRetries[before.incomplete.Number] = 0
-		return models.OutcomeStopped, false, true
-	}
-	outcome, stop := o.rejectCompletedTask(ctx, before, result.Feedback, out)
-	return outcome, stop, false
-}
-
-func (o *Orchestrator) rejectCompletedTask(
-	ctx context.Context,
-	before stepSnapshot,
-	feedback string,
-	out io.Writer,
-) (models.Outcome, bool) {
-	o.verifyRetries[before.incomplete.Number]++
-	if o.verifyRetries[before.incomplete.Number] > o.maxVerificationRetries() {
-		fmt.Fprintf(out, "Verification failed for Step %d:\n%s\n", before.incomplete.Number, feedback)
-		return models.OutcomeVerificationFailed, true
-	}
-	if err := o.restoreTaskForRepair(ctx, before, feedback); err != nil {
-		fmt.Fprintf(out, "Could not prepare Step %d for repair: %v\n", before.incomplete.Number, err)
-		return models.OutcomeVerificationFailed, true
-	}
-	fmt.Fprintf(out, "Verification rejected Step %d; resubmitting with feedback\n", before.incomplete.Number)
-	return models.OutcomeStopped, false
-}
-
-func (o *Orchestrator) restoreTaskForRepair(ctx context.Context, before stepSnapshot, feedback string) error {
-	if err := o.steps.Write(o.cfg.StepsFile, before.content); err != nil {
-		return err
-	}
-	if o.cfg.VerificationFeedbackFile != "" {
-		if err := o.steps.Write(o.cfg.VerificationFeedbackFile, feedbackFileContent(before.incomplete, feedback)); err != nil {
-			return err
+// gitCommit stages everything and commits it as the checkpoint for one step.
+func (o *Orchestrator) gitCommit(ctx context.Context, n int, step Step) {
+	message := fmt.Sprintf("determined: step %d: %s", n, strings.TrimSpace(step.Text))
+	for _, inv := range []models.Invocation{
+		{Binary: "git", Args: []string{"add", "-A"}},
+		{Binary: "git", Args: []string{"commit", "-m", message}},
+	} {
+		if err := o.runner.Run(ctx, inv, o.terminal); err != nil {
+			fmt.Fprintf(o.terminal, "determined: git checkpoint for step %d failed: %v\n", n, err)
+			return
 		}
 	}
-	if ctx.Err() != nil {
-		return ctx.Err()
-	}
-	return o.steps.Remove(o.cfg.StopFile)
+	fmt.Fprintf(o.terminal, "determined: git checkpoint committed for step %d\n", n)
 }
 
-func (o *Orchestrator) stepSnapshot() (stepSnapshot, bool) {
-	if o.steps == nil || o.cfg.StepsFile == "" {
-		return stepSnapshot{}, false
-	}
-	content, err := o.steps.Read(o.cfg.StepsFile)
+// noParsableStepsPrompt is used when STEPS.md contains no checkbox-format
+// steps, so the orchestrator cannot judge progress itself: the tool either
+// restores a parseable step list or confirms the work is done with STOP.md.
+const noParsableStepsPrompt = "Read STEPS.md. It contains no checkbox-format steps " +
+	"(`- [ ]` items), so progress cannot be tracked. If work remains, rewrite STEPS.md " +
+	"as a markdown checkbox list, one `- [ ]` item per remaining step, each ending with " +
+	"a `Done when:` line stating a checkable acceptance condition. " +
+	"If the work is genuinely finished, create STOP.md. Do not start new work."
+
+// auditPrompt is the final whole-plan review run once every step is checked.
+// The audit either confirms the implementation satisfies the plan by creating
+// STOP.md — the only thing that lets an all-checked run end successfully — or
+// reopens the steps that fall short, sending the loop back to step execution.
+const auditPrompt = "All steps in STEPS.md are checked complete. Read PLAN.md and STEPS.md. " +
+	"Audit whether the implementation genuinely satisfies the plan. " +
+	"If a step is not actually satisfied, change its `[x]` back to `[ ]` in STEPS.md " +
+	"and append the reason to FIXES.md. If everything is satisfied, create STOP.md. " +
+	"Do not start work beyond this audit."
+
+// iterationPrompt reads the steps file and builds this iteration's instruction:
+// the whole-plan audit when every box is checked (checkCompletion only ends
+// the run once the audit's STOP.md exists), otherwise the next unchecked
+// step. A missing next step then means the file had no parseable steps.
+func (o *Orchestrator) iterationPrompt() (string, error) {
+	content, err := o.files.Read(o.cfg.StepsFile)
 	if err != nil {
-		return stepSnapshot{}, false
+		return "", err
 	}
-	return parseStepSnapshot(content), true
+	steps := ParseSteps(content)
+	if AllStepsComplete(steps) {
+		fmt.Fprintln(o.terminal,
+			"determined: all steps checked; auditing the whole plan before declaring success")
+		return auditPrompt, nil
+	}
+	step, ok := NextIncompleteStep(steps)
+	if !ok {
+		return noParsableStepsPrompt, nil
+	}
+	return stepPrompt(step), nil
 }
 
-func (o *Orchestrator) eta(step stepRun) (time.Duration, bool) {
-	if step.total == 0 {
-		return 0, false
+// stepPrompt builds the execute instruction for a single step: work only that
+// step, meet its acceptance criterion, and check its box when done. NOTES.md
+// carries knowledge between otherwise-independent invocations: each iteration
+// reads what earlier steps recorded and appends what later steps need to know.
+func stepPrompt(step Step) string {
+	var b strings.Builder
+	b.WriteString("Read NOTES.md if it exists before starting. ")
+	b.WriteString("Work on exactly this step and no other: ")
+	b.WriteString(sentence(step.Text))
+	if step.DoneWhen != "" {
+		b.WriteString(" Its acceptance criterion: ")
+		b.WriteString(sentence(step.DoneWhen))
 	}
-	average := o.completedDuration / time.Duration(o.iteration)
-	return average * time.Duration(step.Remaining()), true
+	b.WriteString(" Mark it `[x]` in STEPS.md when done. " +
+		"Before finishing, append to NOTES.md any decisions, conventions, or " +
+		"gotchas later steps need to know.")
+	return b.String()
 }
 
-// classifyFailure distinguishes a genuine tool failure from an interruption,
-// since a cancelled context kills the child and surfaces as an error too.
-func (o *Orchestrator) classifyFailure(ctx context.Context) models.Outcome {
+// sentence trims s and ensures it ends with a period, so injected step text
+// composes into readable prompt sentences.
+func sentence(s string) string {
+	s = strings.TrimSpace(s)
+	if s != "" && !strings.HasSuffix(s, ".") {
+		s += "."
+	}
+	return s
+}
+
+// iterationContext bounds a single invocation by cfg.MaxIterationDuration so
+// a hung tool cannot hang the loop forever. recordFailure inspects the parent
+// ctx, not this one, so a timeout surfaces as an ordinary retryable failure
+// rather than an interruption.
+func (o *Orchestrator) iterationContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	if o.cfg.MaxIterationDuration <= 0 {
+		return ctx, func() {}
+	}
+	return context.WithTimeout(ctx, o.cfg.MaxIterationDuration)
+}
+
+// recordFailure decides what a failed invocation means for the run. An
+// interruption stops immediately, since a cancelled context kills the child
+// and surfaces as an error too. A genuine tool failure (rate limit, crash) is
+// often transient, so the same iteration is retried until
+// cfg.MaxConsecutiveFailures failures occur with no success in between.
+func (o *Orchestrator) recordFailure(ctx context.Context, err error) (models.Outcome, bool) {
 	if ctx.Err() != nil {
-		return models.OutcomeInterrupted
+		return models.OutcomeInterrupted, true
 	}
-	return models.OutcomeDroidFailed
+	o.failures++
+	if o.failures >= o.cfg.MaxConsecutiveFailures {
+		fmt.Fprintf(o.terminal,
+			"determined: tool invocation failed %d consecutive times; stopping: %v\n",
+			o.failures, err)
+		return models.OutcomeDroidFailed, true
+	}
+	fmt.Fprintf(o.terminal,
+		"determined: tool invocation failed (%d of %d consecutive before aborting): %v; retrying\n",
+		o.failures, o.cfg.MaxConsecutiveFailures, err)
+	return models.OutcomeStopped, false // outcome ignored when stop is false
 }
 
 // deadline returns the wall-clock instant the run must stop by, or the zero
@@ -324,116 +438,4 @@ func (o *Orchestrator) budgetExceeded(deadline time.Time) bool {
 		return false
 	}
 	return !o.clock.Now().Before(deadline)
-}
-
-func (o *Orchestrator) verifierOutput() (io.Writer, func(), error) {
-	sink, ok := o.logs.(VerificationLogSink)
-	if !ok {
-		return o.terminal, func() {}, nil
-	}
-	log, err := sink.OpenVerification(o.iteration)
-	if err != nil {
-		return nil, func() {}, err
-	}
-	return io.MultiWriter(o.terminal, log), func() { log.Close() }, nil
-}
-
-func (o *Orchestrator) clearVerificationFeedback() error {
-	if o.cfg.VerificationFeedbackFile == "" {
-		return nil
-	}
-	return o.steps.Remove(o.cfg.VerificationFeedbackFile)
-}
-
-func (o *Orchestrator) maxVerificationRetries() int {
-	if o.cfg.MaxVerificationRetries > 0 {
-		return o.cfg.MaxVerificationRetries
-	}
-	return defaultMaxVerificationRetries
-}
-
-type stepRun struct {
-	number int
-	total  int
-}
-
-func (s stepRun) Started() string {
-	if s.total == 0 {
-		return fmt.Sprintf("Starting Step %d", s.number)
-	}
-	return fmt.Sprintf("Starting Step %d of %d", s.number, s.total)
-}
-
-func (s stepRun) Completed() string {
-	return fmt.Sprintf("Completed Step %d", s.number)
-}
-
-func (s stepRun) Remaining() int {
-	if s.total == 0 || s.number >= s.total {
-		return 0
-	}
-	return s.total - s.number
-}
-
-func (s stepRun) RemainingText() string {
-	if s.Remaining() == 1 {
-		return "1 step left"
-	}
-	return fmt.Sprintf("%d steps left", s.Remaining())
-}
-
-type stepProgress struct {
-	total     int
-	completed int
-}
-
-type stepSnapshot struct {
-	content       string
-	progress      stepProgress
-	incomplete    models.Step
-	hasIncomplete bool
-	completed     map[int]bool
-}
-
-func (s stepSnapshot) stepCompleted(number int) bool {
-	return s.completed[number]
-}
-
-func parseStepSnapshot(content string) stepSnapshot {
-	snapshot := stepSnapshot{content: content, completed: map[int]bool{}}
-	for _, line := range strings.Split(content, "\n") {
-		snapshot = snapshot.withStepLine(line)
-	}
-	return snapshot
-}
-
-func (s stepSnapshot) withStepLine(line string) stepSnapshot {
-	parts := stepPartsPattern.FindStringSubmatch(line)
-	if parts == nil {
-		return s
-	}
-	s.progress.total++
-	number := s.progress.total
-	completed := strings.EqualFold(parts[1], "x")
-	if completed {
-		s.progress.completed++
-		s.completed[number] = true
-	}
-	if !completed && !s.hasIncomplete {
-		s.incomplete = models.Step{Number: number, Text: strings.TrimSpace(parts[2])}
-		s.hasIncomplete = true
-	}
-	return s
-}
-
-func feedbackFileContent(step models.Step, feedback string) string {
-	return fmt.Sprintf("# Verification feedback\n\nStep %d: %s\n\n%s\n", step.Number, step.Text, feedback)
-}
-
-func formatDuration(d time.Duration) string {
-	rounded := d.Round(time.Second)
-	if rounded == 0 && d > 0 {
-		return time.Second.String()
-	}
-	return rounded.String()
 }
