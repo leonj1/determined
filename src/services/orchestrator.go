@@ -16,11 +16,6 @@ type CommandRunner interface {
 	Run(ctx context.Context, inv models.Invocation, out io.Writer) error
 }
 
-// StopSignal reports whether the completion sentinel file exists.
-type StopSignal interface {
-	Exists(path string) bool
-}
-
 // Clock reads wall-clock time.
 type Clock interface {
 	Now() time.Time
@@ -31,14 +26,15 @@ type LogSink interface {
 	OpenIteration(iteration int) (io.WriteCloser, error)
 }
 
-// Orchestrator runs the AI coding tool in a loop until it signals completion,
-// an invocation fails, the time budget is exhausted, or a signal interrupts it.
-// Each iteration it re-reads the steps file and aims the tool at exactly the
-// next unchecked step.
+// Orchestrator runs the AI coding tool in a loop until every step in the
+// steps file is checked complete, an invocation fails, the time budget is
+// exhausted, or a signal interrupts it. Each iteration it re-reads the steps
+// file and aims the tool at exactly the next unchecked step. Completion is
+// decided by the parsed checkboxes, never by the tool: a STOP.md created
+// while unchecked steps remain is deleted and the loop continues.
 type Orchestrator struct {
 	runner   CommandRunner
 	files    FileStore
-	stop     StopSignal
 	clock    Clock
 	logs     LogSink
 	terminal io.Writer
@@ -51,7 +47,6 @@ type Orchestrator struct {
 func NewOrchestrator(
 	runner CommandRunner,
 	files FileStore,
-	stop StopSignal,
 	clock Clock,
 	logs LogSink,
 	terminal io.Writer,
@@ -60,7 +55,6 @@ func NewOrchestrator(
 	return &Orchestrator{
 		runner:   runner,
 		files:    files,
-		stop:     stop,
 		clock:    clock,
 		logs:     logs,
 		terminal: terminal,
@@ -84,15 +78,66 @@ func (o *Orchestrator) Run(ctx context.Context) models.Outcome {
 // preIteration applies the between-iteration guards before starting more work.
 // The budget is checked here, so a running invocation always finishes first.
 func (o *Orchestrator) preIteration(ctx context.Context, deadline time.Time) (models.Outcome, bool) {
-	switch {
-	case ctx.Err() != nil:
+	if ctx.Err() != nil {
 		return models.OutcomeInterrupted, true
-	case o.stop.Exists(o.cfg.StopFile):
-		return models.OutcomeStopped, true
-	case o.budgetExceeded(deadline):
+	}
+	if outcome, stop := o.checkCompletion(); stop {
+		return outcome, true
+	}
+	if o.budgetExceeded(deadline) {
 		return models.OutcomeBudgetExceeded, true
 	}
 	return models.OutcomeStopped, false // outcome ignored when stop is false
+}
+
+// checkCompletion decides whether the run is finished by parsing the steps
+// file. The checkboxes are the authority, not STOP.md: the sentinel is written
+// on completion only for compatibility, and one that appears while unchecked
+// steps remain is deleted so the loop keeps going.
+func (o *Orchestrator) checkCompletion() (models.Outcome, bool) {
+	content, err := o.files.Read(o.cfg.StepsFile)
+	if err != nil {
+		return models.OutcomeStopped, false // runOnce reports the read failure
+	}
+	steps := ParseSteps(content)
+	switch {
+	case AllStepsComplete(steps):
+		o.writeStopSentinel()
+		return models.OutcomeStopped, true
+	case len(steps) > 0:
+		o.deletePrematureStop()
+	case o.files.Exists(o.cfg.StopFile):
+		// No parseable checkboxes to judge by, so fall back to trusting the
+		// sentinel; otherwise a stepless STEPS.md could never end the run.
+		return models.OutcomeStopped, true
+	}
+	return models.OutcomeStopped, false
+}
+
+// writeStopSentinel records completion in STOP.md for compatibility with
+// anything watching for the sentinel. Best-effort: the run is already over.
+func (o *Orchestrator) writeStopSentinel() {
+	if o.files.Exists(o.cfg.StopFile) {
+		return
+	}
+	if err := o.files.Write(o.cfg.StopFile, "All steps in STEPS.md are checked complete.\n"); err != nil {
+		fmt.Fprintf(o.terminal, "determined: could not write %s: %v\n", o.cfg.StopFile, err)
+	}
+}
+
+// deletePrematureStop removes a STOP.md created while unchecked steps remain,
+// warning the user that the tool tried to declare completion early.
+func (o *Orchestrator) deletePrematureStop() {
+	if !o.files.Exists(o.cfg.StopFile) {
+		return
+	}
+	if err := o.files.Remove(o.cfg.StopFile); err != nil {
+		fmt.Fprintf(o.terminal, "determined: could not delete premature %s: %v\n", o.cfg.StopFile, err)
+		return
+	}
+	fmt.Fprintf(o.terminal,
+		"determined: warning: %s existed while unchecked steps remain; deleted it and continuing\n",
+		o.cfg.StopFile)
 }
 
 // runOnce runs a single invocation, teeing its output to the terminal and a
@@ -116,13 +161,19 @@ func (o *Orchestrator) runOnce(ctx context.Context) (models.Outcome, bool) {
 	return models.OutcomeStopped, false // outcome ignored when stop is false
 }
 
-// allStepsCheckedPrompt is used when every step is already checked but no stop
-// sentinel exists yet: the tool confirms the work and signals completion.
-const allStepsCheckedPrompt = "Read STEPS.md. Every step is already checked complete. " +
+// noParsableStepsPrompt is used when STEPS.md contains no checkbox-format
+// steps, so the orchestrator cannot judge progress itself: the tool either
+// restores a parseable step list or confirms the work is done with STOP.md.
+const noParsableStepsPrompt = "Read STEPS.md. It contains no checkbox-format steps " +
+	"(`- [ ]` items), so progress cannot be tracked. If work remains, rewrite STEPS.md " +
+	"as a markdown checkbox list, one `- [ ]` item per remaining step, each ending with " +
+	"a `Done when:` line stating a checkable acceptance condition. " +
 	"If the work is genuinely finished, create STOP.md. Do not start new work."
 
 // iterationPrompt reads the steps file and builds this iteration's instruction,
-// aiming the tool at exactly the next unchecked step.
+// aiming the tool at exactly the next unchecked step. When the run reaches
+// here, at least one step is unchecked (checkCompletion ends the run first
+// otherwise), so a missing next step means the file had no parseable steps.
 func (o *Orchestrator) iterationPrompt() (string, error) {
 	content, err := o.files.Read(o.cfg.StepsFile)
 	if err != nil {
@@ -130,7 +181,7 @@ func (o *Orchestrator) iterationPrompt() (string, error) {
 	}
 	step, ok := NextIncompleteStep(ParseSteps(content))
 	if !ok {
-		return allStepsCheckedPrompt, nil
+		return noParsableStepsPrompt, nil
 	}
 	return stepPrompt(step), nil
 }

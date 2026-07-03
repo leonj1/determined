@@ -36,22 +36,6 @@ func TestUserCanReviewIterationLogAfterTheRun(t *testing.T) {
 	}
 }
 
-func TestStopSignalDetectsTheSentinelFile(t *testing.T) {
-	dir := t.TempDir()
-	stopFile := filepath.Join(dir, "STOP.md")
-	signal := clients.NewOsStopSignal()
-
-	if signal.Exists(stopFile) {
-		t.Fatal("the run should not be stopped before the sentinel exists")
-	}
-	if err := os.WriteFile(stopFile, []byte("done"), 0o644); err != nil {
-		t.Fatalf("writing the sentinel should succeed: %v", err)
-	}
-	if !signal.Exists(stopFile) {
-		t.Fatal("the run should be considered stopped once the sentinel exists")
-	}
-}
-
 func TestRunnerReportsFailureWhenToolIsMissing(t *testing.T) {
 	runner := clients.NewExecCommandRunner()
 	inv := models.Invocation{Binary: "definitely-not-a-real-binary-xyz", Args: []string{"exec"}}

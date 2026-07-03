@@ -107,7 +107,6 @@ func runLoop(ctx context.Context, tool models.Tool, budget time.Duration, clock 
 	orchestrator := services.NewOrchestrator(
 		clients.NewExecCommandRunner(),
 		clients.NewOsFileStore(),
-		clients.NewOsStopSignal(),
 		clock,
 		logs,
 		os.Stdout,

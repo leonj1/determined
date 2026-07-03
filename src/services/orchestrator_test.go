@@ -16,13 +16,6 @@ import (
 
 // --- Hand-written Fakes (no mocking frameworks) ---
 
-// fakeStopSignal is an in-memory stand-in for the filesystem sentinel.
-type fakeStopSignal struct{ present map[string]bool }
-
-func newFakeStopSignal() *fakeStopSignal          { return &fakeStopSignal{present: map[string]bool{}} }
-func (f *fakeStopSignal) Exists(path string) bool { return f.present[path] }
-func (f *fakeStopSignal) create(path string)      { f.present[path] = true }
-
 // fakeClock is a controllable clock.
 type fakeClock struct{ now time.Time }
 
@@ -75,40 +68,83 @@ func config(budget time.Duration) models.Config {
 	}
 }
 
+// The two-step STEPS.md used across tests, in its three progress states.
+const (
+	twoStepsNoneChecked = "- [ ] 1. Add the widget.\n  Done when: widget tests pass.\n\n" +
+		"- [ ] 2. Document the widget.\n  Done when: README mentions the widget.\n"
+	twoStepsFirstChecked = "- [x] 1. Add the widget.\n  Done when: widget tests pass.\n\n" +
+		"- [ ] 2. Document the widget.\n  Done when: README mentions the widget.\n"
+	twoStepsAllChecked = "- [x] 1. Add the widget.\n  Done when: widget tests pass.\n\n" +
+		"- [x] 2. Document the widget.\n  Done when: README mentions the widget.\n"
+)
+
 // stepsFileStore returns a file store seeded with a two-step STEPS.md whose
-// first step is still unchecked.
+// steps are both unchecked.
 func stepsFileStore() *fakeFileStore {
 	fs := newFakeFileStore()
-	fs.Write("STEPS.md",
-		"- [ ] 1. Add the widget.\n  Done when: widget tests pass.\n\n"+
-			"- [ ] 2. Document the widget.\n  Done when: README mentions the widget.\n")
+	fs.Write("STEPS.md", twoStepsNoneChecked)
 	return fs
 }
 
 // --- Functional tests: what can the user achieve? ---
 
-func TestRunCompletesWhenToolSignalsDone(t *testing.T) {
-	stop := newFakeStopSignal()
+func TestRunEndsWhenAllBoxesAreChecked(t *testing.T) {
+	fs := stepsFileStore()
 	logs := &fakeLogSink{}
 	runner := &fakeRunner{script: func(call int, out io.Writer) error {
 		fmt.Fprintf(out, "working on step %d\n", call)
-		if call == 3 {
-			stop.create("STOP.md")
+		switch call {
+		case 1:
+			fs.Write("STEPS.md", twoStepsFirstChecked)
+		case 2:
+			fs.Write("STEPS.md", twoStepsAllChecked)
 		}
 		return nil
 	}}
-	o := services.NewOrchestrator(runner, stepsFileStore(), stop, &fakeClock{now: time.Now()}, logs, io.Discard, config(0))
+	o := services.NewOrchestrator(runner, fs, &fakeClock{now: time.Now()}, logs, io.Discard, config(0))
 
 	outcome := o.Run(context.Background())
 
 	if outcome != models.OutcomeStopped || outcome.ExitCode() != 0 {
 		t.Fatalf("expected a clean completion, got %v (exit %d)", outcome, outcome.ExitCode())
 	}
-	if runner.calls != 3 {
-		t.Fatalf("expected the tool to run until done (3 iterations), got %d", runner.calls)
+	if runner.calls != 2 {
+		t.Fatalf("expected the tool to run until every box is checked (2 iterations), got %d", runner.calls)
 	}
-	if len(logs.opened) != 3 || !strings.Contains(logs.opened[0].buf.String(), "working on step 1") {
+	if len(logs.opened) != 2 || !strings.Contains(logs.opened[0].buf.String(), "working on step 1") {
 		t.Fatalf("expected a reviewable per-iteration log for each run, got %d logs", len(logs.opened))
+	}
+	if !fs.Exists("STOP.md") {
+		t.Fatal("expected STOP.md written on completion for compatibility")
+	}
+}
+
+func TestPrematureStopFileIsDeletedAndLoopContinues(t *testing.T) {
+	fs := stepsFileStore()
+	fs.Write("STOP.md", "premature")
+	var terminal bytes.Buffer
+	runner := &fakeRunner{script: func(call int, _ io.Writer) error {
+		switch call {
+		case 1: // the tool checks step 1 but also declares completion early
+			fs.Write("STEPS.md", twoStepsFirstChecked)
+			fs.Write("STOP.md", "still premature")
+		case 2:
+			fs.Write("STEPS.md", twoStepsAllChecked)
+		}
+		return nil
+	}}
+	o := services.NewOrchestrator(runner, fs, &fakeClock{now: time.Now()}, &fakeLogSink{}, &terminal, config(0))
+
+	outcome := o.Run(context.Background())
+
+	if outcome != models.OutcomeStopped || outcome.ExitCode() != 0 {
+		t.Fatalf("expected the run to end only when all boxes are checked, got %v", outcome)
+	}
+	if runner.calls != 2 {
+		t.Fatalf("expected the loop to continue past each premature STOP.md, got %d invocations", runner.calls)
+	}
+	if got := strings.Count(terminal.String(), "unchecked steps remain"); got != 2 {
+		t.Fatalf("expected a warning for each deleted premature STOP.md (2), got %d in:\n%s", got, terminal.String())
 	}
 }
 
@@ -119,7 +155,7 @@ func TestRunAbortsWhenToolFails(t *testing.T) {
 		}
 		return nil
 	}}
-	o := services.NewOrchestrator(runner, stepsFileStore(), newFakeStopSignal(), &fakeClock{now: time.Now()}, &fakeLogSink{}, io.Discard, config(0))
+	o := services.NewOrchestrator(runner, stepsFileStore(), &fakeClock{now: time.Now()}, &fakeLogSink{}, io.Discard, config(0))
 
 	outcome := o.Run(context.Background())
 
@@ -137,7 +173,7 @@ func TestRunStopsWhenTimeBudgetExhausted(t *testing.T) {
 		clock.advance(4 * time.Minute)
 		return nil
 	}}
-	o := services.NewOrchestrator(runner, stepsFileStore(), newFakeStopSignal(), clock, &fakeLogSink{}, io.Discard, config(10*time.Minute))
+	o := services.NewOrchestrator(runner, stepsFileStore(), clock, &fakeLogSink{}, io.Discard, config(10*time.Minute))
 
 	outcome := o.Run(context.Background())
 
@@ -149,11 +185,11 @@ func TestRunStopsWhenTimeBudgetExhausted(t *testing.T) {
 	}
 }
 
-func TestRunDoesNothingWhenStopFileAlreadyPresent(t *testing.T) {
-	stop := newFakeStopSignal()
-	stop.create("STOP.md")
+func TestRunEndsImmediatelyWhenAllStepsAlreadyChecked(t *testing.T) {
+	fs := newFakeFileStore()
+	fs.Write("STEPS.md", "- [x] 1. Done already.\n  Done when: nothing remains.\n")
 	runner := &fakeRunner{}
-	o := services.NewOrchestrator(runner, stepsFileStore(), stop, &fakeClock{now: time.Now()}, &fakeLogSink{}, io.Discard, config(0))
+	o := services.NewOrchestrator(runner, fs, &fakeClock{now: time.Now()}, &fakeLogSink{}, io.Discard, config(0))
 
 	outcome := o.Run(context.Background())
 
@@ -161,7 +197,10 @@ func TestRunDoesNothingWhenStopFileAlreadyPresent(t *testing.T) {
 		t.Fatalf("expected an immediate clean exit, got %v (exit %d)", outcome, outcome.ExitCode())
 	}
 	if runner.calls != 0 {
-		t.Fatalf("expected no work when already stopped, got %d invocations", runner.calls)
+		t.Fatalf("expected no work when every step is already checked, got %d invocations", runner.calls)
+	}
+	if !fs.Exists("STOP.md") {
+		t.Fatal("expected STOP.md written on completion for compatibility")
 	}
 }
 
@@ -174,7 +213,7 @@ func TestRunStopsWhenInterrupted(t *testing.T) {
 		}
 		return nil
 	}}
-	o := services.NewOrchestrator(runner, stepsFileStore(), newFakeStopSignal(), &fakeClock{now: time.Now()}, &fakeLogSink{}, io.Discard, config(0))
+	o := services.NewOrchestrator(runner, stepsFileStore(), &fakeClock{now: time.Now()}, &fakeLogSink{}, io.Discard, config(0))
 
 	outcome := o.Run(ctx)
 
@@ -189,7 +228,6 @@ func TestEachIterationTargetsTheNextIncompleteStep(t *testing.T) {
 		"- [x] 1. Add the parser.\n  Done when: parser tests pass.\n\n"+
 			"- [ ] 2. Wire the parser into the loop.\n  Done when: go test ./... passes.\n\n"+
 			"- [ ] 3. Update the docs.\n  Done when: README describes the loop.\n")
-	stop := newFakeStopSignal()
 	runner := &fakeRunner{script: func(call int, _ io.Writer) error {
 		switch call {
 		case 1: // the tool completes step 2 and checks its box
@@ -197,12 +235,15 @@ func TestEachIterationTargetsTheNextIncompleteStep(t *testing.T) {
 				"- [x] 1. Add the parser.\n  Done when: parser tests pass.\n\n"+
 					"- [x] 2. Wire the parser into the loop.\n  Done when: go test ./... passes.\n\n"+
 					"- [ ] 3. Update the docs.\n  Done when: README describes the loop.\n")
-		case 2:
-			stop.create("STOP.md")
+		case 2: // the tool completes the final step
+			fs.Write("STEPS.md",
+				"- [x] 1. Add the parser.\n  Done when: parser tests pass.\n\n"+
+					"- [x] 2. Wire the parser into the loop.\n  Done when: go test ./... passes.\n\n"+
+					"- [x] 3. Update the docs.\n  Done when: README describes the loop.\n")
 		}
 		return nil
 	}}
-	o := services.NewOrchestrator(runner, fs, stop, &fakeClock{now: time.Now()}, &fakeLogSink{}, io.Discard, config(0))
+	o := services.NewOrchestrator(runner, fs, &fakeClock{now: time.Now()}, &fakeLogSink{}, io.Discard, config(0))
 
 	o.Run(context.Background())
 
@@ -224,29 +265,31 @@ func TestEachIterationTargetsTheNextIncompleteStep(t *testing.T) {
 	}
 }
 
-func TestPromptAsksForStopFileWhenAllStepsChecked(t *testing.T) {
+func TestStepsFileWithoutCheckboxesFallsBackToStopSentinel(t *testing.T) {
 	fs := newFakeFileStore()
-	fs.Write("STEPS.md", "- [x] 1. Done already.\n  Done when: nothing remains.\n")
-	stop := newFakeStopSignal()
+	fs.Write("STEPS.md", "1. Prose steps only, nothing the parser can track.\n")
 	runner := &fakeRunner{script: func(int, io.Writer) error {
-		stop.create("STOP.md")
+		fs.Write("STOP.md", "confirmed done")
 		return nil
 	}}
-	o := services.NewOrchestrator(runner, fs, stop, &fakeClock{now: time.Now()}, &fakeLogSink{}, io.Discard, config(0))
+	o := services.NewOrchestrator(runner, fs, &fakeClock{now: time.Now()}, &fakeLogSink{}, io.Discard, config(0))
 
 	outcome := o.Run(context.Background())
 
 	if outcome != models.OutcomeStopped {
 		t.Fatalf("expected a clean completion, got %v", outcome)
 	}
-	if !strings.Contains(runner.prompt(1), "create STOP.md") {
-		t.Fatalf("expected the all-checked prompt to ask for STOP.md, got:\n%s", runner.prompt(1))
+	if runner.calls != 1 {
+		t.Fatalf("expected the tool-created STOP.md honored when no steps parse, got %d invocations", runner.calls)
+	}
+	if !strings.Contains(runner.prompt(1), "no checkbox-format steps") {
+		t.Fatalf("expected the prompt to explain the unparseable steps file, got:\n%s", runner.prompt(1))
 	}
 }
 
 func TestRunAbortsWhenStepsFileUnreadable(t *testing.T) {
 	runner := &fakeRunner{}
-	o := services.NewOrchestrator(runner, newFakeFileStore(), newFakeStopSignal(), &fakeClock{now: time.Now()}, &fakeLogSink{}, io.Discard, config(0))
+	o := services.NewOrchestrator(runner, newFakeFileStore(), &fakeClock{now: time.Now()}, &fakeLogSink{}, io.Discard, config(0))
 
 	outcome := o.Run(context.Background())
 
