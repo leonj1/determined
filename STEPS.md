@@ -16,7 +16,7 @@ when its "Done when" condition is verified.
 - [x] 4. Stop trusting STOP.md. The orchestrator decides completion itself: when the parser reports all steps complete, the run ends with `OutcomeStopped` (write STOP.md for compatibility). If STOP.md exists while unchecked steps remain, delete it, log a warning to the terminal, and continue looping. Update tests.
   Done when: a test proves a premature STOP.md is deleted and the loop continues, a test proves the loop ends when all boxes are checked, and `go test ./...` passes.
 
-- [ ] 5. Fail fast on missing or stale protocol files. In execute mode, exit immediately with a clear error if PLAN.md or STEPS.md is missing at startup. At startup, if a stale STOP.md exists alongside unchecked steps, delete it with a warning instead of exiting instantly as success.
+- [x] 5. Fail fast on missing or stale protocol files. In execute mode, exit immediately with a clear error if PLAN.md or STEPS.md is missing at startup. At startup, if a stale STOP.md exists alongside unchecked steps, delete it with a warning instead of exiting instantly as success.
   Done when: running execute mode in a directory without PLAN.md/STEPS.md exits non-zero with a message naming the missing file, covered by a test, and `go test ./...` passes.
 
 - [ ] 6. Add stall detection. Before each iteration, snapshot the parsed completed-step count; if a configurable number of consecutive iterations (default 3, flag `--max-stalled-iterations`) complete without a newly checked step, end the run with a new `OutcomeStalled` outcome and distinct exit code. Update EXECUTION.md's exit-code table.

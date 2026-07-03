@@ -62,10 +62,20 @@ func (r *fakeRunner) prompt(call int) string {
 func config(budget time.Duration) models.Config {
 	return models.Config{
 		StopFile:  "STOP.md",
+		PlanFile:  "PLAN.md",
 		StepsFile: "STEPS.md",
 		Tool:      models.DroidTool{},
 		Budget:    budget,
 	}
+}
+
+// plannedFileStore returns a file store seeded with a PLAN.md and the given
+// STEPS.md content, the state a real run inherits from planning.
+func plannedFileStore(steps string) *fakeFileStore {
+	fs := newFakeFileStore()
+	fs.Write("PLAN.md", "# Plan\n")
+	fs.Write("STEPS.md", steps)
+	return fs
 }
 
 // The two-step STEPS.md used across tests, in its three progress states.
@@ -81,9 +91,7 @@ const (
 // stepsFileStore returns a file store seeded with a two-step STEPS.md whose
 // steps are both unchecked.
 func stepsFileStore() *fakeFileStore {
-	fs := newFakeFileStore()
-	fs.Write("STEPS.md", twoStepsNoneChecked)
-	return fs
+	return plannedFileStore(twoStepsNoneChecked)
 }
 
 // --- Functional tests: what can the user achieve? ---
@@ -186,8 +194,7 @@ func TestRunStopsWhenTimeBudgetExhausted(t *testing.T) {
 }
 
 func TestRunEndsImmediatelyWhenAllStepsAlreadyChecked(t *testing.T) {
-	fs := newFakeFileStore()
-	fs.Write("STEPS.md", "- [x] 1. Done already.\n  Done when: nothing remains.\n")
+	fs := plannedFileStore("- [x] 1. Done already.\n  Done when: nothing remains.\n")
 	runner := &fakeRunner{}
 	o := services.NewOrchestrator(runner, fs, &fakeClock{now: time.Now()}, &fakeLogSink{}, io.Discard, config(0))
 
@@ -223,10 +230,9 @@ func TestRunStopsWhenInterrupted(t *testing.T) {
 }
 
 func TestEachIterationTargetsTheNextIncompleteStep(t *testing.T) {
-	fs := newFakeFileStore()
-	fs.Write("STEPS.md",
-		"- [x] 1. Add the parser.\n  Done when: parser tests pass.\n\n"+
-			"- [ ] 2. Wire the parser into the loop.\n  Done when: go test ./... passes.\n\n"+
+	fs := plannedFileStore(
+		"- [x] 1. Add the parser.\n  Done when: parser tests pass.\n\n" +
+			"- [ ] 2. Wire the parser into the loop.\n  Done when: go test ./... passes.\n\n" +
 			"- [ ] 3. Update the docs.\n  Done when: README describes the loop.\n")
 	runner := &fakeRunner{script: func(call int, _ io.Writer) error {
 		switch call {
@@ -266,8 +272,7 @@ func TestEachIterationTargetsTheNextIncompleteStep(t *testing.T) {
 }
 
 func TestStepsFileWithoutCheckboxesFallsBackToStopSentinel(t *testing.T) {
-	fs := newFakeFileStore()
-	fs.Write("STEPS.md", "1. Prose steps only, nothing the parser can track.\n")
+	fs := plannedFileStore("1. Prose steps only, nothing the parser can track.\n")
 	runner := &fakeRunner{script: func(int, io.Writer) error {
 		fs.Write("STOP.md", "confirmed done")
 		return nil
@@ -287,16 +292,57 @@ func TestStepsFileWithoutCheckboxesFallsBackToStopSentinel(t *testing.T) {
 	}
 }
 
-func TestRunAbortsWhenStepsFileUnreadable(t *testing.T) {
-	runner := &fakeRunner{}
-	o := services.NewOrchestrator(runner, newFakeFileStore(), &fakeClock{now: time.Now()}, &fakeLogSink{}, io.Discard, config(0))
+func TestExecuteFailsFastWhenProtocolFilesMissing(t *testing.T) {
+	cases := []struct {
+		name    string
+		seed    map[string]string
+		missing []string
+	}{
+		{"no plan and no steps", nil, []string{"PLAN.md", "STEPS.md"}},
+		{"plan without steps", map[string]string{"PLAN.md": "# Plan\n"}, []string{"STEPS.md"}},
+		{"steps without plan", map[string]string{"STEPS.md": twoStepsNoneChecked}, []string{"PLAN.md"}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			fs := newFakeFileStore()
+			for path, content := range c.seed {
+				fs.Write(path, content)
+			}
+			var terminal bytes.Buffer
+			runner := &fakeRunner{}
+			o := services.NewOrchestrator(runner, fs, &fakeClock{now: time.Now()}, &fakeLogSink{}, &terminal, config(0))
+
+			outcome := o.Run(context.Background())
+
+			if outcome != models.OutcomeMissingFiles || outcome.ExitCode() == 0 {
+				t.Fatalf("expected a non-zero missing-files abort, got %v (exit %d)", outcome, outcome.ExitCode())
+			}
+			if runner.calls != 0 {
+				t.Fatalf("expected no tool runs without the protocol files, got %d", runner.calls)
+			}
+			for _, f := range c.missing {
+				if !strings.Contains(terminal.String(), f) {
+					t.Fatalf("expected the error to name missing %s, got:\n%s", f, terminal.String())
+				}
+			}
+		})
+	}
+}
+
+func TestRunAbortsWhenStepsFileVanishesMidRun(t *testing.T) {
+	fs := stepsFileStore()
+	runner := &fakeRunner{script: func(int, io.Writer) error {
+		fs.Remove("STEPS.md")
+		return nil
+	}}
+	o := services.NewOrchestrator(runner, fs, &fakeClock{now: time.Now()}, &fakeLogSink{}, io.Discard, config(0))
 
 	outcome := o.Run(context.Background())
 
 	if outcome != models.OutcomeDroidFailed || outcome.ExitCode() != 1 {
 		t.Fatalf("expected an abort when STEPS.md cannot be read, got %v (exit %d)", outcome, outcome.ExitCode())
 	}
-	if runner.calls != 0 {
-		t.Fatalf("expected no tool runs without a readable STEPS.md, got %d", runner.calls)
+	if runner.calls != 1 {
+		t.Fatalf("expected the loop to abort once STEPS.md is unreadable, got %d runs", runner.calls)
 	}
 }

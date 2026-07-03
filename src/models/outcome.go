@@ -17,6 +17,9 @@ const (
 	// OutcomePlanStalled means a plan iteration produced neither clarifying
 	// questions nor a finished plan, so the loop could not make progress.
 	OutcomePlanStalled
+	// OutcomeMissingFiles means execute mode started without the protocol
+	// files a run needs (PLAN.md / STEPS.md), so no tool was ever invoked.
+	OutcomeMissingFiles
 )
 
 // ExitCode maps an outcome to a process exit code: 0 only when the work
@@ -42,6 +45,8 @@ func (o Outcome) String() string {
 		return "plan ready (PLAN.md and STEPS.md created)"
 	case OutcomePlanStalled:
 		return "aborted (tool produced neither questions nor a plan)"
+	case OutcomeMissingFiles:
+		return "aborted (required protocol file missing)"
 	default:
 		return "unknown"
 	}

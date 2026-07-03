@@ -64,6 +64,9 @@ func NewOrchestrator(
 
 // Run executes the loop and returns the terminal outcome.
 func (o *Orchestrator) Run(ctx context.Context) models.Outcome {
+	if !o.protocolFilesPresent() {
+		return models.OutcomeMissingFiles
+	}
 	deadline := o.deadline()
 	for {
 		if outcome, stop := o.preIteration(ctx, deadline); stop {
@@ -73,6 +76,23 @@ func (o *Orchestrator) Run(ctx context.Context) models.Outcome {
 			return outcome
 		}
 	}
+}
+
+// protocolFilesPresent verifies the plan-produced files exist before any tool
+// run, naming each missing one. Without them the loop has nothing to aim the
+// tool at, so failing fast beats burning iterations on an unplanned directory.
+// A stale STOP.md is not checked here: the first preIteration deletes it (with
+// a warning) whenever unchecked steps remain.
+func (o *Orchestrator) protocolFilesPresent() bool {
+	present := true
+	for _, f := range []string{o.cfg.PlanFile, o.cfg.StepsFile} {
+		if !o.files.Exists(f) {
+			fmt.Fprintf(o.terminal,
+				"determined: %s not found; run `determined --plan \"<goal>\"` to create it first\n", f)
+			present = false
+		}
+	}
+	return present
 }
 
 // preIteration applies the between-iteration guards before starting more work.
