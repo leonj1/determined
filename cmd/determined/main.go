@@ -4,8 +4,10 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"net/http"
 	"os"
 	"os/signal"
+	"runtime"
 	"syscall"
 	"time"
 
@@ -58,6 +60,11 @@ const breakdownPrompt = "Read STEPS.md and OVERSIZED.md. OVERSIZED.md lists step
 var version = "dev"
 
 func main() {
+	if isUpdateCommand(os.Args) {
+		runUpdateCommand()
+		return
+	}
+
 	budget := flag.Duration("max-duration", time.Hour,
 		"wall-clock budget, checked between iterations; 0 means unlimited")
 	logDir := flag.String("log-dir", "logs", "directory for per-iteration log files")
@@ -133,6 +140,35 @@ func runLoop(ctx context.Context, tool models.Tool, budget time.Duration, maxSta
 		cfg,
 	)
 	return orchestrator.Run(ctx)
+}
+
+func isUpdateCommand(args []string) bool {
+	return len(args) > 1 && args[1] == "update"
+}
+
+func runUpdateCommand() {
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	cfg := models.UpdateConfig{
+		CurrentVersion: models.Version(version),
+		Platform:       models.Platform{OS: runtime.GOOS, Arch: runtime.GOARCH},
+	}
+	updater := services.NewUpdateService(
+		clients.NewGitHubReleaseSource(
+			models.Repository{Owner: "leonj1", Name: "determined"},
+			models.APIBaseURL("https://api.github.com"),
+			http.DefaultClient,
+		),
+		clients.NewSelfExecutableInstaller(http.DefaultClient),
+		os.Stdout,
+		cfg,
+	)
+	if err := updater.Run(ctx); err != nil {
+		fmt.Fprintf(os.Stderr, "determined: update failed: %v\n", err)
+		os.Exit(1)
+	}
+	os.Exit(0)
 }
 
 // runPlan runs the attended planning loop, relaying the tool's clarifying
