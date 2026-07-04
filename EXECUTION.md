@@ -19,7 +19,7 @@ itself every iteration; it never trusts the tool's own claim of completion.
 1. **Completion check** — if every step is checked *and* the whole-plan
    audit's `STOP.md` exists → exit **0**. A `STOP.md` that appears while
    unchecked steps remain is deleted (with a warning) and the loop continues.
-2. **Budget check** — if `--max-duration` is exhausted → exit **1**. The
+2. **Budget check** — if `--max-duration` / `-t` is exhausted → exit **1**. The
    budget is checked *between* iterations, so an in-flight tool run always
    finishes first.
 3. **Prompt construction** — the orchestrator re-reads `STEPS.md` and aims the

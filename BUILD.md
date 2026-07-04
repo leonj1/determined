@@ -7,7 +7,7 @@ go build -o determined ./cmd/determined
 ./determined --tool claude         # use the claude CLI instead
 ./determined --model claude-opus-4-7   # use a specific droid model
 ./determined --tool claude --model opus # use a specific claude model alias
-./determined --max-duration 2h     # raise the time budget
+./determined -t 2h                 # raise the time budget
 ./determined --max-duration 0      # no time budget (stall/failure caps still apply)
 ./determined --version             # print the semantic version and exit
 ./determined update                # update this binary from the latest GitHub Release

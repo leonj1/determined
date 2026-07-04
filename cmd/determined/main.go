@@ -65,8 +65,7 @@ func main() {
 		return
 	}
 
-	budget := flag.Duration("max-duration", time.Hour,
-		"wall-clock budget, checked between iterations; 0 means unlimited")
+	budget := registerBudgetFlags(flag.CommandLine)
 	logDir := flag.String("log-dir", "logs", "directory for per-iteration log files")
 	tool := flag.String("tool", "droid", "AI coding CLI to run (droid|pi|claude)")
 	model := flag.String("model", "", "model ID or alias to pass to droid or claude")
@@ -144,6 +143,14 @@ func runLoop(ctx context.Context, tool models.Tool, budget time.Duration, maxSta
 
 func isUpdateCommand(args []string) bool {
 	return len(args) > 1 && args[1] == "update"
+}
+
+func registerBudgetFlags(flags *flag.FlagSet) *time.Duration {
+	budget := time.Hour
+	usage := "wall-clock budget, checked between iterations; 0 means unlimited"
+	flags.DurationVar(&budget, "max-duration", time.Hour, usage)
+	flags.DurationVar(&budget, "t", time.Hour, "alias for --max-duration")
+	return &budget
 }
 
 func runUpdateCommand() {

@@ -48,10 +48,10 @@ assess/breakdown loop:
    format and per-step `Done when:` lines — and `determined` re-assesses. Repeat.
 
 The loop is bounded by `--max-step-passes` (default `5`; `0` disables refinement
-entirely) and by `--max-duration`. If the cap is reached before the steps
+entirely) and by `--max-duration` / `-t`. If the cap is reached before the steps
 converge, the usable plan is left in place with a warning.
 
 Unlike the execute loop, planning is **attended**: it reads your answers from
-stdin. `--max-duration` still bounds it, guarding against a tool that keeps
+stdin. `--max-duration` / `-t` still bounds it, guarding against a tool that keeps
 asking forever. The protocol filenames (`GOAL.md` / `QUESTIONS.md` /
 `ANSWERS.md` / `OVERSIZED.md` / `PLAN.md` / `STEPS.md`) are hardcoded.
