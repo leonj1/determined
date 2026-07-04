@@ -40,10 +40,13 @@ It has two modes:
 # 1. Build the binary
 go build -o determined ./cmd/determined
 
-# 2a. Already have PLAN.md / STEPS.md? Run the execute loop in that directory:
+# 2a. Update an installed release binary to the latest GitHub Release:
+./determined update
+
+# 2b. Already have PLAN.md / STEPS.md? Run the execute loop in that directory:
 ./determined
 
-# 2b. Starting from a one-line goal? Plan it interactively first:
+# 2c. Starting from a one-line goal? Plan it interactively first:
 ./determined --plan "build a todo CLI"
 # ...answer the clarifying questions, then run the execute loop:
 ./determined
@@ -95,7 +98,9 @@ clean git checkout, so every change is reviewable and revertible.
 ## Build & run
 
 See [BUILD.md](BUILD.md) for build commands, runtime flags in action, and the
-versioned release build.
+versioned release build. `determined update` fetches the latest GitHub Release
+for the current platform and replaces the running binary when that release is
+newer.
 
 ## Planning a goal
 
@@ -123,6 +128,12 @@ codes.
 | `--git-checkpoint` | `true` | Git-commit the working tree after each verified step when running in a git repository. |
 | `--log-dir`      | `logs`   | Directory for per-iteration log files.                          |
 | `--version`      | —        | Print the binary's semantic version and exit.                  |
+
+## Commands
+
+| Command               | Purpose                                                        |
+|-----------------------|----------------------------------------------------------------|
+| `determined update`   | Download the latest supported GitHub Release binary and replace the current executable. |
 
 The protocol filenames (`PLAN.md` / `STEPS.md` / `STOP.md` / `NOTES.md` /
 `FIXES.md`) are hardcoded; the prompt is rebuilt each iteration from the next

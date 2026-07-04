@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -58,6 +60,57 @@ func TestRunnerReportsFailureWhenToolIsMissing(t *testing.T) {
 
 	if err == nil {
 		t.Fatal("expected an error when the AI tool binary cannot be found")
+	}
+}
+
+func TestUserCanFetchLatestDeterminedRelease(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/repos/leonj1/determined/releases/latest" {
+			t.Fatalf("unexpected release path %s", r.URL.Path)
+		}
+		io.WriteString(w, `{
+			"tag_name": "v1.0.12",
+			"assets": [
+				{
+					"name": "determined-linux-amd64",
+					"browser_download_url": "https://example.com/determined-linux-amd64"
+				}
+			]
+		}`)
+	}))
+	defer server.Close()
+	source := clients.NewGitHubReleaseSource(
+		models.Repository{Owner: "leonj1", Name: "determined"},
+		models.APIBaseURL(server.URL),
+		server.Client(),
+	)
+
+	release, err := source.Latest(context.Background())
+
+	if err != nil {
+		t.Fatalf("fetching the latest release should succeed: %v", err)
+	}
+	asset, ok := release.AssetNamed("determined-linux-amd64")
+	if release.Version != "v1.0.12" || !ok || asset.URL == "" {
+		t.Fatalf("expected latest release asset, got %#v", release)
+	}
+}
+
+func TestReleaseSourceReportsUnavailableLatestRelease(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "no release", http.StatusNotFound)
+	}))
+	defer server.Close()
+	source := clients.NewGitHubReleaseSource(
+		models.Repository{Owner: "leonj1", Name: "determined"},
+		models.APIBaseURL(server.URL),
+		server.Client(),
+	)
+
+	_, err := source.Latest(context.Background())
+
+	if err == nil {
+		t.Fatal("release lookup should report HTTP failures")
 	}
 }
 
@@ -153,4 +206,3 @@ type failingReader struct{}
 func (failingReader) Read([]byte) (int, error) {
 	return 0, os.ErrPermission
 }
-
