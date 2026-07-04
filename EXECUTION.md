@@ -88,5 +88,5 @@ to know before finishing. The file lives in the working directory alongside
 |------|----------------------------------------------------|
 | `0`  | All steps checked and the audit created `STOP.md` (execute), or `PLAN.md` + `STEPS.md` written (plan). |
 | `1`  | Any other termination: too many consecutive tool failures, budget exhausted, interrupted, missing `PLAN.md`/`STEPS.md` at startup, or a stalled plan round. |
-| `2`  | Usage error (e.g. an unsupported `--tool`).        |
+| `2`  | Usage error (e.g. an unsupported `--tool` or `--model` with `pi`). |
 | `3`  | Stalled: too many consecutive iterations without a newly checked step. |
