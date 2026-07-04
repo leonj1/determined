@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"determined/src/models"
 )
@@ -48,6 +49,25 @@ func TestInstallerReportsFailedBinaryDownload(t *testing.T) {
 
 	if err == nil || !strings.Contains(err.Error(), "download returned 404 Not Found") {
 		t.Fatalf("expected download failure, got %v", err)
+	}
+}
+
+func TestInstallerReportsSlowBinaryDownload(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(200 * time.Millisecond)
+		w.Write([]byte("new binary"))
+	}))
+	defer server.Close()
+	installer := SelfExecutableInstaller{client: server.Client(), downloadTimeout: 10 * time.Millisecond}
+	started := time.Now()
+
+	_, err := installer.download(context.Background(), models.DownloadURL(server.URL), t.TempDir(), 0o755)
+
+	if err == nil {
+		t.Fatal("expected a slow download to fail")
+	}
+	if time.Since(started) > time.Second {
+		t.Fatal("expected a slow download to stop before hanging")
 	}
 }
 

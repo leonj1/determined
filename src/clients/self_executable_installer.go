@@ -7,18 +7,22 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"time"
 
 	"determined/src/models"
 )
 
+const selfExecutableDownloadTimeout = 5 * time.Minute
+
 // SelfExecutableInstaller downloads a release asset and replaces this binary.
 type SelfExecutableInstaller struct {
-	client *http.Client
+	client          *http.Client
+	downloadTimeout time.Duration
 }
 
 // NewSelfExecutableInstaller constructs a SelfExecutableInstaller.
 func NewSelfExecutableInstaller(client *http.Client) SelfExecutableInstaller {
-	return SelfExecutableInstaller{client: client}
+	return SelfExecutableInstaller{client: client, downloadTimeout: selfExecutableDownloadTimeout}
 }
 
 // Install downloads asset and atomically renames it over the running binary.
@@ -60,7 +64,9 @@ func (i SelfExecutableInstaller) download(
 	dir string,
 	mode os.FileMode,
 ) (string, error) {
-	resp, err := i.get(ctx, url)
+	downloadCtx, cancel := context.WithTimeout(ctx, i.downloadTimeout)
+	defer cancel()
+	resp, err := i.get(downloadCtx, url)
 	if err != nil {
 		return "", err
 	}
