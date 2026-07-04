@@ -62,6 +62,7 @@ func main() {
 		"wall-clock budget, checked between iterations; 0 means unlimited")
 	logDir := flag.String("log-dir", "logs", "directory for per-iteration log files")
 	tool := flag.String("tool", "droid", "AI coding CLI to run (droid|pi|claude)")
+	model := flag.String("model", "", "model ID or alias to pass to droid or claude")
 	plan := flag.String("plan", "", "describe a goal to plan interactively, producing PLAN.md and STEPS.md")
 	maxStepPasses := flag.Int("max-step-passes", 5,
 		"max assess/breakdown rounds to shrink oversized steps during planning; 0 disables")
@@ -83,7 +84,10 @@ func main() {
 		os.Exit(0)
 	}
 
-	selected, err := models.SelectTool(*tool)
+	selected, err := models.SelectTool(
+		models.ToolName(*tool),
+		models.ToolOptions{Model: models.ModelID(*model)},
+	)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "determined: %v\n", err)
 		os.Exit(2)

@@ -49,8 +49,9 @@ go build -o determined ./cmd/determined
 ./determined
 ```
 
-Pick a different AI tool with `--tool` (`droid`/`pi`/`claude`) and bound
-unattended runs with `--max-duration`. For more detail, see
+Pick a different AI tool with `--tool` (`droid`/`pi`/`claude`), override the
+droid or claude model with `--model`, and bound unattended runs with
+`--max-duration`. For more detail, see
 [BUILD.md](BUILD.md), [PLANNING.md](PLANNING.md), and [EXECUTION.md](EXECUTION.md).
 
 ## Supported tools
@@ -61,9 +62,15 @@ command form with the prompt built for that iteration (see
 
 | `--tool`           | Command run each iteration            |
 |--------------------|---------------------------------------|
-| `droid` (default)  | `droid exec "<prompt>" --auto high` |
+| `droid` (default)  | `droid exec "<prompt>" --auto high [--model <model>]` |
 | `pi`               | `pi -p "<prompt>"`                     |
-| `claude`           | `claude -p "<prompt>" --permission-mode acceptEdits` |
+| `claude`           | `claude -p "<prompt>" --permission-mode acceptEdits [--model <model>]` |
+
+`--model <model>` is optional and only applies to `droid` and `claude`. For
+droid, pass a Factory model ID such as `claude-opus-4-7`; for claude, pass a
+Claude model alias such as `opus` or a full model name. `pi` does not support
+model overrides through `determined`, so `--tool pi --model ...` exits as a
+usage error.
 
 ### Why `droid` runs with `--auto high`
 
@@ -105,6 +112,7 @@ codes.
 | Flag             | Default  | Purpose                                                        |
 |------------------|----------|----------------------------------------------------------------|
 | `--tool`         | `droid`  | AI coding CLI to run (`droid`/`pi`/`claude`).                   |
+| `--model`        | —        | Optional model ID or alias for `droid` or `claude`; rejected with `pi`. |
 | `--plan`         | —        | Describe a goal to plan interactively; produces `PLAN.md` + `STEPS.md` instead of running the execute loop. |
 | `--max-step-passes` | `5`   | Max assess/breakdown rounds to shrink oversized steps during planning. `0` disables refinement. **plan only**. |
 | `--max-duration` | `1h`     | Wall-clock budget, checked between iterations. `0` = unlimited. |

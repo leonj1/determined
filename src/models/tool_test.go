@@ -29,7 +29,7 @@ func TestSelectedToolRunsTheRightCommand(t *testing.T) {
 		{"claude", `claude -p "do the work" --permission-mode acceptEdits`},
 	}
 	for _, c := range cases {
-		tool, err := models.SelectTool(c.tool)
+		tool, err := models.SelectTool(models.ToolName(c.tool), models.ToolOptions{})
 		if err != nil {
 			t.Fatalf("%s should be supported: %v", c.tool, err)
 		}
@@ -42,9 +42,42 @@ func TestSelectedToolRunsTheRightCommand(t *testing.T) {
 	}
 }
 
+func TestSelectedDroidAndClaudeCanOverrideTheModel(t *testing.T) {
+	cases := []struct {
+		tool string
+		want string
+	}{
+		{"droid", `droid exec "do the work" --auto high --model claude-opus-4-7`},
+		{"claude", `claude -p "do the work" --permission-mode acceptEdits --model opus`},
+	}
+	modelsByTool := map[string]models.ModelID{
+		"droid":  "claude-opus-4-7",
+		"claude": "opus",
+	}
+	for _, c := range cases {
+		tool, err := models.SelectTool(
+			models.ToolName(c.tool),
+			models.ToolOptions{Model: modelsByTool[c.tool]},
+		)
+		if err != nil {
+			t.Fatalf("%s should accept a model override: %v", c.tool, err)
+		}
+		if got := render(tool.Invocation("do the work")); got != c.want {
+			t.Errorf("%s: expected to run %q, got %q", c.tool, c.want, got)
+		}
+	}
+}
+
 func TestUnsupportedToolIsRejected(t *testing.T) {
-	_, err := models.SelectTool("gpt")
+	_, err := models.SelectTool("gpt", models.ToolOptions{})
 	if err == nil {
 		t.Fatal("expected an error when selecting an unsupported tool")
+	}
+}
+
+func TestPiRejectsModelOverride(t *testing.T) {
+	_, err := models.SelectTool("pi", models.ToolOptions{Model: "opus"})
+	if err == nil {
+		t.Fatal("expected pi to reject model overrides")
 	}
 }
