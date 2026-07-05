@@ -265,6 +265,60 @@ func TestPlanReplacesExistingGoalWithProvidedFileWhenDeclined(t *testing.T) {
 	}
 }
 
+func TestPlanReplacesBareHeadingGoalWithoutPrompt(t *testing.T) {
+	fs := newFakeFileStore()
+	fs.Write("GOAL.md", "#\n")
+	prompter := &fakePrompter{}
+	runner := &fakeRunner{script: func(int, io.Writer) error {
+		fs.Write("PLAN.md", "the plan")
+		fs.Write("STEPS.md", "the steps")
+		return nil
+	}}
+	var terminal strings.Builder
+	o := services.NewPlanOrchestrator(runner, fs, prompter, &fakeClock{now: time.Now()}, &fakeLogSink{}, &terminal, planConfig(0))
+
+	outcome := o.Run(context.Background())
+
+	if outcome != models.OutcomePlanReady {
+		t.Fatalf("expected a ready plan, got %v", outcome)
+	}
+	if fs.data["GOAL.md"] != "build a todo CLI\n" {
+		t.Fatalf("expected placeholder GOAL.md to be replaced, got %q", fs.data["GOAL.md"])
+	}
+	if len(prompter.asked) != 0 {
+		t.Fatalf("expected no prompt for placeholder GOAL.md, got %d prompts", len(prompter.asked))
+	}
+	if !strings.Contains(terminal.String(), "replacing it with --plan input") {
+		t.Fatalf("expected terminal to explain placeholder replacement, got %q", terminal.String())
+	}
+}
+
+func TestPlanRejectsBareHeadingInputBeforeToolRuns(t *testing.T) {
+	fs := newFakeFileStore()
+	cfg := planConfig(0)
+	cfg.Goal = "#"
+	runner := &fakeRunner{}
+	var terminal strings.Builder
+	o := services.NewPlanOrchestrator(runner, fs, &fakePrompter{}, &fakeClock{now: time.Now()}, &fakeLogSink{}, &terminal, cfg)
+
+	outcome := o.Run(context.Background())
+
+	if outcome != models.OutcomeInvalidGoal || outcome.ExitCode() != 1 {
+		t.Fatalf("expected invalid goal (exit 1), got %v (exit %d)", outcome, outcome.ExitCode())
+	}
+	if runner.calls != 0 {
+		t.Fatalf("expected no tool runs for invalid goal, got %d", runner.calls)
+	}
+	if fs.Exists("GOAL.md") {
+		t.Fatal("expected invalid GOAL.md not to be written")
+	}
+	for _, want := range []string{"bare `#` heading", "--plan TODO.md", "--plan \"$(cat TODO.md)\""} {
+		if !strings.Contains(terminal.String(), want) {
+			t.Fatalf("expected terminal guidance to include %q, got %q", want, terminal.String())
+		}
+	}
+}
+
 func TestPlanRefinesOversizedSteps(t *testing.T) {
 	fs := newFakeFileStore()
 	cfg := planConfig(0)

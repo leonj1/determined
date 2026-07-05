@@ -15,6 +15,7 @@ func TestOnlyCompletionExitsCleanly(t *testing.T) {
 		{models.OutcomeDroidFailed, 1},
 		{models.OutcomeBudgetExceeded, 1},
 		{models.OutcomeInterrupted, 1},
+		{models.OutcomeInvalidGoal, 1},
 		{models.OutcomeMissingFiles, 1},
 		{models.OutcomeStalled, 3},
 	}

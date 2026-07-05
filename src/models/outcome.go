@@ -23,6 +23,9 @@ const (
 	// OutcomeStalled means too many consecutive iterations completed without
 	// a newly checked step, so the run ended instead of looping forever.
 	OutcomeStalled
+	// OutcomeInvalidGoal means plan mode received an empty or incomplete goal,
+	// so no tool was invoked.
+	OutcomeInvalidGoal
 )
 
 // ExitCode maps an outcome to a process exit code: 0 only when the work
@@ -58,6 +61,8 @@ func (o Outcome) String() string {
 		return "aborted (required protocol file missing)"
 	case OutcomeStalled:
 		return "stalled (consecutive iterations checked no new step)"
+	case OutcomeInvalidGoal:
+		return "aborted (planning goal is empty or incomplete)"
 	default:
 		return "unknown"
 	}

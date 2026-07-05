@@ -104,21 +104,41 @@ func (o *PlanOrchestrator) seedGoal() (models.Outcome, bool) {
 	if o.goalSeeded {
 		return models.OutcomePlanReady, false
 	}
-	if o.files.Exists(o.cfg.GoalFile) {
-		useExisting, err := o.useExistingGoal()
-		if err != nil {
-			fmt.Fprintf(o.terminal, "determined: could not read your answer: %v\n", err)
-			return models.OutcomeInterrupted, true
-		}
-		if useExisting {
-			o.goalSeeded = true
-			return models.OutcomePlanReady, false
-		}
+	if useExisting, outcome, stop := o.resolveExistingGoal(); stop || useExisting {
+		return outcome, stop
 	}
+	return o.writeGoal()
+}
+
+func (o *PlanOrchestrator) resolveExistingGoal() (bool, models.Outcome, bool) {
+	if !o.files.Exists(o.cfg.GoalFile) {
+		return false, models.OutcomePlanReady, false
+	}
+	content, err := o.files.Read(o.cfg.GoalFile)
+	if err != nil {
+		fmt.Fprintf(o.terminal, "determined: could not read %s: %v\n", o.cfg.GoalFile, err)
+		return false, models.OutcomeDroidFailed, true
+	}
+	if incompleteGoal(content) {
+		fmt.Fprintf(o.terminal, "determined: %s is empty or only a bare heading; replacing it with --plan input\n", o.cfg.GoalFile)
+		return false, models.OutcomePlanReady, false
+	}
+	useExisting, err := o.useExistingGoal()
+	if err != nil {
+		fmt.Fprintf(o.terminal, "determined: could not read your answer: %v\n", err)
+		return false, models.OutcomeInterrupted, true
+	}
+	if useExisting {
+		o.goalSeeded = true
+	}
+	return useExisting, models.OutcomePlanReady, false
+}
+
+func (o *PlanOrchestrator) writeGoal() (models.Outcome, bool) {
 	goal, err := o.goalContent()
 	if err != nil {
 		fmt.Fprintf(o.terminal, "determined: %v\n", err)
-		return models.OutcomeDroidFailed, true
+		return models.OutcomeInvalidGoal, true
 	}
 	if err := o.files.Write(o.cfg.GoalFile, goal); err != nil {
 		fmt.Fprintf(o.terminal, "determined: could not write %s: %v\n", o.cfg.GoalFile, err)
@@ -131,13 +151,28 @@ func (o *PlanOrchestrator) seedGoal() (models.Outcome, bool) {
 func (o *PlanOrchestrator) goalContent() (string, error) {
 	source := o.goalSourcePath()
 	if source == "" {
+		if incompleteGoal(o.cfg.Goal) {
+			return "", incompleteGoalError("the --plan value")
+		}
 		return o.cfg.Goal + "\n", nil
 	}
 	content, err := o.files.Read(source)
 	if err != nil {
 		return "", fmt.Errorf("could not read goal source %s: %w", source, err)
 	}
+	if incompleteGoal(content) {
+		return "", incompleteGoalError("goal source " + source)
+	}
 	return content, nil
+}
+
+func incompleteGoal(content string) bool {
+	trimmed := strings.TrimSpace(content)
+	return trimmed == "" || strings.Trim(trimmed, "#") == ""
+}
+
+func incompleteGoalError(source string) error {
+	return fmt.Errorf("%s is empty or contains only a bare `#` heading; pass a goal sentence, a path like `--plan TODO.md`, `--plan \"Read TODO.md\"`, or quote command substitution as `--plan \"$(cat TODO.md)\"`", source)
 }
 
 func (o *PlanOrchestrator) goalSourcePath() string {

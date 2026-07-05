@@ -44,3 +44,20 @@ func TestUserCanSetMaxDurationWithLongFlag(t *testing.T) {
 		t.Fatalf("long max-duration flag set %v, want 3h", *budget)
 	}
 }
+
+func TestPlanInputPreservesTrailingWordsSplitByShell(t *testing.T) {
+	got := planInput("#", []string{"Goal", "Build", "the", "TODO", "CLI"})
+	want := "# Goal Build the TODO CLI"
+
+	if got != want {
+		t.Fatalf("plan input = %q, want %q", got, want)
+	}
+}
+
+func TestPlanInputKeepsQuotedValueWhenNoTrailingWords(t *testing.T) {
+	got := planInput("build a todo CLI", nil)
+
+	if got != "build a todo CLI" {
+		t.Fatalf("plan input = %q, want the quoted value unchanged", got)
+	}
+}
