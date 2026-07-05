@@ -9,6 +9,24 @@ clarifying questions first**, mediating a file-based interview:
 ./determined --plan "build a todo CLI" --tool claude
 ```
 
+For a longer goal kept in a file, pass the path instead of shell-expanding the
+contents:
+
+```bash
+./determined --plan TODO.md --tool claude
+./determined --plan "Read TODO.md" --tool claude
+```
+
+If you do use command substitution, quote it:
+
+```bash
+./determined --plan "$(cat TODO.md)" --tool claude
+```
+
+Unquoted backticks such as ``--plan `cat TODO.md` `` are split by the shell.
+If the file starts with a Markdown heading, `determined` may receive only `#`
+as the flag value.
+
 In the current working directory:
 
 1. Your goal is written to `GOAL.md`. If `GOAL.md` already exists,

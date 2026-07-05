@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/signal"
 	"runtime"
+	"strings"
 	"syscall"
 	"time"
 
@@ -22,6 +23,8 @@ import (
 const planPrompt = "You are helping plan a software project before any code is written. " +
 	"Read GOAL.md for the user's goal, and read ANSWERS.md if it exists for clarifying " +
 	"questions you already asked and the user's answers. " +
+	"Treat GOAL.md as authoritative: if it contains requirements, a task list, or implementation " +
+	"instructions, convert those directly into PLAN.md and STEPS.md unless a specific ambiguity blocks planning. " +
 	"If you do NOT yet have enough detail to write a thorough plan, write your clarifying " +
 	"questions to QUESTIONS.md as a markdown numbered list, one question per line, and do " +
 	"nothing else. " +
@@ -107,7 +110,7 @@ func main() {
 
 	var outcome models.Outcome
 	if *plan != "" {
-		outcome = runPlan(ctx, selected, *plan, *budget, *maxStepPasses, clock, logs)
+		outcome = runPlan(ctx, selected, planInput(*plan, flag.Args()), *budget, *maxStepPasses, clock, logs)
 	} else {
 		outcome = runLoop(ctx, selected, *budget, *maxStalled, *maxFailures, *maxIterationDuration, *verify, *gitCheckpoint, clock, logs)
 	}
@@ -151,6 +154,13 @@ func registerBudgetFlags(flags *flag.FlagSet) *time.Duration {
 	flags.DurationVar(&budget, "max-duration", time.Hour, usage)
 	flags.DurationVar(&budget, "t", time.Hour, "alias for --max-duration")
 	return &budget
+}
+
+func planInput(flagValue string, remaining []string) string {
+	if len(remaining) == 0 {
+		return flagValue
+	}
+	return strings.Join(append([]string{flagValue}, remaining...), " ")
 }
 
 func runUpdateCommand() {
