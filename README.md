@@ -54,7 +54,7 @@ go build -o determined ./cmd/determined
 
 Pick a different AI tool with `--tool` (`droid`/`pi`/`claude`), override the
 droid or claude model with `--model`, and bound unattended runs with
-`--max-duration`. For more detail, see
+`--max-duration` (or `-t`). For more detail, see
 [BUILD.md](BUILD.md), [PLANNING.md](PLANNING.md), and [EXECUTION.md](EXECUTION.md).
 
 ## Supported tools
@@ -120,7 +120,7 @@ codes.
 | `--model`        | —        | Optional model ID or alias for `droid` or `claude`; rejected with `pi`. |
 | `--plan`         | —        | Describe a goal to plan interactively; produces `PLAN.md` + `STEPS.md` instead of running the execute loop. |
 | `--max-step-passes` | `5`   | Max assess/breakdown rounds to shrink oversized steps during planning. `0` disables refinement. **plan only**. |
-| `--max-duration` | `1h`     | Wall-clock budget, checked between iterations. `0` = unlimited. |
+| `--max-duration`, `-t` | `1h` | Wall-clock budget, checked between iterations. `0` = unlimited. |
 | `--max-iteration-duration` | `15m` | Kill a single tool invocation after this long; the timeout counts as a failed invocation. `0` = unlimited. |
 | `--max-consecutive-failures` | `3` | Abort after this many consecutive failed tool invocations; any success resets the count. |
 | `--max-stalled-iterations` | `3` | Stop (exit `3`) after this many consecutive iterations check no new step. `0` disables stall detection. |
