@@ -33,6 +33,7 @@ func main() {
 	tool := flag.String("tool", "droid", "AI coding CLI to run (droid|pi|claude)")
 	model := flag.String("model", "", "model ID or alias to pass to droid or claude")
 	plan := flag.String("plan", "", "describe a goal to plan interactively, producing PLAN.md and STEPS.md")
+	reviewPlan := flag.Bool("review-plan", false, "critique and interactively revise existing PLAN.md and STEPS.md")
 	mvp := flag.Bool("mvp", false, "create a lean plan for the smallest usable outcome (plan mode only)")
 	prototype := flag.Bool("prototype", false, "create a fast experimental plan with minimal questioning and no refinement (plan mode only)")
 	maxStepPasses := flag.Int("max-step-passes", 5,
@@ -56,7 +57,7 @@ func main() {
 		fmt.Printf("determined %s\n", version)
 		os.Exit(0)
 	}
-	planMode, err := selectPlanMode(*plan != "", *mvp, *prototype)
+	planMode, err := selectPlanMode(*plan != "", *reviewPlan, *mvp, *prototype)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "determined: %v\n", err)
 		os.Exit(2)
@@ -78,7 +79,9 @@ func main() {
 	logs := clients.NewFileLogSink(*logDir, clock)
 
 	var outcome models.Outcome
-	if *plan != "" {
+	if *reviewPlan {
+		outcome = runReviewPlan(ctx, selected, *budget, *maxStepPasses, clock, logs)
+	} else if *plan != "" {
 		outcome = runPlan(ctx, selected, planInput(*plan, flag.Args()), planMode, *budget, *maxStepPasses, clock, logs)
 	} else {
 		outcome = runLoop(ctx, selected, *budget, *maxStalled, *maxFailures, *maxIterationDuration, *verify, *specializedReviews, *gitCheckpoint, clock, logs)
@@ -88,11 +91,14 @@ func main() {
 	os.Exit(outcome.ExitCode())
 }
 
-func selectPlanMode(planning, mvp, prototype bool) (models.PlanMode, error) {
+func selectPlanMode(planning, reviewing, mvp, prototype bool) (models.PlanMode, error) {
+	if planning && reviewing {
+		return "", fmt.Errorf("-plan and -review-plan cannot be used together")
+	}
 	if mvp && prototype {
 		return "", fmt.Errorf("-mvp and -prototype cannot be used together")
 	}
-	if !planning && (mvp || prototype) {
+	if (!planning || reviewing) && (mvp || prototype) {
 		return "", fmt.Errorf("-mvp and -prototype require -plan")
 	}
 	if mvp {
@@ -186,6 +192,7 @@ func runUpdateCommand() {
 func runPlan(ctx context.Context, tool models.Tool, goal string, mode models.PlanMode, budget time.Duration, maxStepPasses int, clock services.Clock, logs services.LogSink) models.Outcome {
 	prompts := services.PlanningPrompts(mode)
 	cfg := models.PlanConfig{
+		Operation:        models.PlanOperationCreate,
 		Goal:             goal,
 		Invocation:       tool.Invocation(prompts.Plan),
 		Budget:           budget,
@@ -195,6 +202,35 @@ func runPlan(ctx context.Context, tool models.Tool, goal string, mode models.Pla
 		GoalFile:         "GOAL.md",
 		QuestionsFile:    "QUESTIONS.md",
 		AnswersFile:      "ANSWERS.md",
+		PlanFile:         "PLAN.md",
+		StepsFile:        "STEPS.md",
+		AssessmentFile:   "REFINEMENTS.md",
+	}
+	orchestrator := services.NewPlanOrchestrator(
+		clients.NewExecCommandRunner(),
+		clients.NewOsFileStore(),
+		clients.NewStdinPrompter(os.Stdout, os.Stdin),
+		clock,
+		logs,
+		os.Stdout,
+		cfg,
+	)
+	return orchestrator.Run(ctx)
+}
+
+// runReviewPlan critiques an existing plan, interviews the user about
+// consequential choices, and applies revisions without entering execute mode.
+func runReviewPlan(ctx context.Context, tool models.Tool, budget time.Duration, maxStepPasses int, clock services.Clock, logs services.LogSink) models.Outcome {
+	prompts := services.ReviewPrompts()
+	cfg := models.PlanConfig{
+		Operation:        models.PlanOperationReview,
+		Budget:           budget,
+		AssessInvocation: tool.Invocation(prompts.Assess),
+		RefineInvocation: tool.Invocation(prompts.Refine),
+		MaxRefinePasses:  maxStepPasses,
+		GoalFile:         "GOAL.md",
+		QuestionsFile:    "REVIEW_QUESTIONS.md",
+		AnswersFile:      "REVIEW_ANSWERS.md",
 		PlanFile:         "PLAN.md",
 		StepsFile:        "STEPS.md",
 		AssessmentFile:   "REFINEMENTS.md",

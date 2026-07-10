@@ -26,6 +26,8 @@ const (
 	// OutcomeInvalidGoal means plan mode received an empty or incomplete goal,
 	// so no tool was invoked.
 	OutcomeInvalidGoal
+	// OutcomePlanReviewed means review mode assessed and revised an existing plan.
+	OutcomePlanReviewed
 )
 
 // ExitCode maps an outcome to a process exit code: 0 only when the work
@@ -34,7 +36,7 @@ const (
 // its own code so callers can tell "stuck" apart from "failed".
 func (o Outcome) ExitCode() int {
 	switch o {
-	case OutcomeStopped, OutcomePlanReady:
+	case OutcomeStopped, OutcomePlanReady, OutcomePlanReviewed:
 		return 0
 	case OutcomeStalled:
 		return 3
@@ -63,6 +65,8 @@ func (o Outcome) String() string {
 		return "stalled (consecutive iterations checked no new step)"
 	case OutcomeInvalidGoal:
 		return "aborted (planning goal is empty or incomplete)"
+	case OutcomePlanReviewed:
+		return "plan reviewed (PLAN.md and STEPS.md ready)"
 	default:
 		return "unknown"
 	}

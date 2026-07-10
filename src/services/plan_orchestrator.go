@@ -67,6 +67,18 @@ func NewPlanOrchestrator(
 // Run executes the planning loop and returns the terminal outcome.
 func (o *PlanOrchestrator) Run(ctx context.Context) models.Outcome {
 	deadline := o.deadline()
+	switch o.cfg.Operation {
+	case models.PlanOperationCreate:
+		return o.create(ctx, deadline)
+	case models.PlanOperationReview:
+		return o.review(ctx, deadline)
+	default:
+		fmt.Fprintf(o.terminal, "determined: unsupported plan operation %q\n", o.cfg.Operation)
+		return models.OutcomeDroidFailed
+	}
+}
+
+func (o *PlanOrchestrator) create(ctx context.Context, deadline time.Time) models.Outcome {
 	for {
 		switch {
 		case ctx.Err() != nil:
@@ -96,6 +108,26 @@ func (o *PlanOrchestrator) Run(ctx context.Context) models.Outcome {
 		// The tool wrote neither questions nor a plan: it cannot make progress.
 		return models.OutcomePlanStalled
 	}
+}
+
+func (o *PlanOrchestrator) review(ctx context.Context, deadline time.Time) models.Outcome {
+	if ctx.Err() != nil {
+		return models.OutcomeInterrupted
+	}
+	if !o.planComplete() {
+		fmt.Fprintf(o.terminal, "determined: review requires %s and %s\n", o.cfg.PlanFile, o.cfg.StepsFile)
+		return models.OutcomeMissingFiles
+	}
+	if o.files.Exists(o.cfg.QuestionsFile) {
+		if outcome, stop := o.relayQuestions(); stop {
+			return outcome
+		}
+	}
+	outcome := o.refine(ctx, deadline)
+	if outcome == models.OutcomePlanReady {
+		return models.OutcomePlanReviewed
+	}
+	return outcome
 }
 
 // seedGoal ensures the planning tool has a goal to read without silently
@@ -230,6 +262,11 @@ func (o *PlanOrchestrator) refine(ctx context.Context, deadline time.Time) model
 		if len(issues) == 0 {
 			o.files.Remove(o.cfg.AssessmentFile)
 			return models.OutcomePlanReady
+		}
+		if o.cfg.Operation == models.PlanOperationReview && o.files.Exists(o.cfg.QuestionsFile) {
+			if outcome, stop := o.relayQuestions(); stop {
+				return outcome
+			}
 		}
 		if pass >= o.cfg.MaxRefinePasses {
 			fmt.Fprintf(o.terminal,
