@@ -58,8 +58,9 @@ type Orchestrator struct {
 	// reaches cfg.MaxReplans, hitting the stall cap ends the run for good.
 	replansUsed int
 	// rejections records, per step (keyed by stepKey), one short reason string
-	// per rejection of a checked box by the check gate, verifier, or audit, in
-	// order — a step's rejection count is its slice's length. From the second
+	// per rejection of a checked box by the check gate, done-when check,
+	// verifier, or audit, in order — a step's rejection count is its slice's
+	// length. From the second
 	// rejection of the same step onward the failed attempt is stashed so the
 	// retry starts from the last verified checkpoint; the reasons feed the
 	// STALLED.md handoff, while FIXES.md keeps the full entries.
@@ -143,13 +144,16 @@ func (o *Orchestrator) run(ctx context.Context) models.Outcome {
 		// unchecked below) from a step that was never checked at all.
 		afterWork := o.parsedSteps()
 		gatePassed := o.checkGatePassed(ctx, before)
+		var doneWhenFailed map[int]string
 		if gatePassed {
-			if outcome, stop := o.verifyNewSteps(ctx, before); stop {
+			failed, outcome, stop := o.verifyNewSteps(ctx, before)
+			if stop {
 				return outcome
 			}
+			doneWhenFailed = failed
 			o.checkpointNewSteps(ctx, before)
 		}
-		o.recordRejections(ctx, intent, before, afterWork, gatePassed)
+		o.recordRejections(ctx, intent, before, afterWork, gatePassed, doneWhenFailed)
 		if o.stalledOut(CompletedStepCount(before)) {
 			outcome, stop, resumed := o.replanStuckStep(ctx)
 			if stop {
@@ -572,29 +576,99 @@ func tail(s string, limit int) string {
 	return s[len(s)-limit:]
 }
 
-// verifyNewSteps runs an independent reviewer invocation over every step the
-// last iteration newly checked, comparing the steps file against its
-// pre-iteration snapshot. The verifier unchecks a step whose acceptance
-// criterion is not genuinely met (recording why in FIXES.md), so the loop
-// re-runs it. Ping-pong between worker and verifier is bounded because a
+// doneWhenCommand extracts the executable command from a step's Done-when
+// criterion: exactly one non-empty backtick span (`cmd ...`) is the step's
+// mechanical check. The rule is deliberately conservative — no backticks,
+// more than one span, an unpaired backtick, or an empty span all yield no
+// command — so the step falls back to the AI reviewer rather than the
+// orchestrator running a fragment it cannot be sure is the whole check.
+func doneWhenCommand(doneWhen string) (string, bool) {
+	parts := strings.Split(doneWhen, "`")
+	if len(parts) != 3 { // exactly two backticks delimit exactly one span
+		return "", false
+	}
+	cmd := strings.TrimSpace(parts[1])
+	return cmd, cmd != ""
+}
+
+// verifyNewSteps verifies every step the last iteration newly checked,
+// comparing the steps file against its pre-iteration snapshot. Verification
+// is two-tier: a step whose Done-when criterion quotes an executable command
+// in backticks is verified mechanically — the orchestrator runs the command
+// itself, with no AI judgment and no reviewer invocation spent — while every
+// other step falls back to the independent AI reviewer (gated by cfg.Verify),
+// which unchecks a step whose acceptance criterion is not genuinely met and
+// records why in FIXES.md. The returned map names, per step index, the
+// command that mechanically rejected it, so recordRejections can name the
+// exact check. Ping-pong between worker and verifier is bounded because a
 // rejection leaves the completed count unchanged, which the stall counter
 // (checked right after this pass) treats as a no-progress iteration. A failed
 // verifier invocation counts toward the consecutive-failure cap like any
 // other; the step simply stays checked.
-func (o *Orchestrator) verifyNewSteps(ctx context.Context, before []Step) (models.Outcome, bool) {
-	if !o.cfg.Verify {
-		return models.OutcomeStopped, false
-	}
+func (o *Orchestrator) verifyNewSteps(ctx context.Context, before []Step) (map[int]string, models.Outcome, bool) {
+	var doneWhenFailed map[int]string
 	for i, step := range o.parsedSteps() {
 		if !step.Completed || (i < len(before) && before[i].Completed) {
 			continue
 		}
+		if cmd, ok := doneWhenCommand(step.DoneWhen); ok {
+			if !o.doneWhenCheckPassed(ctx, i, cmd) {
+				if doneWhenFailed == nil {
+					doneWhenFailed = map[int]string{}
+				}
+				doneWhenFailed[i] = cmd
+			}
+			continue
+		}
+		if !o.cfg.Verify {
+			continue
+		}
 		fmt.Fprintf(o.terminal, "determined: verifying step %d\n", i+1)
 		if outcome, stop := o.invoke(ctx, verifyPrompt(i+1, step)); stop {
-			return outcome, true
+			return doneWhenFailed, outcome, true
 		}
 	}
-	return models.OutcomeStopped, false // outcome ignored when stop is false
+	return doneWhenFailed, models.OutcomeStopped, false // outcome ignored when stop is false
+}
+
+// doneWhenCheckPassed verifies one newly checked step mechanically by running
+// the command its Done-when criterion quotes, via `sh -c` like the check
+// gate, streamed live and bounded by the same 10-minute timeout, and reports
+// whether the step is verified. A failure — non-zero exit or timeout — is a
+// verdict on the work, never a tool failure, so it never counts toward the
+// consecutive-failure cap: the step is unchecked again and the command's
+// output tail recorded under a `## Step N` FIXES.md heading mirroring the
+// gate's entry, so the re-run worker sees exactly what failed. File errors
+// are noted and ignored: like the gate, the check delivers verdicts, it never
+// ends the run.
+func (o *Orchestrator) doneWhenCheckPassed(ctx context.Context, i int, cmd string) bool {
+	fmt.Fprintf(o.terminal, "determined: running step %d's done-when check: %s\n", i+1, cmd)
+	var output bytes.Buffer
+	runCtx, cancel := context.WithTimeout(ctx, checkCmdTimeout)
+	err := o.runner.Run(runCtx,
+		models.Invocation{Binary: "sh", Args: []string{"-c", cmd}},
+		io.MultiWriter(o.terminal, &output))
+	cancel()
+	if err == nil {
+		return true
+	}
+	content, fileErr := o.files.Read(o.cfg.StepsFile)
+	if fileErr == nil {
+		fileErr = o.files.Write(o.cfg.StepsFile, UncheckSteps(content, []int{i}))
+	}
+	if fileErr != nil {
+		fmt.Fprintf(o.terminal,
+			"determined: could not uncheck step %d after its failed done-when check: %v\n", i+1, fileErr)
+	}
+	entry := fmt.Sprintf(
+		"## Step %d\n\nDone-when check `%s` failed (%v). Output tail:\n\n```\n%s\n```\n\n",
+		i+1, cmd, err, tail(output.String(), checkOutputTailLimit))
+	if err := o.files.Append("FIXES.md", entry); err != nil {
+		fmt.Fprintf(o.terminal, "determined: could not record the done-when failure in FIXES.md: %v\n", err)
+	}
+	fmt.Fprintf(o.terminal,
+		"determined: done-when check failed; unchecked step %d and recorded the output in FIXES.md\n", i+1)
+	return false
 }
 
 // verifyPrompt builds the reviewer instruction for one newly checked step:
@@ -765,22 +839,26 @@ func (o *Orchestrator) initAttemptStashing(ctx context.Context) {
 // recordRejections updates the per-step rejection records once the gate,
 // verifier, and audit have delivered their verdicts, and stashes the failed
 // attempt when the same step reaches stashAfterRejections. A rejection is a
-// step this iteration's work checked that lost the check to the gate or the
-// verifier — a failed gate skips the verifier, so which of the two rejected
-// is known here and recorded as the reason; steps the audit reopened count
-// toward the same totals (they were finished work that turned out wrong) but
-// trigger no stash, since their work was committed at checkpoint time and the
-// tree holds nothing to stash.
-func (o *Orchestrator) recordRejections(ctx context.Context, intent iterationIntent, before, afterWork []Step, gatePassed bool) {
+// step this iteration's work checked that lost the check to the gate, the
+// done-when check, or the verifier — a failed gate skips the verification
+// pass and doneWhenFailed names the steps the mechanical check rejected, so
+// which of the three rejected is known here and recorded as the reason; steps
+// the audit reopened count toward the same totals (they were finished work
+// that turned out wrong) but trigger no stash, since their work was committed
+// at checkpoint time and the tree holds nothing to stash.
+func (o *Orchestrator) recordRejections(ctx context.Context, intent iterationIntent, before, afterWork []Step, gatePassed bool, doneWhenFailed map[int]string) {
 	final := o.parsedSteps()
 	uncheckedNow := func(i int) bool { return i < len(final) && !final[i].Completed }
-	reason := "verifier rejected"
-	if !gatePassed {
-		reason = "check command failed: " + o.cfg.CheckCmd
-	}
 	stashTarget := -1
 	for _, i := range newlyCheckedIndices(afterWork, before) {
 		if uncheckedNow(i) {
+			reason := "verifier rejected"
+			switch {
+			case !gatePassed:
+				reason = "check command failed: " + o.cfg.CheckCmd
+			case doneWhenFailed[i] != "":
+				reason = "done-when check failed: " + doneWhenFailed[i]
+			}
 			key := stepKey(afterWork[i])
 			o.rejections[key] = append(o.rejections[key], reason)
 			if stashTarget == -1 {
@@ -1010,9 +1088,15 @@ func stepPrompt(n int, step Step) string {
 	}
 	fmt.Fprintf(&b, " Read PLAN.md for overall context if the step is unclear. "+
 		"Run the acceptance check yourself and mark step %d `[x]` in STEPS.md only "+
-		"once it passes. Do not check or uncheck any other step, and do not create "+
-		"STOP.md. Before finishing, append to NOTES.md any decisions, conventions, or "+
-		"gotchas later steps need to know.", n)
+		"once it passes.", n)
+	if cmd, ok := doneWhenCommand(step.DoneWhen); ok {
+		fmt.Fprintf(&b, " The orchestrator will re-run `%s` itself after this invocation "+
+			"to verify the step mechanically, so that exact command must exit 0 in this "+
+			"working tree.", cmd)
+	}
+	b.WriteString(" Do not check or uncheck any other step, and do not create " +
+		"STOP.md. Before finishing, append to NOTES.md any decisions, conventions, or " +
+		"gotchas later steps need to know.")
 	return b.String()
 }
 
@@ -1034,7 +1118,9 @@ func replanPrompt(n int, step Step) string {
 	fmt.Fprintf(&b, " Read PLAN.md, plus FIXES.md and NOTES.md if they exist, to see what "+
 		"has gone wrong so far. Replace step %d in STEPS.md with 2-4 smaller `- [ ]` "+
 		"checkbox steps, each ending with an indented `Done when:` line stating a "+
-		"checkable acceptance condition, ordered so completing them all completes the "+
+		"checkable acceptance condition — phrased as a single backtick-quoted executable "+
+		"command whenever possible, since the orchestrator re-runs such commands itself "+
+		"to verify the step — ordered so completing them all completes the "+
 		"original step. Keep every other step exactly as it is, in order. Do not check "+
 		"any box, do not implement anything, and do not create STOP.md.", n)
 	return b.String()
@@ -1121,9 +1207,10 @@ type runReport struct {
 	// StuckStep is the 1-based step a stalled run could not get past; present
 	// only when the run stalled.
 	StuckStep int `json:"stuck_step,omitempty"`
-	// Rejections counts, per step, how many times the check gate, verifier,
-	// or audit rejected a checked box, keyed by the step's current number (or
-	// by its text, when a replan removed the step from the file).
+	// Rejections counts, per step, how many times the check gate, done-when
+	// check, verifier, or audit rejected a checked box, keyed by the step's
+	// current number (or by its text, when a replan removed the step from the
+	// file).
 	Rejections map[string]int `json:"rejections,omitempty"`
 	// Report names the human-readable stall handoff written alongside this
 	// report; present only when the run stalled and STALLED.md was written.

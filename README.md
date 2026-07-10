@@ -21,9 +21,13 @@ work. Unlike the one-liner, it does not trust the tool's word for progress:
   its own step's box; reworded steps, weakened `Done when:` criteria, or
   added/deleted boxes are reverted from a pre-iteration snapshot with a
   warning (see [EXECUTION.md](EXECUTION.md)).
-- **Independent verification** — after a step is checked, a fresh reviewer
-  invocation confirms the acceptance criterion actually holds, unchecking the
-  step (and recording why in `FIXES.md`) when it does not.
+- **Independent verification** — after a step is checked, its `Done when:`
+  criterion is verified. A criterion that quotes a single command in backticks
+  (e.g. `` Done when: `go test ./widget` exits 0 ``) is verified
+  *mechanically*: the orchestrator runs that command itself and unchecks the
+  step when it fails, with no AI judgment involved. Only prose criteria fall
+  back to a fresh AI reviewer invocation, which unchecks the step (and
+  records why in `FIXES.md`) when the criterion does not hold.
 - **Deterministic check gate** (`--check-cmd`) — optionally require a fixed
   shell command (e.g. `go test ./...`) to pass before a newly checked step
   counts; a failure unchecks the step mechanically, with no AI judgment
@@ -141,7 +145,7 @@ codes.
 | `--max-iteration-duration` | `15m` | Kill a single tool invocation after this long; the timeout counts as a failed invocation. `0` = unlimited. |
 | `--max-consecutive-failures` | `3` | Abort after this many consecutive failed tool invocations; any success resets the count. |
 | `--max-stalled-iterations` | `3` | Stop (exit `3`) after this many consecutive iterations check no new step. `0` disables stall detection. |
-| `--verify`       | `true`   | After each newly checked step, run an independent verifier invocation that unchecks it (recording why in `FIXES.md`) if its acceptance criterion is not met. |
+| `--verify`       | `true`   | After each newly checked step with a *prose* `Done when:` criterion, run an independent AI verifier invocation that unchecks it (recording why in `FIXES.md`) if its acceptance criterion is not met. A criterion quoting a command in backticks is re-run mechanically by the orchestrator instead, regardless of this flag. |
 | `--git-checkpoint` | `true` | Git-commit the working tree after each verified step when running in a git repository. |
 | `--check-cmd`    | —        | Shell command (run via `sh -c`) that must succeed after each iteration that checks a step; on failure the step is unchecked and the output tail recorded in `FIXES.md`. Empty disables the gate. |
 | `--notify-cmd`   | —        | Shell command (run via `sh -c`) run once when the execute run ends — however it ends — after the reports are written, with the outcome exported as `DET_*` environment variables. A failure is warned and ignored. Empty disables the hook. |

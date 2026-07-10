@@ -1142,6 +1142,305 @@ func TestCheckCommandDisabledRunsNoShellInvocations(t *testing.T) {
 	}
 }
 
+// The two-step STEPS.md whose first step carries a backtick-quoted command
+// criterion (the mechanical done-when check) and whose second keeps a prose
+// criterion (the AI reviewer fallback), in its three progress states.
+const (
+	cmdStepsNoneChecked = "- [ ] 1. Add the widget.\n  Done when: `go test ./widget` exits 0.\n\n" +
+		"- [ ] 2. Document the widget.\n  Done when: README mentions the widget.\n"
+	cmdStepsFirstChecked = "- [x] 1. Add the widget.\n  Done when: `go test ./widget` exits 0.\n\n" +
+		"- [ ] 2. Document the widget.\n  Done when: README mentions the widget.\n"
+	cmdStepsAllChecked = "- [x] 1. Add the widget.\n  Done when: `go test ./widget` exits 0.\n\n" +
+		"- [x] 2. Document the widget.\n  Done when: README mentions the widget.\n"
+)
+
+func TestCommandDoneWhenIsVerifiedMechanicallyWithoutAReviewer(t *testing.T) {
+	cfg := config(0)
+	cfg.Verify = true
+	cfg.GitCheckpoint = true
+	fs := plannedFileStore(cmdStepsNoneChecked)
+	fs.Write(".git", "")
+	runner := &fakeRunner{script: func(call int, out io.Writer) error {
+		switch call {
+		case 1: // work: check step 1 (command criterion)
+			fs.Write("STEPS.md", cmdStepsFirstChecked)
+		case 2: // the done-when check passes; no reviewer runs for step 1
+			fmt.Fprintln(out, "ok  determined/widget")
+			// 3, 4: git add + commit checkpoint step 1
+		case 5: // work: check step 2 (prose criterion)
+			fs.Write("STEPS.md", cmdStepsAllChecked)
+		case 6: // the reviewer approves step 2 (7, 8: git add + commit)
+		case 9: // the whole-plan audit approves
+			fs.Write("STOP.md", "audit: plan satisfied")
+		}
+		return nil
+	}}
+	var terminal bytes.Buffer
+	o := services.NewOrchestrator(runner, fs, &fakeClock{now: time.Now()}, &fakeLogSink{}, &terminal, cfg)
+
+	outcome := o.Run(context.Background())
+
+	if outcome != models.OutcomeStopped || outcome.ExitCode() != 0 {
+		t.Fatalf("expected a clean completion, got %v (exit %d)", outcome, outcome.ExitCode())
+	}
+	if runner.calls != 9 {
+		t.Fatalf("expected the mechanical check to replace step 1's reviewer (9 runs), got %d", runner.calls)
+	}
+	sh := runner.shInvocations()
+	if len(sh) != 1 || strings.Join(sh[0].Args, " ") != "-c go test ./widget" {
+		t.Fatalf("expected the criterion's command run once via `sh -c`, got %v", sh)
+	}
+	if runner.invocations[1].Binary != "sh" {
+		t.Fatal("expected the done-when check to run in the verification pass position")
+	}
+	if got := runner.verifierPromptCount(); got != 1 {
+		t.Fatalf("expected the reviewer only for the prose criterion (1 verifier run), got %d", got)
+	}
+	if got := runner.gitInvocations(); len(got) != 4 {
+		t.Fatalf("expected the mechanically verified step checkpointed like a reviewed one (4 git runs), got %d", len(got))
+	}
+	if !strings.Contains(runner.prompt(1), "The orchestrator will re-run `go test ./widget` itself") {
+		t.Fatalf("expected the worker prompt to announce the mechanical re-run, got:\n%s", runner.prompt(1))
+	}
+	if strings.Contains(runner.prompt(5), "re-run") {
+		t.Fatalf("expected no mechanical re-run note for the prose criterion, got:\n%s", runner.prompt(5))
+	}
+	if !strings.Contains(terminal.String(), "running step 1's done-when check: go test ./widget") {
+		t.Fatalf("expected a terminal note announcing the check, got:\n%s", terminal.String())
+	}
+}
+
+func TestFailedDoneWhenCheckUnchecksTheStepAndRecordsTheRejection(t *testing.T) {
+	cfg := config(0)
+	cfg.Verify = true
+	cfg.MaxConsecutiveFailures = 1 // any counted failure aborts immediately
+	fs := plannedFileStore(cmdStepsNoneChecked)
+	stepsAtRerun, fixesAtRerun := "", ""
+	runner := &fakeRunner{script: func(call int, out io.Writer) error {
+		switch call {
+		case 1: // work: check step 1
+			fs.Write("STEPS.md", cmdStepsFirstChecked)
+		case 2: // the done-when check fails: a verdict, not a tool failure
+			fmt.Fprintln(out, "--- FAIL: TestWidget")
+			return errors.New("exit status 1")
+		case 3: // work re-runs step 1 with the rejection on record
+			stepsAtRerun, _ = fs.Read("STEPS.md")
+			fixesAtRerun, _ = fs.Read("FIXES.md")
+			fs.Write("STEPS.md", cmdStepsFirstChecked)
+		case 4: // the done-when check passes this time
+		case 5: // work: check step 2
+			fs.Write("STEPS.md", cmdStepsAllChecked)
+		case 6: // the reviewer approves step 2
+		case 7: // the whole-plan audit approves
+			fs.Write("STOP.md", "audit: plan satisfied")
+		}
+		return nil
+	}}
+	o := services.NewOrchestrator(runner, fs, &fakeClock{now: time.Now()}, &fakeLogSink{}, io.Discard, cfg)
+
+	outcome := o.Run(context.Background())
+
+	if outcome != models.OutcomeStopped || outcome.ExitCode() != 0 {
+		t.Fatalf("expected the failed check not to trip the failure cap, got %v (exit %d)", outcome, outcome.ExitCode())
+	}
+	if runner.calls != 7 {
+		t.Fatalf("expected the failed check to cost one extra work+check round (7 runs), got %d", runner.calls)
+	}
+	if stepsAtRerun != cmdStepsNoneChecked {
+		t.Fatalf("expected the check to uncheck step 1 preserving the file's exact content, got:\n%s", stepsAtRerun)
+	}
+	for _, want := range []string{"## Step 1", "Done-when check `go test ./widget` failed", "--- FAIL: TestWidget"} {
+		if !strings.Contains(fixesAtRerun, want) {
+			t.Fatalf("expected FIXES.md to contain %q at re-run, got:\n%s", want, fixesAtRerun)
+		}
+	}
+	if !strings.Contains(runner.prompt(3), "1. Add the widget.") {
+		t.Fatalf("expected the loop to re-run the unchecked step, got:\n%s", runner.prompt(3))
+	}
+	if got := runner.verifierPromptCount(); got != 1 {
+		t.Fatalf("expected no reviewer for the command criterion (1 verifier run for step 2), got %d", got)
+	}
+	report := readRunReport(t, fs)
+	rejections, ok := report["rejections"].(map[string]any)
+	if !ok || rejections["1"] != float64(1) {
+		t.Fatalf("expected the report to count step 1's done-when rejection, got %v", report["rejections"])
+	}
+}
+
+func TestStallHandoffNamesDoneWhenCheckRejections(t *testing.T) {
+	cfg := config(0)
+	cfg.Verify = true
+	cfg.MaxStalledIterations = 1
+	fs := plannedFileStore(cmdStepsNoneChecked)
+	runner := &fakeRunner{script: func(call int, _ io.Writer) error {
+		switch call {
+		case 1: // work: check step 1
+			fs.Write("STEPS.md", cmdStepsFirstChecked)
+		case 2: // the done-when check fails; the step is rejected mechanically
+			return errors.New("exit status 1")
+		}
+		return nil
+	}}
+	o := services.NewOrchestrator(runner, fs, &fakeClock{now: time.Now()}, &fakeLogSink{}, io.Discard, cfg)
+
+	outcome := o.Run(context.Background())
+
+	if outcome != models.OutcomeStalled {
+		t.Fatalf("expected a stalled stop, got %v", outcome)
+	}
+	handoff, err := fs.Read("STALLED.md")
+	if err != nil {
+		t.Fatalf("expected STALLED.md to be written: %v", err)
+	}
+	for _, want := range []string{
+		"# Run stalled at step 1",
+		"  1. done-when check failed: go test ./widget",
+	} {
+		if !strings.Contains(handoff, want) {
+			t.Fatalf("expected the handoff to contain %q, got:\n%s", want, handoff)
+		}
+	}
+}
+
+func TestNonCommandDoneWhenFallsBackToTheReviewer(t *testing.T) {
+	cases := []struct {
+		name      string
+		criterion string
+	}{
+		{"no backticks", "widget tests pass."},
+		{"multiple spans", "`go build ./...` and `go test ./...` pass."},
+		{"empty span", "`` passes."},
+		{"unpaired backtick", "run the `check manually."},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			cfg := config(0)
+			cfg.Verify = true
+			unchecked := "- [ ] 1. Add the widget.\n  Done when: " + c.criterion + "\n"
+			checked := "- [x] 1. Add the widget.\n  Done when: " + c.criterion + "\n"
+			fs := plannedFileStore(unchecked)
+			runner := &fakeRunner{script: func(call int, _ io.Writer) error {
+				switch call {
+				case 1: // work: check the step
+					fs.Write("STEPS.md", checked)
+				case 2: // the reviewer approves it
+				case 3: // the whole-plan audit approves
+					fs.Write("STOP.md", "audit: plan satisfied")
+				}
+				return nil
+			}}
+			o := services.NewOrchestrator(runner, fs, &fakeClock{now: time.Now()}, &fakeLogSink{}, io.Discard, cfg)
+
+			outcome := o.Run(context.Background())
+
+			if outcome != models.OutcomeStopped || outcome.ExitCode() != 0 {
+				t.Fatalf("expected a clean completion, got %v (exit %d)", outcome, outcome.ExitCode())
+			}
+			if got := runner.shInvocations(); len(got) != 0 {
+				t.Fatalf("expected no mechanical check for a non-command criterion, got %d sh runs", len(got))
+			}
+			if got := runner.verifierPromptCount(); got != 1 {
+				t.Fatalf("expected the reviewer to verify the step exactly as before (1 run), got %d", got)
+			}
+			if strings.Contains(runner.prompt(1), "re-run") {
+				t.Fatalf("expected no mechanical re-run note in the worker prompt, got:\n%s", runner.prompt(1))
+			}
+		})
+	}
+}
+
+// shDeadlineRunner extends fakeRunner by recording whether each sh invocation
+// ran under a context deadline, so tests can see the done-when check's bound.
+type shDeadlineRunner struct {
+	fakeRunner
+	shHadDeadline []bool
+}
+
+func (r *shDeadlineRunner) Run(ctx context.Context, inv models.Invocation, out io.Writer) error {
+	if inv.Binary == "sh" {
+		_, ok := ctx.Deadline()
+		r.shHadDeadline = append(r.shHadDeadline, ok)
+	}
+	return r.fakeRunner.Run(ctx, inv, out)
+}
+
+func TestDoneWhenCheckTimeoutCountsAsCriterionFailure(t *testing.T) {
+	cfg := config(0)
+	cfg.Verify = true
+	cfg.MaxConsecutiveFailures = 1 // a counted failure would abort with exit 1
+	cfg.MaxStalledIterations = 1
+	fs := plannedFileStore(cmdStepsNoneChecked)
+	runner := &shDeadlineRunner{}
+	runner.script = func(call int, _ io.Writer) error {
+		switch call {
+		case 1: // work: check step 1
+			fs.Write("STEPS.md", cmdStepsFirstChecked)
+		case 2: // the done-when check's 10-minute bound expires
+			return context.DeadlineExceeded
+		}
+		return nil
+	}
+	o := services.NewOrchestrator(runner, fs, &fakeClock{now: time.Now()}, &fakeLogSink{}, io.Discard, cfg)
+
+	outcome := o.Run(context.Background())
+
+	if outcome != models.OutcomeStalled || outcome.ExitCode() != 3 {
+		t.Fatalf("expected the timeout treated as a rejection (stall), not a tool failure, got %v (exit %d)", outcome, outcome.ExitCode())
+	}
+	if got, _ := fs.Read("STEPS.md"); got != cmdStepsNoneChecked {
+		t.Fatalf("expected the timed-out check to uncheck the step, got:\n%s", got)
+	}
+	if len(runner.shHadDeadline) != 1 || !runner.shHadDeadline[0] {
+		t.Fatalf("expected the done-when check bounded by a deadline, got %v", runner.shHadDeadline)
+	}
+	if fixes, _ := fs.Read("FIXES.md"); !strings.Contains(fixes, "Done-when check `go test ./widget` failed") {
+		t.Fatalf("expected the timeout recorded in FIXES.md, got:\n%s", fixes)
+	}
+}
+
+func TestVerifyOffStillRunsDoneWhenChecksButNoReviewer(t *testing.T) {
+	cfg := config(0)
+	cfg.Verify = false
+	fs := plannedFileStore(cmdStepsNoneChecked)
+	stepsAtRerun := ""
+	runner := &fakeRunner{script: func(call int, _ io.Writer) error {
+		switch call {
+		case 1: // work: check step 1
+			fs.Write("STEPS.md", cmdStepsFirstChecked)
+		case 2: // the done-when check fails even with --verify off
+			return errors.New("exit status 1")
+		case 3: // work re-runs the mechanically unchecked step
+			stepsAtRerun, _ = fs.Read("STEPS.md")
+			fs.Write("STEPS.md", cmdStepsFirstChecked)
+		case 4: // the done-when check passes
+		case 5: // work: check step 2; its prose criterion gets no reviewer
+			fs.Write("STEPS.md", cmdStepsAllChecked)
+		case 6: // the whole-plan audit approves
+			fs.Write("STOP.md", "audit: plan satisfied")
+		}
+		return nil
+	}}
+	o := services.NewOrchestrator(runner, fs, &fakeClock{now: time.Now()}, &fakeLogSink{}, io.Discard, cfg)
+
+	outcome := o.Run(context.Background())
+
+	if outcome != models.OutcomeStopped || outcome.ExitCode() != 0 {
+		t.Fatalf("expected a clean completion, got %v (exit %d)", outcome, outcome.ExitCode())
+	}
+	if runner.calls != 6 {
+		t.Fatalf("expected done-when checks to run with --verify off (6 runs), got %d", runner.calls)
+	}
+	if got := runner.shInvocations(); len(got) != 2 {
+		t.Fatalf("expected a mechanical check per step-1 round (2 sh runs), got %d", len(got))
+	}
+	if got := runner.verifierPromptCount(); got != 0 {
+		t.Fatalf("expected no reviewer invocations with --verify off, got %d", got)
+	}
+	if stepsAtRerun != cmdStepsNoneChecked {
+		t.Fatalf("expected the failed check to uncheck step 1 with --verify off, got:\n%s", stepsAtRerun)
+	}
+}
+
 // tamperGuardWarning is the terminal warning the STEPS.md tamper guard
 // prints, parameterized by the target step and the named violation.
 func tamperGuardWarning(target int, violation string) string {

@@ -28,7 +28,11 @@ const planPrompt = "You are helping plan a software project before any code is w
 	"completable steps, and do not write QUESTIONS.md. " +
 	"STEPS.md MUST be a markdown checkbox list: each step is a single `- [ ]` item, marked " +
 	"incomplete. Every step MUST end with a line beginning `Done when:` stating a concrete, " +
-	"checkable acceptance condition — a command to run or a behavior to observe. " +
+	"checkable acceptance condition. Whenever a single executable command can capture the " +
+	"criterion, quote exactly that one command in backticks — e.g. " +
+	"Done when: `go test ./src/config` exits 0 — because the orchestrator re-runs a " +
+	"backtick-quoted command itself to verify the step mechanically. Use a prose criterion " +
+	"(a behavior to observe) only where no command can capture the behavior. " +
 	"Do not implement anything. Do not create STOP.md."
 
 // assessPrompt asks the tool to judge whether each step in STEPS.md is small
@@ -49,7 +53,9 @@ const breakdownPrompt = "Read STEPS.md and OVERSIZED.md. OVERSIZED.md lists step
 	"overall order. Every step must be something an AI coding tool can implement correctly in a single " +
 	"focused pass. Keep STEPS.md a markdown checkbox list: each step is a single `- [ ]` item, marked " +
 	"incomplete, and every step MUST end with a line beginning `Done when:` stating a concrete, " +
-	"checkable acceptance condition — a command to run or a behavior to observe. " +
+	"checkable acceptance condition — a single backtick-quoted executable command whenever possible " +
+	"(the orchestrator re-runs it mechanically to verify the step), prose only where no command " +
+	"can capture the behavior. " +
 	"Do not implement anything. Do not create STOP.md."
 
 // version is the semantic version of the binary. It defaults to "dev" for local
@@ -72,7 +78,7 @@ func main() {
 	maxIterationDuration := flag.Duration("max-iteration-duration", 15*time.Minute,
 		"kill a single tool invocation after this long, counting it as a failed invocation; 0 means unlimited")
 	verify := flag.Bool("verify", true,
-		"after each newly checked step, run an independent verifier invocation that unchecks it (recording why in FIXES.md) if its acceptance criterion is not met")
+		"after each newly checked step with a prose Done-when criterion, run an independent verifier invocation that unchecks it (recording why in FIXES.md) if its acceptance criterion is not met; a criterion quoting a command in backticks is re-run mechanically instead, regardless of this flag")
 	gitCheckpoint := flag.Bool("git-checkpoint", true,
 		"git-commit the working tree after each verified step when running in a git repository")
 	checkCmd := flag.String("check-cmd", "",

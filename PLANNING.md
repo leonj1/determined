@@ -21,10 +21,16 @@ In the current working directory:
 
    `STEPS.md` must be machine-checkable, and the planning prompt enforces its
    format: a markdown checkbox list (one `- [ ]` item per step), every step
-   ending with a `Done when:` line stating a concrete acceptance condition —
-   a command to run or a behavior to observe. The execute loop parses these
-   checkboxes to track progress, aim each iteration, verify completed steps,
-   and detect stalls (see [EXECUTION.md](EXECUTION.md)).
+   ending with a `Done when:` line stating a concrete acceptance condition.
+   Whenever a single executable command can capture the criterion, the planner
+   is told to quote exactly that one command in backticks — e.g.
+   `` Done when: `go test ./src/config` exits 0 `` — because the execute loop
+   verifies such steps *mechanically*, by re-running the quoted command
+   itself instead of spending an AI reviewer invocation on them. Prose
+   criteria (a behavior to observe) are kept only where no command can
+   capture the behavior; they fall back to AI review. The execute loop parses
+   these checkboxes to track progress, aim each iteration, verify completed
+   steps, and detect stalls (see [EXECUTION.md](EXECUTION.md)).
 3. If there are questions, `determined` asks you each one on the terminal,
    records the round in `ANSWERS.md`, clears `QUESTIONS.md`, and runs the tool
    again — now with your answers in hand.
