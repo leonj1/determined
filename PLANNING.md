@@ -9,6 +9,20 @@ clarifying questions first**, mediating a file-based interview:
 ./determined --plan "build a todo CLI" --tool claude
 ```
 
+Normal planning applies a comprehensive quality gate. For deliberately lighter
+work, select one alternative mode:
+
+```bash
+./determined --plan "ship the smallest useful todo CLI" -mvp
+./determined --plan "test whether this UI idea works" -prototype
+```
+
+`-mvp` requires only the outcome, target use case, must-have scope, key
+constraint, and observable core success. `-prototype` asks only questions that
+block starting the experiment, permits simple manual acceptance checks, and
+skips the post-plan refinement loop. The flags are mutually exclusive and only
+valid with `--plan`.
+
 For a longer goal kept in a file, pass the path instead of shell-expanding the
 contents:
 
@@ -46,24 +60,27 @@ In the current working directory:
 3. If there are questions, `determined` asks you each one on the terminal,
    records the round in `ANSWERS.md`, clears `QUESTIONS.md`, and runs the tool
    again — now with your answers in hand.
-4. Once `PLAN.md` and `STEPS.md` both exist, `determined` refines the steps for
-   granularity (see below).
+4. Once `PLAN.md` and `STEPS.md` both exist, `determined` runs the plan quality
+   gate (except in prototype mode; see below).
 5. When refinement settles, planning is done (exit **0**). Run `./determined`
    (no `--plan`) to execute the steps.
 
-## Step-granularity refinement
+## Plan quality gate and refinement
 
-A plan is only useful if each step is small enough for the AI tool to implement
-in a single pass. After a plan first exists, `determined` runs an extra
-assess/breakdown loop:
+A normal plan must identify its outcome, target user/use case, scope boundaries,
+constraints, observable success, material risks, and validation approach. The
+planner classifies the task (for example bugfix, feature, migration, API, UI, or
+CLI) and applies the relevant template. MVP mode uses the reduced requirements
+described above.
 
-1. **Assess** — the tool reads `STEPS.md` and writes any steps that are too large
-   to implement in one pass to `OVERSIZED.md` (a markdown list), or the single
-   word `NONE` if every step is already small enough.
-2. If `OVERSIZED.md` is `NONE`/empty → refinement is done.
-3. **Break down** — otherwise the tool rewrites `STEPS.md`, splitting the flagged
-   steps into smaller, individually-implementable ones — keeping the checkbox
-   format and per-step `Done when:` lines — and `determined` re-assesses. Repeat.
+After a plan first exists, `determined` runs an independent assess/refine loop:
+
+1. **Assess** — the tool checks quality-gate and task-template coverage, step
+   ordering and size, unstated dependencies, and vague `Done when:` criteria.
+   It writes actionable findings to `REFINEMENTS.md`, or `NONE` when the plan
+   passes.
+2. **Refine** — the tool resolves every finding in `PLAN.md` / `STEPS.md`, then
+   `determined` assesses the result again.
 
 The loop is bounded by `--max-step-passes` (default `5`; `0` disables refinement
 entirely) and by `--max-duration` / `-t`. If the cap is reached before the steps
@@ -72,4 +89,4 @@ converge, the usable plan is left in place with a warning.
 Unlike the execute loop, planning is **attended**: it reads your answers from
 stdin. `--max-duration` / `-t` still bounds it, guarding against a tool that keeps
 asking forever. The protocol filenames (`GOAL.md` / `QUESTIONS.md` /
-`ANSWERS.md` / `OVERSIZED.md` / `PLAN.md` / `STEPS.md`) are hardcoded.
+`ANSWERS.md` / `REFINEMENTS.md` / `PLAN.md` / `STEPS.md`) are hardcoded.
