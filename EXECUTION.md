@@ -13,6 +13,9 @@ itself every iteration; it never trusts the tool's own claim of completion.
   directory.
 - A stale `STOP.md` sitting alongside unchecked steps is deleted with a
   warning instead of instantly ending the run as success.
+- With specialist reviews enabled, an existing `STOP.md` alongside completed
+  steps is also removed so a previous run cannot bypass the current review
+  sequence.
 
 ## Each iteration
 
@@ -25,9 +28,10 @@ itself every iteration; it never trusts the tool's own claim of completion.
 3. **Prompt construction** — the orchestrator re-reads `STEPS.md` and aims the
    tool at exactly the next unchecked step, injecting the step text and its
    `Done when:` criterion, plus the `NOTES.md` read/append instructions (see
-   below). When every box is checked, the iteration is the whole-plan audit
-   instead. If `STEPS.md` contains no parseable checkboxes, the tool is asked
-   to restore a checkbox-format step list or confirm completion.
+   below). When every box is checked, the iteration runs the specialist review
+   sequence and then the whole-plan audit. If `STEPS.md` contains no parseable
+   checkboxes, the tool is asked to restore a checkbox-format step list or
+   confirm completion.
 4. **Invocation** — the tool's command runs, streaming its output live **and**
    teeing it to `logs/iter-NNNN-<timestamp>.log`. Each invocation is bounded
    by `--max-iteration-duration` (default **15m**, `0` = unlimited); a timed
@@ -52,11 +56,28 @@ itself every iteration; it never trusts the tool's own claim of completion.
    progress, which bounds worker/reviewer ping-pong. `0` disables stall
    detection.
 
-## The whole-plan audit
+## Specialist reviews and the whole-plan audit
 
-Checked boxes alone are not success. Once every step is checked, one more
-invocation reads `PLAN.md` and `STEPS.md` and audits whether the
-implementation genuinely satisfies the plan:
+Checked boxes alone are not success. Once every step is checked,
+`--specialized-reviews` (default **on**) runs three fresh, independent review
+invocations in order:
+
+1. **Security** — authentication/authorization, trust boundaries, injection,
+   validation, secrets, cryptography, dependencies, and sensitive data.
+2. **Performance** — complexity, unbounded work, I/O, allocations,
+   concurrency, resource leaks, and relevant benchmark/profile evidence.
+3. **Reliability and maintainability** — errors, races, cleanup, edge cases,
+   tests, compatibility, readability, coupling, and project conventions.
+
+A reviewer reports only concrete, actionable findings. It appends the finding
+and evidence to `FIXES.md`, then reopens the relevant checkbox or adds an
+unchecked remediation step with a `Done when:` criterion. That immediately
+blocks later gates; after remediation, all specialist reviews run again.
+`--specialized-reviews=false` skips these three gates.
+
+After all enabled specialist reviews approve, one final invocation reads
+`PLAN.md` and `STEPS.md` and audits whether the implementation genuinely
+satisfies the plan:
 
 - If a step is not actually satisfied, the audit unchecks it and appends the
   reason to `FIXES.md` — the loop resumes on that step.
@@ -72,7 +93,7 @@ Only *all steps checked + `STOP.md` present* ends the run with exit **0**.
 | `STEPS.md` | Checkbox step list with `Done when:` criteria; the loop's source of truth. Required at startup. |
 | `STOP.md`  | Created by the whole-plan audit to approve the finished run; deleted if it appears early. |
 | `NOTES.md` | Cross-iteration memory (see below); created by the tool on first use. |
-| `FIXES.md` | Why the verifier or audit reopened a step; appended by reviewer invocations. |
+| `FIXES.md` | Why a verifier, specialist, or audit reopened/added a step; appended by reviewer invocations. |
 
 ## NOTES.md
 
