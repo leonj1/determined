@@ -35,4 +35,16 @@ type Config struct {
 	// verification, when the working directory is a git repository. Runs that
 	// go wrong can then be rewound step by step.
 	GitCheckpoint bool
+	// CheckCmd, when non-empty, is a shell command (run via `sh -c`) that must
+	// succeed after any iteration that newly checks a step, before the AI
+	// verifier runs. On failure the newly checked steps are mechanically
+	// unchecked and the command's output recorded in FIXES.md; the failure is
+	// a verdict on the work, never a tool failure. Empty disables the gate.
+	CheckCmd string
+	// MaxReplans bounds how many times a run that hit the stall cap may spend
+	// one invocation replanning the stuck step into smaller steps instead of
+	// exiting stalled. Each attempt consumes one regardless of outcome, so a
+	// replan that changes nothing cannot be retried forever. 0 disables
+	// replanning; the run then stalls exactly as without it.
+	MaxReplans int
 }

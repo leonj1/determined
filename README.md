@@ -17,13 +17,25 @@ work. Unlike the one-liner, it does not trust the tool's word for progress:
   unchecked steps remain is deleted and the loop continues.
 - **Per-step prompts** — each invocation is aimed at exactly the next
   unchecked step, with its `Done when:` acceptance criterion injected.
+- **Tamper guard** — a work invocation may change `STEPS.md` only by checking
+  its own step's box; reworded steps, weakened `Done when:` criteria, or
+  added/deleted boxes are reverted from a pre-iteration snapshot with a
+  warning (see [EXECUTION.md](EXECUTION.md)).
 - **Independent verification** — after a step is checked, a fresh reviewer
   invocation confirms the acceptance criterion actually holds, unchecking the
   step (and recording why in `FIXES.md`) when it does not.
+- **Deterministic check gate** (`--check-cmd`) — optionally require a fixed
+  shell command (e.g. `go test ./...`) to pass before a newly checked step
+  counts; a failure unchecks the step mechanically, with no AI judgment
+  involved.
 - **Final audit** — once every box is checked, one more invocation audits the
   whole plan; only its approval (`STOP.md`) ends the run successfully.
 - **Stall detection, retries, and timeouts** — no-progress iterations,
   consecutive failures, and single-invocation duration are all bounded.
+- **Replan escalation** (`--max-replans`) — a step that keeps failing
+  verification is usually too big, not impossible: before exiting stalled,
+  one invocation replaces the stuck step with 2–4 smaller ones and the loop
+  resumes.
 - **Memory and checkpoints** — `NOTES.md` carries knowledge between otherwise
   independent invocations, and each verified step is git-committed.
 
@@ -113,6 +125,8 @@ codes.
 | `--max-stalled-iterations` | `3` | Stop (exit `3`) after this many consecutive iterations check no new step. `0` disables stall detection. |
 | `--verify`       | `true`   | After each newly checked step, run an independent verifier invocation that unchecks it (recording why in `FIXES.md`) if its acceptance criterion is not met. |
 | `--git-checkpoint` | `true` | Git-commit the working tree after each verified step when running in a git repository. |
+| `--check-cmd`    | —        | Shell command (run via `sh -c`) that must succeed after each iteration that checks a step; on failure the step is unchecked and the output tail recorded in `FIXES.md`. Empty disables the gate. |
+| `--max-replans`  | `1`      | When the stall cap is hit, ask the tool to replace the stuck step with smaller steps instead of stopping, at most this many times per run. `0` disables replanning. |
 | `--log-dir`      | `logs`   | Directory for per-iteration log files.                          |
 | `--version`      | —        | Print the binary's semantic version and exit.                  |
 

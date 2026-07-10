@@ -89,6 +89,54 @@ func CompletedStepCount(steps []Step) int {
 	return n
 }
 
+// UncheckSteps returns content with the checkbox marks at the given
+// zero-based step indices returned to `[ ]`. Only the mark character changes:
+// the rewrite walks the original lines, counting checkbox items exactly as
+// ParseSteps does, so formatting, Done-when lines, and surrounding prose
+// survive untouched. Indices that match no step are ignored.
+func UncheckSteps(content string, indices []int) string {
+	return setStepMarks(content, indices, false)
+}
+
+// CheckSteps is UncheckSteps's counterpart: it returns content with the
+// checkbox marks at the given zero-based step indices set to `[x]`, under the
+// same line-level, byte-preserving rewrite. The tamper guard uses it to
+// re-apply a target step's legitimate check on top of a restored snapshot.
+func CheckSteps(content string, indices []int) string {
+	return setStepMarks(content, indices, true)
+}
+
+// setStepMarks rewrites the checkbox mark of the steps at the given ordinals
+// to match completed. A step already in the wanted state is left untouched
+// byte-for-byte (so an uppercase `[X]` is never rewritten to `[x]`), keeping
+// a check-then-uncheck round trip exact.
+func setStepMarks(content string, indices []int, completed bool) string {
+	mark := " "
+	if completed {
+		mark = "x"
+	}
+	target := make(map[int]bool, len(indices))
+	for _, i := range indices {
+		target[i] = true
+	}
+	lines := strings.Split(content, "\n")
+	ordinal := 0
+	for n, line := range lines {
+		step, ok := checkboxItem(line)
+		if !ok {
+			continue
+		}
+		if target[ordinal] && step.Completed != completed {
+			// Only whitespace and the bullet precede the checkbox, so the
+			// line's first '[' is the box; the mark is the character after it.
+			i := strings.Index(line, "[")
+			lines[n] = line[:i+1] + mark + line[i+2:]
+		}
+		ordinal++
+	}
+	return strings.Join(lines, "\n")
+}
+
 // checkboxItem parses a markdown checkbox list item ("- [ ] text" or
 // "- [x] text"; "*" bullets are accepted too) and reports whether the line was
 // one. Bullets without a checkbox, or with an unrecognized mark, are not items.

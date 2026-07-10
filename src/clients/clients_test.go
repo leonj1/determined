@@ -153,4 +153,3 @@ type failingReader struct{}
 func (failingReader) Read([]byte) (int, error) {
 	return 0, os.ErrPermission
 }
-

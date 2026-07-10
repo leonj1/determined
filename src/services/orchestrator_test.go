@@ -912,6 +912,632 @@ func TestRejectedStepIsNotCheckpointed(t *testing.T) {
 	}
 }
 
+// shInvocations returns the recorded invocations that ran the check shell.
+func (r *fakeRunner) shInvocations() []models.Invocation {
+	var sh []models.Invocation
+	for _, inv := range r.invocations {
+		if inv.Binary == "sh" {
+			sh = append(sh, inv)
+		}
+	}
+	return sh
+}
+
+// verifierPromptCount counts the recorded tool invocations that carry a
+// verifier prompt, ignoring the git and sh subprocess invocations.
+func (r *fakeRunner) verifierPromptCount() int {
+	n := 0
+	for _, inv := range r.invocations {
+		if inv.Binary == "git" || inv.Binary == "sh" {
+			continue
+		}
+		if strings.Contains(inv.Args[1], "claims complete") {
+			n++
+		}
+	}
+	return n
+}
+
+func TestCheckCommandPassKeepsVerifierAndCompletesTheRun(t *testing.T) {
+	cfg := config(0)
+	cfg.Verify = true
+	cfg.CheckCmd = "go test ./..."
+	fs := stepsFileStore()
+	runner := &fakeRunner{script: func(call int, out io.Writer) error {
+		switch call {
+		case 1: // work: check step 1
+			fs.Write("STEPS.md", twoStepsFirstChecked)
+		case 2: // check command passes
+			fmt.Fprintln(out, "ok  determined")
+		case 3: // verifier approves step 1
+		case 4: // work: check step 2
+			fs.Write("STEPS.md", twoStepsAllChecked)
+		case 5: // check command passes again
+		case 6: // verifier approves step 2
+		case 7: // the whole-plan audit approves
+			fs.Write("STOP.md", "audit: plan satisfied")
+		}
+		return nil
+	}}
+	o := services.NewOrchestrator(runner, fs, &fakeClock{now: time.Now()}, &fakeLogSink{}, io.Discard, cfg)
+
+	outcome := o.Run(context.Background())
+
+	if outcome != models.OutcomeStopped || outcome.ExitCode() != 0 {
+		t.Fatalf("expected a clean completion, got %v (exit %d)", outcome, outcome.ExitCode())
+	}
+	if runner.calls != 7 {
+		t.Fatalf("expected work + check + verify per step plus the audit (7 runs), got %d", runner.calls)
+	}
+	sh := runner.shInvocations()
+	if len(sh) != 2 {
+		t.Fatalf("expected one check run per step-checking iteration (2), got %d", len(sh))
+	}
+	for i, inv := range sh {
+		if got := strings.Join(inv.Args, " "); got != "-c go test ./..." {
+			t.Fatalf("sh invocation %d: expected `-c go test ./...`, got %q", i+1, got)
+		}
+	}
+	if runner.invocations[1].Binary != "sh" {
+		t.Fatal("expected the check command to run before the verifier")
+	}
+	if !strings.Contains(runner.prompt(3), "Step 1 claims complete") {
+		t.Fatalf("expected the verifier to still run after a passing check, got:\n%s", runner.prompt(3))
+	}
+}
+
+func TestCheckCommandFailureUnchecksStepAndSkipsVerifierAndCheckpoint(t *testing.T) {
+	cfg := config(0)
+	cfg.Verify = true
+	cfg.GitCheckpoint = true
+	cfg.CheckCmd = "go test ./..."
+	fs := stepsFileStore()
+	fs.Write(".git", "")
+	stepsAtRerun, fixesAtRerun := "", ""
+	runner := &fakeRunner{script: func(call int, out io.Writer) error {
+		switch call {
+		case 1: // work: check step 1
+			fs.Write("STEPS.md", twoStepsFirstChecked)
+		case 2: // check command fails: the gate rejects step 1 mechanically
+			fmt.Fprintln(out, "--- FAIL: TestWidget")
+			return errors.New("exit status 1")
+		case 3: // work re-runs step 1 with the rejection on record
+			stepsAtRerun, _ = fs.Read("STEPS.md")
+			fixesAtRerun, _ = fs.Read("FIXES.md")
+			fs.Write("STEPS.md", twoStepsFirstChecked)
+		case 4: // check command passes this time
+		case 5: // verifier approves step 1 (6, 7: git add + commit)
+		case 8: // work: check step 2
+			fs.Write("STEPS.md", twoStepsAllChecked)
+		case 9: // check command passes
+		case 10: // verifier approves step 2 (11, 12: git add + commit)
+		case 13: // the whole-plan audit approves
+			fs.Write("STOP.md", "audit: plan satisfied")
+		}
+		return nil
+	}}
+	o := services.NewOrchestrator(runner, fs, &fakeClock{now: time.Now()}, &fakeLogSink{}, io.Discard, cfg)
+
+	outcome := o.Run(context.Background())
+
+	if outcome != models.OutcomeStopped || outcome.ExitCode() != 0 {
+		t.Fatalf("expected the rejected step to be redone and the run to complete, got %v (exit %d)", outcome, outcome.ExitCode())
+	}
+	if runner.calls != 13 {
+		t.Fatalf("expected the failed check to cost one extra work+check round (13 runs), got %d", runner.calls)
+	}
+	if stepsAtRerun != twoStepsNoneChecked {
+		t.Fatalf("expected the gate to uncheck step 1 preserving the file's exact content, got:\n%s", stepsAtRerun)
+	}
+	for _, want := range []string{"## Step 1", "go test ./...", "--- FAIL: TestWidget"} {
+		if !strings.Contains(fixesAtRerun, want) {
+			t.Fatalf("expected FIXES.md to contain %q at re-run, got:\n%s", want, fixesAtRerun)
+		}
+	}
+	if !strings.Contains(runner.prompt(3), "1. Add the widget.") {
+		t.Fatalf("expected the loop to re-run the unchecked step, got:\n%s", runner.prompt(3))
+	}
+	if got := runner.verifierPromptCount(); got != 2 {
+		t.Fatalf("expected no verifier run for the rejected round (2 verifier runs total), got %d", got)
+	}
+	if got := runner.gitInvocations(); len(got) != 4 {
+		t.Fatalf("expected no checkpoint for the rejected round (4 git runs total), got %d", len(got))
+	}
+}
+
+func TestCheckCommandFailuresDoNotCountTowardTheFailureCap(t *testing.T) {
+	cfg := config(0)
+	cfg.MaxConsecutiveFailures = 1 // any counted failure aborts immediately
+	cfg.CheckCmd = "go test ./..."
+	fs := stepsFileStore()
+	runner := &fakeRunner{script: func(call int, _ io.Writer) error {
+		switch call {
+		case 1, 3: // work checks step 1; again after the gate rejects it
+			fs.Write("STEPS.md", twoStepsFirstChecked)
+		case 2: // check command fails: a verdict, not a tool failure
+			return errors.New("exit status 1")
+		case 5: // work: check step 2 (4 was the passing re-check)
+			fs.Write("STEPS.md", twoStepsAllChecked)
+		case 7: // the whole-plan audit approves (6 was the passing check)
+			fs.Write("STOP.md", "audit: plan satisfied")
+		}
+		return nil
+	}}
+	o := services.NewOrchestrator(runner, fs, &fakeClock{now: time.Now()}, &fakeLogSink{}, io.Discard, cfg)
+
+	outcome := o.Run(context.Background())
+
+	if outcome != models.OutcomeStopped || outcome.ExitCode() != 0 {
+		t.Fatalf("expected the check failure not to trip the failure cap, got %v (exit %d)", outcome, outcome.ExitCode())
+	}
+	if runner.calls != 7 {
+		t.Fatalf("expected the run to continue through the failed check (7 runs), got %d", runner.calls)
+	}
+}
+
+func TestExtraCheckedBoxIsRevertedAndTheCheckGateCoversTheSurvivor(t *testing.T) {
+	cfg := config(0)
+	cfg.CheckCmd = "go test ./..."
+	fs := stepsFileStore()
+	var terminal bytes.Buffer
+	stepsAtCheck := ""
+	runner := &fakeRunner{script: func(call int, _ io.Writer) error {
+		switch call {
+		case 1: // work on step 1 checks step 2's box too
+			fs.Write("STEPS.md", twoStepsAllChecked)
+		case 2: // check command: the guard has already reverted the extra box
+			stepsAtCheck, _ = fs.Read("STEPS.md")
+		case 3: // work: check step 2 legitimately
+			fs.Write("STEPS.md", twoStepsAllChecked)
+		case 5: // the whole-plan audit approves (4 was step 2's check run)
+			fs.Write("STOP.md", "audit: plan satisfied")
+		}
+		return nil
+	}}
+	o := services.NewOrchestrator(runner, fs, &fakeClock{now: time.Now()}, &fakeLogSink{}, &terminal, cfg)
+
+	outcome := o.Run(context.Background())
+
+	if outcome != models.OutcomeStopped {
+		t.Fatalf("expected a clean completion, got %v", outcome)
+	}
+	if stepsAtCheck != twoStepsFirstChecked {
+		t.Fatalf("expected only the target step's check to survive into the gate, got:\n%s", stepsAtCheck)
+	}
+	if !strings.Contains(terminal.String(),
+		"determined: warning: STEPS.md was altered beyond checking step 1 (step 2's checkbox changed); restoring it") {
+		t.Fatalf("expected a tamper warning naming the extra box, got:\n%s", terminal.String())
+	}
+	if got := runner.shInvocations(); len(got) != 2 {
+		t.Fatalf("expected one check run per surviving step (2), got %d", len(got))
+	}
+}
+
+func TestCheckCommandDisabledRunsNoShellInvocations(t *testing.T) {
+	fs := stepsFileStore() // config() leaves CheckCmd empty
+	runner := &fakeRunner{script: func(call int, _ io.Writer) error {
+		switch call {
+		case 1:
+			fs.Write("STEPS.md", twoStepsFirstChecked)
+		case 2:
+			fs.Write("STEPS.md", twoStepsAllChecked)
+		case 3: // the whole-plan audit approves
+			fs.Write("STOP.md", "audit: plan satisfied")
+		}
+		return nil
+	}}
+	o := services.NewOrchestrator(runner, fs, &fakeClock{now: time.Now()}, &fakeLogSink{}, io.Discard, config(0))
+
+	outcome := o.Run(context.Background())
+
+	if outcome != models.OutcomeStopped {
+		t.Fatalf("expected a clean completion, got %v", outcome)
+	}
+	if got := runner.shInvocations(); len(got) != 0 {
+		t.Fatalf("expected no sh invocations with --check-cmd unset, got %d", len(got))
+	}
+	if runner.calls != 3 {
+		t.Fatalf("expected exactly today's 3 invocations with the gate disabled, got %d", runner.calls)
+	}
+}
+
+// tamperGuardWarning is the terminal warning the STEPS.md tamper guard
+// prints, parameterized by the target step and the named violation.
+func tamperGuardWarning(target int, violation string) string {
+	return fmt.Sprintf(
+		"determined: warning: STEPS.md was altered beyond checking step %d (%s); restoring it",
+		target, violation)
+}
+
+func TestRewordedTargetStepIsRestored(t *testing.T) {
+	cfg := config(0)
+	cfg.MaxStalledIterations = 1
+	fs := stepsFileStore()
+	var terminal bytes.Buffer
+	runner := &fakeRunner{script: func(int, io.Writer) error {
+		// The worker rewords the step it was asked to do instead of doing it.
+		fs.Write("STEPS.md", strings.Replace(twoStepsNoneChecked, "Add the widget", "Add a stub", 1))
+		return nil
+	}}
+	o := services.NewOrchestrator(runner, fs, &fakeClock{now: time.Now()}, &fakeLogSink{}, &terminal, cfg)
+
+	outcome := o.Run(context.Background())
+
+	if outcome != models.OutcomeStalled {
+		t.Fatalf("expected the reverted iteration to end as a stall, got %v", outcome)
+	}
+	if got, _ := fs.Read("STEPS.md"); got != twoStepsNoneChecked {
+		t.Fatalf("expected STEPS.md restored byte-for-byte, got:\n%s", got)
+	}
+	if !strings.Contains(terminal.String(), tamperGuardWarning(1, "step 1's text changed")) {
+		t.Fatalf("expected a tamper warning naming the reworded step, got:\n%s", terminal.String())
+	}
+}
+
+func TestWeakenedNonTargetDoneWhenIsRestored(t *testing.T) {
+	cfg := config(0)
+	cfg.MaxStalledIterations = 1
+	fs := stepsFileStore()
+	var terminal bytes.Buffer
+	runner := &fakeRunner{script: func(int, io.Writer) error {
+		// The worker weakens another step's acceptance criterion.
+		fs.Write("STEPS.md", strings.Replace(twoStepsNoneChecked,
+			"Done when: README mentions the widget.", "Done when: anything at all.", 1))
+		return nil
+	}}
+	o := services.NewOrchestrator(runner, fs, &fakeClock{now: time.Now()}, &fakeLogSink{}, &terminal, cfg)
+
+	outcome := o.Run(context.Background())
+
+	if outcome != models.OutcomeStalled {
+		t.Fatalf("expected the reverted iteration to end as a stall, got %v", outcome)
+	}
+	if got, _ := fs.Read("STEPS.md"); got != twoStepsNoneChecked {
+		t.Fatalf("expected STEPS.md restored byte-for-byte, got:\n%s", got)
+	}
+	if !strings.Contains(terminal.String(), tamperGuardWarning(1, "step 2's Done-when criterion changed")) {
+		t.Fatalf("expected a tamper warning naming the weakened criterion, got:\n%s", terminal.String())
+	}
+}
+
+func TestDeletedStepIsRestored(t *testing.T) {
+	cfg := config(0)
+	cfg.MaxStalledIterations = 1
+	fs := stepsFileStore()
+	var terminal bytes.Buffer
+	runner := &fakeRunner{script: func(int, io.Writer) error {
+		// The worker deletes the second step outright.
+		fs.Write("STEPS.md", "- [ ] 1. Add the widget.\n  Done when: widget tests pass.\n")
+		return nil
+	}}
+	o := services.NewOrchestrator(runner, fs, &fakeClock{now: time.Now()}, &fakeLogSink{}, &terminal, cfg)
+
+	outcome := o.Run(context.Background())
+
+	if outcome != models.OutcomeStalled {
+		t.Fatalf("expected the reverted iteration to end as a stall, got %v", outcome)
+	}
+	if got, _ := fs.Read("STEPS.md"); got != twoStepsNoneChecked {
+		t.Fatalf("expected STEPS.md restored byte-for-byte, got:\n%s", got)
+	}
+	if !strings.Contains(terminal.String(), tamperGuardWarning(1, "step count changed from 2 to 1")) {
+		t.Fatalf("expected a tamper warning naming the deletion, got:\n%s", terminal.String())
+	}
+}
+
+func TestLegitimateCheckSurvivesTamperRestoration(t *testing.T) {
+	cfg := config(0)
+	cfg.Verify = true
+	fs := stepsFileStore()
+	var terminal bytes.Buffer
+	stepsAtVerify := ""
+	runner := &fakeRunner{script: func(call int, _ io.Writer) error {
+		switch call {
+		case 1: // work checks step 1 legitimately but also rewords step 2
+			fs.Write("STEPS.md", strings.Replace(twoStepsFirstChecked,
+				"Document the widget", "Ship it undocumented", 1))
+		case 2: // verifier sees the restored file with only the check applied
+			stepsAtVerify, _ = fs.Read("STEPS.md")
+		case 3: // work: check step 2
+			fs.Write("STEPS.md", twoStepsAllChecked)
+		case 4: // verifier approves step 2
+		case 5: // the whole-plan audit approves
+			fs.Write("STOP.md", "audit: plan satisfied")
+		}
+		return nil
+	}}
+	o := services.NewOrchestrator(runner, fs, &fakeClock{now: time.Now()}, &fakeLogSink{}, &terminal, cfg)
+
+	outcome := o.Run(context.Background())
+
+	if outcome != models.OutcomeStopped || outcome.ExitCode() != 0 {
+		t.Fatalf("expected the run to complete after the revert, got %v (exit %d)", outcome, outcome.ExitCode())
+	}
+	if stepsAtVerify != twoStepsFirstChecked {
+		t.Fatalf("expected the tampering reverted but the target's check kept, got:\n%s", stepsAtVerify)
+	}
+	if !strings.Contains(runner.prompt(2), "Step 1 claims complete") {
+		t.Fatalf("expected the surviving check to still be verified, got:\n%s", runner.prompt(2))
+	}
+	if !strings.Contains(terminal.String(), tamperGuardWarning(1, "step 2's text changed")) {
+		t.Fatalf("expected a tamper warning naming the reworded step, got:\n%s", terminal.String())
+	}
+}
+
+func TestTamperedIterationsCountTowardTheStallCap(t *testing.T) {
+	cfg := config(0)
+	cfg.MaxStalledIterations = 2
+	fs := stepsFileStore()
+	runner := &fakeRunner{script: func(int, io.Writer) error {
+		// Every iteration tampers instead of working; each revert is no progress.
+		fs.Write("STEPS.md", strings.Replace(twoStepsNoneChecked, "Add the widget", "Add a stub", 1))
+		return nil
+	}}
+	o := services.NewOrchestrator(runner, fs, &fakeClock{now: time.Now()}, &fakeLogSink{}, io.Discard, cfg)
+
+	outcome := o.Run(context.Background())
+
+	if outcome != models.OutcomeStalled || outcome.ExitCode() != 3 {
+		t.Fatalf("expected repeated tampering to end as a stall, got %v (exit %d)", outcome, outcome.ExitCode())
+	}
+	if runner.calls != 2 {
+		t.Fatalf("expected the stall cap to bound tampered iterations (2 runs), got %d", runner.calls)
+	}
+}
+
+func TestAuditUncheckingStepsIsNotTreatedAsTampering(t *testing.T) {
+	fs := plannedFileStore(twoStepsAllChecked) // work already done, the audit runs first
+	var terminal bytes.Buffer
+	runner := &fakeRunner{script: func(call int, _ io.Writer) error {
+		switch call {
+		case 1: // audit reopens step 2
+			fs.Write("STEPS.md", twoStepsFirstChecked)
+			fs.Write("FIXES.md", "step 2 does not satisfy the plan\n")
+		case 2: // work redoes the reopened step
+			fs.Write("STEPS.md", twoStepsAllChecked)
+		case 3: // audit approves this time
+			fs.Write("STOP.md", "audit: plan satisfied")
+		}
+		return nil
+	}}
+	o := services.NewOrchestrator(runner, fs, &fakeClock{now: time.Now()}, &fakeLogSink{}, &terminal, config(0))
+
+	outcome := o.Run(context.Background())
+
+	if outcome != models.OutcomeStopped || outcome.ExitCode() != 0 {
+		t.Fatalf("expected the reopened run to complete, got %v (exit %d)", outcome, outcome.ExitCode())
+	}
+	if !strings.Contains(runner.prompt(2), "2. Document the widget.") {
+		t.Fatalf("expected the audit's uncheck to stand and be re-run, got:\n%s", runner.prompt(2))
+	}
+	if strings.Contains(terminal.String(), "altered beyond checking") {
+		t.Fatalf("expected no tamper warning for the audit's uncheck, got:\n%s", terminal.String())
+	}
+}
+
+func TestFallbackRewriteIsNotTreatedAsTampering(t *testing.T) {
+	fs := plannedFileStore("1. Prose steps only, nothing the parser can track.\n")
+	var terminal bytes.Buffer
+	runner := &fakeRunner{script: func(call int, _ io.Writer) error {
+		switch call {
+		case 1: // the fallback restores a checkbox-format step list
+			fs.Write("STEPS.md", twoStepsNoneChecked)
+		case 2: // work: check step 1
+			fs.Write("STEPS.md", twoStepsFirstChecked)
+		case 3: // work: check step 2
+			fs.Write("STEPS.md", twoStepsAllChecked)
+		case 4: // the whole-plan audit approves
+			fs.Write("STOP.md", "audit: plan satisfied")
+		}
+		return nil
+	}}
+	o := services.NewOrchestrator(runner, fs, &fakeClock{now: time.Now()}, &fakeLogSink{}, &terminal, config(0))
+
+	outcome := o.Run(context.Background())
+
+	if outcome != models.OutcomeStopped || outcome.ExitCode() != 0 {
+		t.Fatalf("expected the rewritten step list to carry the run to completion, got %v (exit %d)", outcome, outcome.ExitCode())
+	}
+	if !strings.Contains(runner.prompt(2), "1. Add the widget.") {
+		t.Fatalf("expected the rewritten steps to stand and be worked, got:\n%s", runner.prompt(2))
+	}
+	if strings.Contains(terminal.String(), "altered beyond checking") {
+		t.Fatalf("expected no tamper warning for the fallback rewrite, got:\n%s", terminal.String())
+	}
+}
+
+// The stuck first step split into two smaller ones, in its progress states.
+const (
+	splitStepsNoneChecked = "- [ ] 1a. Add the widget skeleton.\n  Done when: the skeleton compiles.\n\n" +
+		"- [ ] 1b. Wire the widget logic.\n  Done when: widget tests pass.\n\n" +
+		"- [ ] 2. Document the widget.\n  Done when: README mentions the widget.\n"
+	splitStepsFirstChecked = "- [x] 1a. Add the widget skeleton.\n  Done when: the skeleton compiles.\n\n" +
+		"- [ ] 1b. Wire the widget logic.\n  Done when: widget tests pass.\n\n" +
+		"- [ ] 2. Document the widget.\n  Done when: README mentions the widget.\n"
+	splitStepsSecondChecked = "- [x] 1a. Add the widget skeleton.\n  Done when: the skeleton compiles.\n\n" +
+		"- [x] 1b. Wire the widget logic.\n  Done when: widget tests pass.\n\n" +
+		"- [ ] 2. Document the widget.\n  Done when: README mentions the widget.\n"
+	splitStepsAllChecked = "- [x] 1a. Add the widget skeleton.\n  Done when: the skeleton compiles.\n\n" +
+		"- [x] 1b. Wire the widget logic.\n  Done when: widget tests pass.\n\n" +
+		"- [x] 2. Document the widget.\n  Done when: README mentions the widget.\n"
+)
+
+// replanPrompts counts recorded invocations that carry the replan instruction.
+func (r *fakeRunner) replanPrompts() int {
+	n := 0
+	for call := 1; call <= len(r.invocations); call++ {
+		if r.invocations[call-1].Binary != "git" && r.invocations[call-1].Binary != "sh" &&
+			strings.Contains(r.prompt(call), "repeatedly failed verification") {
+			n++
+		}
+	}
+	return n
+}
+
+func TestStallTriggersReplanThatResumesTheRun(t *testing.T) {
+	cfg := config(0)
+	cfg.MaxStalledIterations = 2
+	cfg.MaxReplans = 1
+	fs := stepsFileStore()
+	var terminal bytes.Buffer
+	runner := &fakeRunner{script: func(call int, _ io.Writer) error {
+		switch call {
+		case 1, 2: // two no-progress work iterations hit the stall cap
+		case 3: // the replan splits the stuck step 1 into 1a and 1b
+			fs.Write("STEPS.md", splitStepsNoneChecked)
+		case 4:
+			fs.Write("STEPS.md", splitStepsFirstChecked)
+		case 5:
+			fs.Write("STEPS.md", splitStepsSecondChecked)
+		case 6:
+			fs.Write("STEPS.md", splitStepsAllChecked)
+		case 7: // the whole-plan audit approves
+			fs.Write("STOP.md", "audit: plan satisfied")
+		}
+		return nil
+	}}
+	o := services.NewOrchestrator(runner, fs, &fakeClock{now: time.Now()}, &fakeLogSink{}, &terminal, cfg)
+
+	outcome := o.Run(context.Background())
+
+	if outcome != models.OutcomeStopped || outcome.ExitCode() != 0 {
+		t.Fatalf("expected the replanned run to complete cleanly, got %v (exit %d)", outcome, outcome.ExitCode())
+	}
+	if runner.calls != 7 {
+		t.Fatalf("expected 2 stalls + 1 replan + 3 split steps + the audit (7 runs), got %d", runner.calls)
+	}
+	replan := runner.prompt(3)
+	for _, want := range []string{
+		"Step 1 has repeatedly failed verification",
+		"1. Add the widget.",
+		"Its acceptance criterion: widget tests pass.",
+		"Replace step 1 in STEPS.md with 2-4 smaller `- [ ]` checkbox steps",
+		"FIXES.md",
+		"Do not check any box, do not implement anything, and do not create STOP.md.",
+	} {
+		if !strings.Contains(replan, want) {
+			t.Fatalf("expected the replan prompt to contain %q, got:\n%s", want, replan)
+		}
+	}
+	if !strings.Contains(runner.prompt(4), "1a. Add the widget skeleton.") {
+		t.Fatalf("expected the loop to resume on the first split step, got:\n%s", runner.prompt(4))
+	}
+	if !strings.Contains(terminal.String(), "step 1 replanned; STEPS.md now has 3 steps; resuming") {
+		t.Fatalf("expected a terminal note announcing the replan, got:\n%s", terminal.String())
+	}
+}
+
+func TestReplanThatChangesNothingStallsTheRun(t *testing.T) {
+	cfg := config(0)
+	cfg.MaxStalledIterations = 2
+	cfg.MaxReplans = 1
+	var terminal bytes.Buffer
+	runner := &fakeRunner{} // neither the work iterations nor the replan change anything
+	o := services.NewOrchestrator(runner, stepsFileStore(), &fakeClock{now: time.Now()}, &fakeLogSink{}, &terminal, cfg)
+
+	outcome := o.Run(context.Background())
+
+	if outcome != models.OutcomeStalled || outcome.ExitCode() != 3 {
+		t.Fatalf("expected an ineffective replan to end as a stall, got %v (exit %d)", outcome, outcome.ExitCode())
+	}
+	if runner.calls != 3 {
+		t.Fatalf("expected 2 stalled iterations plus the replan attempt (3 runs), got %d", runner.calls)
+	}
+	if !strings.Contains(terminal.String(), "replan left step 1 unchanged") {
+		t.Fatalf("expected a terminal note about the ineffective replan, got:\n%s", terminal.String())
+	}
+}
+
+func TestReplanThatDamagesStepsFileIsRestoredAndTheRunStalls(t *testing.T) {
+	cfg := config(0)
+	cfg.MaxStalledIterations = 2
+	cfg.MaxReplans = 1
+	fs := plannedFileStore(twoStepsFirstChecked) // step 1 is finished work the replan must not lose
+	var terminal bytes.Buffer
+	runner := &fakeRunner{script: func(call int, _ io.Writer) error {
+		if call == 3 { // the replan unchecks the completed step
+			fs.Write("STEPS.md", twoStepsNoneChecked)
+		}
+		return nil
+	}}
+	o := services.NewOrchestrator(runner, fs, &fakeClock{now: time.Now()}, &fakeLogSink{}, &terminal, cfg)
+
+	outcome := o.Run(context.Background())
+
+	if outcome != models.OutcomeStalled || outcome.ExitCode() != 3 {
+		t.Fatalf("expected the damaging replan to end as a stall, got %v (exit %d)", outcome, outcome.ExitCode())
+	}
+	if got, _ := fs.Read("STEPS.md"); got != twoStepsFirstChecked {
+		t.Fatalf("expected STEPS.md restored to its pre-replan content, got:\n%s", got)
+	}
+	if !strings.Contains(terminal.String(), "replan damaged STEPS.md; restoring it") {
+		t.Fatalf("expected a terminal note about the damaged file, got:\n%s", terminal.String())
+	}
+}
+
+func TestReplanningDisabledStallsExactlyAsBefore(t *testing.T) {
+	cfg := config(0)
+	cfg.MaxStalledIterations = 2
+	cfg.MaxReplans = 0
+	runner := &fakeRunner{} // never checks a step
+	o := services.NewOrchestrator(runner, stepsFileStore(), &fakeClock{now: time.Now()}, &fakeLogSink{}, io.Discard, cfg)
+
+	outcome := o.Run(context.Background())
+
+	if outcome != models.OutcomeStalled || outcome.ExitCode() != 3 {
+		t.Fatalf("expected a plain stall with replanning disabled, got %v (exit %d)", outcome, outcome.ExitCode())
+	}
+	if runner.calls != 2 || runner.replanPrompts() != 0 {
+		t.Fatalf("expected no replan invocation (2 runs), got %d runs and %d replans",
+			runner.calls, runner.replanPrompts())
+	}
+}
+
+func TestReplanBudgetIsConsumedOncePerRun(t *testing.T) {
+	cfg := config(0)
+	cfg.MaxStalledIterations = 2
+	cfg.MaxReplans = 1
+	fs := stepsFileStore()
+	runner := &fakeRunner{script: func(call int, _ io.Writer) error {
+		if call == 3 { // the only replan splits step 1; nothing else ever progresses
+			fs.Write("STEPS.md", splitStepsNoneChecked)
+		}
+		return nil
+	}}
+	o := services.NewOrchestrator(runner, fs, &fakeClock{now: time.Now()}, &fakeLogSink{}, io.Discard, cfg)
+
+	outcome := o.Run(context.Background())
+
+	if outcome != models.OutcomeStalled || outcome.ExitCode() != 3 {
+		t.Fatalf("expected the second stall to end the run once the budget is spent, got %v (exit %d)", outcome, outcome.ExitCode())
+	}
+	if runner.calls != 5 {
+		t.Fatalf("expected 2 stalls + replan + 2 more stalls (5 runs), got %d", runner.calls)
+	}
+	if runner.replanPrompts() != 1 {
+		t.Fatalf("expected exactly one replan invocation, got %d", runner.replanPrompts())
+	}
+}
+
+func TestAuditPingPongIsNeverReplanned(t *testing.T) {
+	cfg := config(0)
+	cfg.MaxStalledIterations = 2
+	cfg.MaxReplans = 1
+	fs := plannedFileStore(twoStepsAllChecked) // only the audit remains, and it never decides
+	runner := &fakeRunner{}
+	o := services.NewOrchestrator(runner, fs, &fakeClock{now: time.Now()}, &fakeLogSink{}, io.Discard, cfg)
+
+	outcome := o.Run(context.Background())
+
+	if outcome != models.OutcomeStalled || outcome.ExitCode() != 3 {
+		t.Fatalf("expected audit ping-pong to stall without replanning, got %v (exit %d)", outcome, outcome.ExitCode())
+	}
+	if runner.calls != 2 || runner.replanPrompts() != 0 {
+		t.Fatalf("expected no replan with every box checked (2 audit runs), got %d runs and %d replans",
+			runner.calls, runner.replanPrompts())
+	}
+}
+
 func TestRunAbortsWhenStepsFileVanishesMidRun(t *testing.T) {
 	fs := stepsFileStore()
 	runner := &fakeRunner{script: func(int, io.Writer) error {

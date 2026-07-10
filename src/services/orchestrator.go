@@ -1,6 +1,7 @@
 package services
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -51,6 +52,9 @@ type Orchestrator struct {
 	// cfg.MaxConsecutiveFailures ends the run with OutcomeDroidFailed. Any
 	// successful invocation resets it.
 	failures int
+	// replansUsed counts replan invocations spent on stalled steps; once it
+	// reaches cfg.MaxReplans, hitting the stall cap ends the run for good.
+	replansUsed int
 }
 
 // NewOrchestrator wires an orchestrator from its dependencies.
@@ -82,15 +86,33 @@ func (o *Orchestrator) Run(ctx context.Context) models.Outcome {
 		if outcome, stop := o.preIteration(ctx, deadline); stop {
 			return outcome
 		}
-		before := o.parsedSteps()
-		if outcome, stop := o.runOnce(ctx); stop {
+		// The raw snapshot backs the tamper guard's byte-exact restore; its
+		// parse is the progress baseline for the gate, verifier, checkpoint,
+		// and stall counter. A read failure leaves both empty and skips the
+		// guard; runOnce surfaces the failure itself.
+		rawBefore, rawErr := o.files.Read(o.cfg.StepsFile)
+		before := ParseSteps(rawBefore)
+		intent, outcome, stop := o.runOnce(ctx)
+		if stop {
 			return outcome
 		}
-		if outcome, stop := o.verifyNewSteps(ctx, before); stop {
-			return outcome
+		if rawErr == nil {
+			o.guardStepsFile(intent, rawBefore, before)
 		}
-		o.checkpointNewSteps(ctx, before)
+		if o.checkGatePassed(ctx, before) {
+			if outcome, stop := o.verifyNewSteps(ctx, before); stop {
+				return outcome
+			}
+			o.checkpointNewSteps(ctx, before)
+		}
 		if o.stalledOut(CompletedStepCount(before)) {
+			outcome, stop, resumed := o.replanStuckStep(ctx)
+			if stop {
+				return outcome
+			}
+			if resumed {
+				continue
+			}
 			fmt.Fprintf(o.terminal,
 				"determined: no step checked in %d consecutive iterations; stopping\n",
 				o.cfg.MaxStalledIterations)
@@ -210,15 +232,195 @@ func (o *Orchestrator) runComplete(steps []Step) bool {
 	return AllStepsComplete(steps) && o.files.Exists(o.cfg.StopFile)
 }
 
+// replanStuckStep is the escalation between hitting the stall cap and giving
+// up: a step that repeatedly fails verification is usually too large for one
+// invocation, not impossible, so one invocation is spent replacing it with
+// smaller steps instead of exiting stalled. It returns the loop's next move:
+// stop with the outcome (the replan invocation was interrupted or exhausted
+// the failure cap), resume the loop (the replan demonstrably changed the
+// stuck step), or neither — the run stalls out as it would have without
+// replanning. Each attempt consumes one of cfg.MaxReplans regardless of
+// outcome, so a tool that replans badly cannot loop forever. With every box
+// checked (audit ping-pong) or nothing parseable there is no single stuck
+// step to split, and no replan is spent.
+func (o *Orchestrator) replanStuckStep(ctx context.Context) (models.Outcome, bool, bool) {
+	if o.replansUsed >= o.cfg.MaxReplans {
+		return models.OutcomeStopped, false, false
+	}
+	rawBefore, err := o.files.Read(o.cfg.StepsFile)
+	if err != nil {
+		return models.OutcomeStopped, false, false
+	}
+	before := ParseSteps(rawBefore)
+	i, step, ok := NextIncompleteStep(before)
+	if !ok {
+		return models.OutcomeStopped, false, false
+	}
+	o.replansUsed++
+	fmt.Fprintf(o.terminal,
+		"determined: step %d is stuck; replanning it into smaller steps (replan %d of %d)\n",
+		i+1, o.replansUsed, o.cfg.MaxReplans)
+	if outcome, stop := o.invoke(ctx, replanPrompt(i+1, step)); stop {
+		return outcome, true, false
+	}
+	if !o.replanSucceeded(rawBefore, before, i) {
+		return models.OutcomeStopped, false, false
+	}
+	o.stalled = 0
+	return models.OutcomeStopped, false, true
+}
+
+// replanSucceeded judges the replan by its effect on the steps file, never by
+// the tool's word: the stuck step must demonstrably differ (its text or
+// criterion changed, or the step count did) while every previously completed
+// step keeps its check. A damaged file — nothing parses, or finished work lost
+// its check — is restored to the pre-replan snapshot so stalling out never
+// leaves the file worse than the stall found it.
+func (o *Orchestrator) replanSucceeded(rawBefore string, before []Step, target int) bool {
+	rawAfter, err := o.files.Read(o.cfg.StepsFile)
+	if err != nil {
+		return false
+	}
+	after := ParseSteps(rawAfter)
+	if len(after) == 0 || !completedStepsPreserved(before, after) {
+		fmt.Fprintf(o.terminal,
+			"determined: replan damaged %s; restoring it\n", o.cfg.StepsFile)
+		if err := o.files.Write(o.cfg.StepsFile, rawBefore); err != nil {
+			fmt.Fprintf(o.terminal, "determined: could not restore %s: %v\n", o.cfg.StepsFile, err)
+		}
+		return false
+	}
+	if len(after) == len(before) &&
+		after[target].Text == before[target].Text &&
+		after[target].DoneWhen == before[target].DoneWhen {
+		fmt.Fprintf(o.terminal, "determined: replan left step %d unchanged\n", target+1)
+		return false
+	}
+	fmt.Fprintf(o.terminal,
+		"determined: step %d replanned; %s now has %d steps; resuming\n",
+		target+1, o.cfg.StepsFile, len(after))
+	return true
+}
+
+// completedStepsPreserved reports whether every step checked complete before
+// the replan is still present and checked after it, matched by text and
+// criterion: a replan may only reshape unfinished work, never lose finished
+// work.
+func completedStepsPreserved(before, after []Step) bool {
+	remaining := make(map[Step]int)
+	for _, s := range after {
+		if s.Completed {
+			remaining[s]++
+		}
+	}
+	for _, s := range before {
+		if !s.Completed {
+			continue
+		}
+		if remaining[s] == 0 {
+			return false
+		}
+		remaining[s]--
+	}
+	return true
+}
+
+// invocationKind classifies what an iteration's invocation was asked to do,
+// so the tamper guard keys off intent rather than string-matching prompts.
+type invocationKind int
+
+const (
+	// invocationStep works exactly one unchecked step; the only STEPS.md
+	// edit it may make is checking that step's box.
+	invocationStep invocationKind = iota
+	// invocationAudit is the whole-plan audit; it legitimately unchecks steps.
+	invocationAudit
+	// invocationRewrite is the no-parseable-steps fallback; it legitimately
+	// rewrites the whole file.
+	invocationRewrite
+)
+
+// iterationIntent records what an iteration aimed its invocation at: the kind
+// of invocation and, for single-step work, the zero-based target step index.
+type iterationIntent struct {
+	kind   invocationKind
+	target int
+}
+
 // runOnce runs a single work invocation aimed at the next unchecked step. It
-// reports whether the loop should stop.
-func (o *Orchestrator) runOnce(ctx context.Context) (models.Outcome, bool) {
-	prompt, err := o.iterationPrompt()
+// returns what the invocation was aimed at and whether the loop should stop.
+func (o *Orchestrator) runOnce(ctx context.Context) (iterationIntent, models.Outcome, bool) {
+	prompt, intent, err := o.iterationPrompt()
 	if err != nil {
 		fmt.Fprintf(o.terminal, "determined: could not read %s: %v\n", o.cfg.StepsFile, err)
-		return models.OutcomeDroidFailed, true
+		return intent, models.OutcomeDroidFailed, true
 	}
-	return o.invoke(ctx, prompt)
+	outcome, stop := o.invoke(ctx, prompt)
+	return intent, outcome, stop
+}
+
+// guardStepsFile is the STEPS.md tamper guard. It applies only to single-step
+// work invocations (the audit and the fallback rewrite legitimately uncheck
+// or rewrite the file, and the replan escalation — which never routes through
+// runOnce — judges its own rewrite in replanSucceeded): such an invocation
+// may change the parsed steps in exactly one way, checking its own target
+// step's box. Anything else — reworded text, an
+// altered Done-when criterion, steps added, deleted, or reordered, another
+// box flipped — would make the verifier judge against text the worker chose
+// for itself, so the file is restored from the pre-iteration snapshot,
+// preserving only the target step's legitimate check. Running before the
+// check gate means a surviving check is still gated, verified, and
+// checkpointed normally, and a full revert reads as no progress to the stall
+// counter. An unreadable file is left alone; the loop surfaces read failures
+// elsewhere.
+func (o *Orchestrator) guardStepsFile(intent iterationIntent, rawBefore string, before []Step) {
+	if intent.kind != invocationStep {
+		return
+	}
+	rawAfter, err := o.files.Read(o.cfg.StepsFile)
+	if err != nil || rawAfter == rawBefore {
+		return
+	}
+	after := ParseSteps(rawAfter)
+	violation := tamperViolation(before, after, intent.target)
+	if violation == "" {
+		return
+	}
+	fmt.Fprintf(o.terminal,
+		"determined: warning: STEPS.md was altered beyond checking step %d (%s); restoring it\n",
+		intent.target+1, violation)
+	restored := rawBefore
+	if intent.target < len(after) && after[intent.target].Completed {
+		restored = CheckSteps(rawBefore, []int{intent.target})
+	}
+	if err := o.files.Write(o.cfg.StepsFile, restored); err != nil {
+		fmt.Fprintf(o.terminal, "determined: could not restore %s: %v\n", o.cfg.StepsFile, err)
+	}
+}
+
+// tamperViolation returns a description of the first illegitimate difference
+// between the parsed steps and their pre-iteration snapshot, or "" when the
+// only change (if any) is the target step's box flipping `[ ]` to `[x]`.
+// Text and Done-when must match exactly; prose outside the checkbox items is
+// not judged, since only the parsed steps steer the loop.
+func tamperViolation(before, after []Step, target int) string {
+	if len(after) != len(before) {
+		return fmt.Sprintf("step count changed from %d to %d", len(before), len(after))
+	}
+	for i := range before {
+		switch {
+		case after[i].Text != before[i].Text:
+			return fmt.Sprintf("step %d's text changed", i+1)
+		case after[i].DoneWhen != before[i].DoneWhen:
+			return fmt.Sprintf("step %d's Done-when criterion changed", i+1)
+		case after[i].Completed == before[i].Completed:
+		case i != target:
+			return fmt.Sprintf("step %d's checkbox changed", i+1)
+		case before[i].Completed:
+			return fmt.Sprintf("step %d was unchecked", i+1)
+		}
+	}
+	return ""
 }
 
 // invoke runs one tool invocation with the given prompt, teeing its output to
@@ -239,6 +441,90 @@ func (o *Orchestrator) invoke(ctx context.Context, prompt string) (models.Outcom
 	}
 	o.failures = 0
 	return models.OutcomeStopped, false // outcome ignored when stop is false
+}
+
+// checkCmdTimeout bounds the check command so a hung test suite cannot block
+// the loop indefinitely; a timeout surfaces as an ordinary check failure.
+const checkCmdTimeout = 10 * time.Minute
+
+// checkOutputTailLimit caps how much check-command output is recorded per
+// FIXES.md entry, so a chatty test suite cannot bloat the file.
+const checkOutputTailLimit = 4000
+
+// checkGatePassed runs the deterministic check command when this iteration
+// newly checked at least one step, and reports whether the iteration may
+// proceed to the AI verify pass and git checkpoint. The command runs once per
+// iteration, not per step: it validates the whole tree, so one success covers
+// every newly checked step. A failure is a verdict on the work, not a tool
+// failure — it never counts toward the consecutive-failure cap. The failing
+// steps are unchecked again and the command's output tail recorded in
+// FIXES.md, so the loop simply re-runs them and the stall counter sees the
+// round as no progress; the gate itself never ends the run.
+func (o *Orchestrator) checkGatePassed(ctx context.Context, before []Step) bool {
+	if o.cfg.CheckCmd == "" {
+		return true
+	}
+	newly := newlyCheckedIndices(o.parsedSteps(), before)
+	if len(newly) == 0 {
+		return true
+	}
+	fmt.Fprintf(o.terminal, "determined: running check command: %s\n", o.cfg.CheckCmd)
+	var output bytes.Buffer
+	runCtx, cancel := context.WithTimeout(ctx, checkCmdTimeout)
+	err := o.runner.Run(runCtx,
+		models.Invocation{Binary: "sh", Args: []string{"-c", o.cfg.CheckCmd}},
+		io.MultiWriter(o.terminal, &output))
+	cancel()
+	if err == nil {
+		return true
+	}
+	o.rejectCheckedSteps(newly, output.String(), err)
+	return false
+}
+
+// newlyCheckedIndices returns the zero-based indices of the steps checked in
+// steps but not in the before snapshot.
+func newlyCheckedIndices(steps, before []Step) []int {
+	var newly []int
+	for i, step := range steps {
+		if step.Completed && !(i < len(before) && before[i].Completed) {
+			newly = append(newly, i)
+		}
+	}
+	return newly
+}
+
+// rejectCheckedSteps unchecks the given steps in the steps file and records
+// the check command's failure under a `## Step N` FIXES.md heading per step,
+// so the re-run worker sees exactly what failed. File errors are noted and
+// ignored: the gate delivers verdicts, it never ends the run.
+func (o *Orchestrator) rejectCheckedSteps(indices []int, output string, cause error) {
+	content, err := o.files.Read(o.cfg.StepsFile)
+	if err == nil {
+		err = o.files.Write(o.cfg.StepsFile, UncheckSteps(content, indices))
+	}
+	if err != nil {
+		fmt.Fprintf(o.terminal, "determined: could not uncheck steps after failed check: %v\n", err)
+	}
+	var entry strings.Builder
+	for _, i := range indices {
+		fmt.Fprintf(&entry,
+			"## Step %d\n\nCheck command `%s` failed (%v). Output tail:\n\n```\n%s\n```\n\n",
+			i+1, o.cfg.CheckCmd, cause, tail(output, checkOutputTailLimit))
+		fmt.Fprintf(o.terminal,
+			"determined: check command failed; unchecked step %d and recorded the output in FIXES.md\n", i+1)
+	}
+	if err := o.files.Append("FIXES.md", entry.String()); err != nil {
+		fmt.Fprintf(o.terminal, "determined: could not record the check failure in FIXES.md: %v\n", err)
+	}
+}
+
+// tail returns the last limit bytes of s.
+func tail(s string, limit int) string {
+	if len(s) <= limit {
+		return s
+	}
+	return s[len(s)-limit:]
 }
 
 // verifyNewSteps runs an independent reviewer invocation over every step the
@@ -383,23 +669,25 @@ const auditPrompt = promptPreamble +
 // iterationPrompt reads the steps file and builds this iteration's instruction:
 // the whole-plan audit when every box is checked (checkCompletion only ends
 // the run once the audit's STOP.md exists), otherwise the next unchecked
-// step. A missing next step then means the file had no parseable steps.
-func (o *Orchestrator) iterationPrompt() (string, error) {
+// step. A missing next step then means the file had no parseable steps. The
+// returned intent tells the tamper guard which kind of iteration ran and, for
+// single-step work, which step it targeted.
+func (o *Orchestrator) iterationPrompt() (string, iterationIntent, error) {
 	content, err := o.files.Read(o.cfg.StepsFile)
 	if err != nil {
-		return "", err
+		return "", iterationIntent{}, err
 	}
 	steps := ParseSteps(content)
 	if AllStepsComplete(steps) {
 		fmt.Fprintln(o.terminal,
 			"determined: all steps checked; auditing the whole plan before declaring success")
-		return auditPrompt, nil
+		return auditPrompt, iterationIntent{kind: invocationAudit}, nil
 	}
 	i, step, ok := NextIncompleteStep(steps)
 	if !ok {
-		return noParsableStepsPrompt, nil
+		return noParsableStepsPrompt, iterationIntent{kind: invocationRewrite}, nil
 	}
-	return stepPrompt(i+1, step), nil
+	return stepPrompt(i+1, step), iterationIntent{kind: invocationStep, target: i}, nil
 }
 
 // stepPrompt builds the execute instruction for a single step: work only that
@@ -432,6 +720,30 @@ func stepPrompt(n int, step Step) string {
 		"once it passes. Do not check or uncheck any other step, and do not create "+
 		"STOP.md. Before finishing, append to NOTES.md any decisions, conventions, or "+
 		"gotchas later steps need to know.", n)
+	return b.String()
+}
+
+// replanPrompt asks the tool to split one stuck step into smaller ones. It is
+// a planning move, not a work move: the prompt forbids implementing, checking
+// boxes, and STOP.md outright, and points at FIXES.md because the rejection
+// history is the best evidence of where the step is too big. The result is
+// judged by replanSucceeded, so the prompt promises nothing about acceptance.
+func replanPrompt(n int, step Step) string {
+	var b strings.Builder
+	b.WriteString(promptPreamble)
+	fmt.Fprintf(&b, "Step %d has repeatedly failed verification and is likely too large "+
+		"to implement in one invocation: ", n)
+	b.WriteString(sentence(step.Text))
+	if step.DoneWhen != "" {
+		b.WriteString(" Its acceptance criterion: ")
+		b.WriteString(sentence(step.DoneWhen))
+	}
+	fmt.Fprintf(&b, " Read PLAN.md, plus FIXES.md and NOTES.md if they exist, to see what "+
+		"has gone wrong so far. Replace step %d in STEPS.md with 2-4 smaller `- [ ]` "+
+		"checkbox steps, each ending with an indented `Done when:` line stating a "+
+		"checkable acceptance condition, ordered so completing them all completes the "+
+		"original step. Keep every other step exactly as it is, in order. Do not check "+
+		"any box, do not implement anything, and do not create STOP.md.", n)
 	return b.String()
 }
 

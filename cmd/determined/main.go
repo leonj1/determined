@@ -75,6 +75,10 @@ func main() {
 		"after each newly checked step, run an independent verifier invocation that unchecks it (recording why in FIXES.md) if its acceptance criterion is not met")
 	gitCheckpoint := flag.Bool("git-checkpoint", true,
 		"git-commit the working tree after each verified step when running in a git repository")
+	checkCmd := flag.String("check-cmd", "",
+		"shell command (run via `sh -c`) that must succeed after each iteration that checks a step; on failure the step is unchecked and the output tail recorded in FIXES.md; empty disables the gate")
+	maxReplans := flag.Int("max-replans", 1,
+		"when the stall cap is hit, ask the tool to replace the stuck step with smaller steps instead of stopping, at most this many times per run; 0 disables replanning")
 	showVersion := flag.Bool("version", false, "print the version and exit")
 	flag.Parse()
 
@@ -99,7 +103,7 @@ func main() {
 	if *plan != "" {
 		outcome = runPlan(ctx, selected, *plan, *budget, *maxStepPasses, clock, logs)
 	} else {
-		outcome = runLoop(ctx, selected, *budget, *maxStalled, *maxFailures, *maxIterationDuration, *verify, *gitCheckpoint, clock, logs)
+		outcome = runLoop(ctx, selected, *budget, *maxStalled, *maxFailures, *maxIterationDuration, *verify, *gitCheckpoint, *checkCmd, *maxReplans, clock, logs)
 	}
 
 	fmt.Fprintf(os.Stderr, "\ndetermined: %s\n", outcome)
@@ -107,7 +111,7 @@ func main() {
 }
 
 // runLoop runs the unattended execute loop against PLAN.md / STEPS.md.
-func runLoop(ctx context.Context, tool models.Tool, budget time.Duration, maxStalled, maxFailures int, maxIterationDuration time.Duration, verify, gitCheckpoint bool, clock services.Clock, logs services.LogSink) models.Outcome {
+func runLoop(ctx context.Context, tool models.Tool, budget time.Duration, maxStalled, maxFailures int, maxIterationDuration time.Duration, verify, gitCheckpoint bool, checkCmd string, maxReplans int, clock services.Clock, logs services.LogSink) models.Outcome {
 	cfg := models.Config{
 		StopFile:               "STOP.md",
 		PlanFile:               "PLAN.md",
@@ -119,6 +123,8 @@ func runLoop(ctx context.Context, tool models.Tool, budget time.Duration, maxSta
 		MaxIterationDuration:   maxIterationDuration,
 		Verify:                 verify,
 		GitCheckpoint:          gitCheckpoint,
+		CheckCmd:               checkCmd,
+		MaxReplans:             maxReplans,
 	}
 	orchestrator := services.NewOrchestrator(
 		clients.NewExecCommandRunner(),

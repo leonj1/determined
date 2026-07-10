@@ -95,6 +95,178 @@ func TestParseSteps(t *testing.T) {
 	}
 }
 
+func TestUncheckSteps(t *testing.T) {
+	cases := []struct {
+		name    string
+		in      string
+		indices []int
+		want    string
+	}{
+		{
+			name: "flips only the targeted box, preserving everything else byte for byte",
+			in: "# STEPS\n\n" +
+				"- [x] 1. Ship the parser.\n" +
+				"  Done when: `go test ./...` passes.\n\n" +
+				"- [x] 2. Wire it into the loop.\n" +
+				"  Done when: each iteration embeds the next step.\n",
+			indices: []int{1},
+			want: "# STEPS\n\n" +
+				"- [x] 1. Ship the parser.\n" +
+				"  Done when: `go test ./...` passes.\n\n" +
+				"- [ ] 2. Wire it into the loop.\n" +
+				"  Done when: each iteration embeds the next step.\n",
+		},
+		{
+			name:    "multiple indices flip together",
+			in:      "- [x] One.\n- [x] Two.\n- [x] Three.\n",
+			indices: []int{0, 2},
+			want:    "- [ ] One.\n- [x] Two.\n- [ ] Three.\n",
+		},
+		{
+			name:    "uppercase X marks are flipped too",
+			in:      "- [X] Done already.\n",
+			indices: []int{0},
+			want:    "- [ ] Done already.\n",
+		},
+		{
+			name:    "indentation and star bullets survive",
+			in:      "  * [x] Star step.\n    Done when: parsed.\n",
+			indices: []int{0},
+			want:    "  * [ ] Star step.\n    Done when: parsed.\n",
+		},
+		{
+			name:    "an already unchecked target is left as is",
+			in:      "- [ ] Not done.\n",
+			indices: []int{0},
+			want:    "- [ ] Not done.\n",
+		},
+		{
+			name: "non-checkbox lines are neither counted nor touched",
+			in: "- [x] Real one.\n" +
+				"- a plain bullet mentioning [x]\n" +
+				"prose mentioning [x] too\n" +
+				"- [x] Real two.\n",
+			indices: []int{1},
+			want: "- [x] Real one.\n" +
+				"- a plain bullet mentioning [x]\n" +
+				"prose mentioning [x] too\n" +
+				"- [ ] Real two.\n",
+		},
+		{
+			name:    "out-of-range indices are ignored",
+			in:      "- [x] Only step.\n",
+			indices: []int{3},
+			want:    "- [x] Only step.\n",
+		},
+		{
+			name:    "no indices changes nothing",
+			in:      "- [x] Only step.\n",
+			indices: nil,
+			want:    "- [x] Only step.\n",
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := services.UncheckSteps(c.in, c.indices); got != c.want {
+				t.Fatalf("UncheckSteps(%q, %v) = %q, want %q", c.in, c.indices, got, c.want)
+			}
+		})
+	}
+}
+
+func TestCheckSteps(t *testing.T) {
+	cases := []struct {
+		name    string
+		in      string
+		indices []int
+		want    string
+	}{
+		{
+			name: "flips only the targeted box, preserving everything else byte for byte",
+			in: "# STEPS\n\n" +
+				"- [ ] 1. Ship the parser.\n" +
+				"  Done when: `go test ./...` passes.\n\n" +
+				"- [ ] 2. Wire it into the loop.\n" +
+				"  Done when: each iteration embeds the next step.\n",
+			indices: []int{1},
+			want: "# STEPS\n\n" +
+				"- [ ] 1. Ship the parser.\n" +
+				"  Done when: `go test ./...` passes.\n\n" +
+				"- [x] 2. Wire it into the loop.\n" +
+				"  Done when: each iteration embeds the next step.\n",
+		},
+		{
+			name:    "multiple indices flip together",
+			in:      "- [ ] One.\n- [ ] Two.\n- [ ] Three.\n",
+			indices: []int{0, 2},
+			want:    "- [x] One.\n- [ ] Two.\n- [x] Three.\n",
+		},
+		{
+			name:    "indentation and star bullets survive",
+			in:      "  * [ ] Star step.\n    Done when: parsed.\n",
+			indices: []int{0},
+			want:    "  * [x] Star step.\n    Done when: parsed.\n",
+		},
+		{
+			name:    "an already checked target is left as is, even an uppercase X",
+			in:      "- [X] Done already.\n",
+			indices: []int{0},
+			want:    "- [X] Done already.\n",
+		},
+		{
+			name: "non-checkbox lines are neither counted nor touched",
+			in: "- [ ] Real one.\n" +
+				"- a plain bullet mentioning [ ]\n" +
+				"prose mentioning [ ] too\n" +
+				"- [ ] Real two.\n",
+			indices: []int{1},
+			want: "- [ ] Real one.\n" +
+				"- a plain bullet mentioning [ ]\n" +
+				"prose mentioning [ ] too\n" +
+				"- [x] Real two.\n",
+		},
+		{
+			name:    "out-of-range indices are ignored",
+			in:      "- [ ] Only step.\n",
+			indices: []int{3},
+			want:    "- [ ] Only step.\n",
+		},
+		{
+			name:    "no indices changes nothing",
+			in:      "- [ ] Only step.\n",
+			indices: nil,
+			want:    "- [ ] Only step.\n",
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := services.CheckSteps(c.in, c.indices); got != c.want {
+				t.Fatalf("CheckSteps(%q, %v) = %q, want %q", c.in, c.indices, got, c.want)
+			}
+		})
+	}
+}
+
+func TestCheckAndUncheckStepsRoundTripByteExactly(t *testing.T) {
+	original := "# STEPS\n\n" +
+		"- [x] 1. Ship the parser.\n" +
+		"  Done when: `go test ./...` passes.\n\n" +
+		"  * [ ] 2. Star step.\n    Done when: parsed.\n\n" +
+		"prose mentioning [ ] and [x]\n" +
+		"- [ ] 3. Wire it into the loop.\n" +
+		"  Done when: each iteration embeds the next step.\n"
+	indices := []int{1, 2}
+
+	checked := services.CheckSteps(original, indices)
+	if got := services.UncheckSteps(checked, indices); got != original {
+		t.Fatalf("UncheckSteps(CheckSteps(...)) = %q, want the original %q", got, original)
+	}
+	unchecked := services.UncheckSteps(original, []int{0})
+	if got := services.CheckSteps(unchecked, []int{0}); got != original {
+		t.Fatalf("CheckSteps(UncheckSteps(...)) = %q, want the original %q", got, original)
+	}
+}
+
 func TestNextIncompleteStep(t *testing.T) {
 	cases := []struct {
 		name     string
