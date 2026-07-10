@@ -1090,13 +1090,13 @@ func verifyPrompt(n int, step Step) string {
 	}
 	fmt.Fprintf(&b, " You are the reviewer, not the worker. Assume the step is "+
 		"incomplete until you have run the check and seen it pass: verify by reading "+
-		"the code and running the stated check. Read NOTES.md if it exists for the "+
+		"the code and running the stated check. If NOTES.md exists, read %s, for the "+
 		"conventions earlier steps recorded. "+
 		"If not genuinely done, change the step's `[x]` back to `[ ]` in STEPS.md "+
 		"and append an entry to FIXES.md under a `## Step %d` heading stating the "+
 		"specific failing check and what would make it pass; if done, do nothing. "+
 		"Do not fix anything yourself, do not modify code, and do not check or "+
-		"uncheck any step other than step %d.", n, n)
+		"uncheck any step other than step %d.", notesReadInstruction(), n, n)
 	return b.String()
 }
 
@@ -1403,6 +1403,24 @@ const promptPreamble = "You are one invocation of an orchestrated loop that runs
 	"STEPS.md is the loop's source of truth, NOTES.md is cross-iteration memory, and " +
 	"FIXES.md records why previously rejected work was reopened. "
 
+// notesTailLines is roughly how much of NOTES.md's chronological tail each
+// invocation is told to read. NOTES.md grows without bound across iterations,
+// so a whole-file read would inject every stale note as memory forever;
+// instead every read instruction carries a pinned+tail contract — the durable
+// `## Pinned` section at the top plus this recent tail. The contract lives
+// entirely in the prompt text: the orchestrator never parses, truncates, or
+// rewrites NOTES.md itself. The figure sits here so the read window is tuned
+// in one place.
+const notesTailLines = 60
+
+// notesReadInstruction renders the pinned+tail read contract injected wherever
+// a prompt tells the tool to read NOTES.md, so every invocation reads the same
+// window: the durable pinned facts plus the recent tail, never the whole file.
+func notesReadInstruction() string {
+	return fmt.Sprintf("its `## Pinned` section at the top plus roughly the last %d lines, "+
+		"not the whole file", notesTailLines)
+}
+
 // noParsableStepsPrompt is used when STEPS.md contains no checkbox-format
 // steps, so the orchestrator cannot judge progress itself: the tool either
 // restores a parseable step list or confirms the work is done with STOP.md.
@@ -1503,7 +1521,9 @@ const proposalNote = " Direct STEPS.md edits beyond checking your own step's box
 // stepPrompt builds the execute instruction for a single step: work only that
 // step, meet its acceptance criterion, and check its box when done. NOTES.md
 // carries knowledge between otherwise-independent invocations: each iteration
-// reads what earlier steps recorded and appends what later steps need to know.
+// reads the pinned section plus the recent tail of what earlier steps recorded
+// and appends what later steps need to know, promoting durable facts to
+// `## Pinned` so they outlive the tail window.
 // The step is named by number so the tool edits the right checkbox even when
 // step texts look alike. FIXES.md is offered first because a reopened step's
 // worker would otherwise repeat the exact mistake the reviewer rejected. The
@@ -1516,7 +1536,7 @@ const proposalNote = " Direct STEPS.md edits beyond checking your own step's box
 func stepPrompt(n int, step Step) string {
 	var b strings.Builder
 	b.WriteString(promptPreamble)
-	b.WriteString("Read NOTES.md if it exists before starting. ")
+	fmt.Fprintf(&b, "If NOTES.md exists, read %s, before starting. ", notesReadInstruction())
 	b.WriteString("If FIXES.md exists, read it too: this step may have been reopened, " +
 		"and it explains what was wrong last time. ")
 	fmt.Fprintf(&b, "Work on exactly step %d and no other: ", n)
@@ -1535,7 +1555,11 @@ func stepPrompt(n int, step Step) string {
 	}
 	b.WriteString(" Do not check or uncheck any other step, and do not create " +
 		"STOP.md. Before finishing, append to NOTES.md any decisions, conventions, or " +
-		"gotchas later steps need to know.")
+		"gotchas later steps need to know. Older entries scroll out of the read window, " +
+		"so promote durable, always-relevant facts — project conventions, invariants, " +
+		"gotchas every future step needs — into the `## Pinned` section at the top, " +
+		"keeping it small; that section may be edited in place, everything below it " +
+		"is append-only.")
 	return b.String()
 }
 
@@ -1554,14 +1578,15 @@ func replanPrompt(n int, step Step) string {
 		b.WriteString(" Its acceptance criterion: ")
 		b.WriteString(sentence(step.DoneWhen))
 	}
-	fmt.Fprintf(&b, " Read PLAN.md, plus FIXES.md and NOTES.md if they exist, to see what "+
-		"has gone wrong so far. Replace step %d in STEPS.md with 2-4 smaller `- [ ]` "+
+	fmt.Fprintf(&b, " Read PLAN.md, plus FIXES.md if it exists, to see what has gone wrong "+
+		"so far; if NOTES.md exists, read %s. Replace step %d in STEPS.md with 2-4 smaller `- [ ]` "+
 		"checkbox steps, each ending with an indented `Done when:` line stating a "+
 		"checkable acceptance condition — phrased as a single backtick-quoted executable "+
 		"command whenever possible, since the orchestrator re-runs such commands itself "+
 		"to verify the step — ordered so completing them all completes the "+
 		"original step. Keep every other step exactly as it is, in order. Do not check "+
-		"any box, do not implement anything, and do not create STOP.md.", n)
+		"any box, do not implement anything, and do not create STOP.md.",
+		notesReadInstruction(), n)
 	return b.String()
 }
 

@@ -52,7 +52,9 @@ work. Unlike the one-liner, it does not trust the tool's word for progress:
   the valid ones to `STEPS.md` itself, bounded per run (see
   [EXECUTION.md](EXECUTION.md)).
 - **Memory and checkpoints** — `NOTES.md` carries knowledge between otherwise
-  independent invocations, and each verified step is git-committed.
+  independent invocations: workers read its durable `## Pinned` section plus
+  the recent tail — not the whole file, so stale notes age out (see
+  [EXECUTION.md](EXECUTION.md)) — and each verified step is git-committed.
 - **Failed-attempt stashing** — a step rejected a second time has its failed
   attempt `git stash`ed (hash and diffstat recorded in `FIXES.md`), so the
   retry starts clean from the last verified checkpoint instead of building on

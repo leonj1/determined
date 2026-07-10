@@ -164,7 +164,8 @@ totals but trigger no stash, since their work was already committed.
 A step that repeatedly fails verification is usually too large for one
 invocation, not impossible — so hitting the stall cap escalates to a planning
 move before giving up. One invocation is aimed at exactly the stuck step: read
-`PLAN.md` (plus `FIXES.md` and `NOTES.md`) and replace step N in `STEPS.md`
+`PLAN.md` (plus `FIXES.md`, and `NOTES.md`'s pinned section and recent tail —
+see below) and replace step N in `STEPS.md`
 with 2–4 smaller checkbox steps with checkable `Done when:` criteria, keeping
 every other step exactly as it is, checking nothing and implementing nothing.
 
@@ -412,10 +413,30 @@ runs it.
 ## NOTES.md
 
 Each iteration runs in a fresh tool invocation with no memory of earlier ones,
-so the injected prompt tells the tool to read `NOTES.md` (if it exists) before
-starting, and to append any decisions, conventions, or gotchas later steps need
-to know before finishing. The file lives in the working directory alongside
-`PLAN.md` and `STEPS.md` and is created by the tool itself on first use.
+so the injected prompt tells the tool to consult `NOTES.md` (if it exists)
+before starting, and to append any decisions, conventions, or gotchas later
+steps need to know before finishing. The file lives in the working directory
+alongside `PLAN.md` and `STEPS.md` and is created by the tool itself on first
+use.
+
+The file grows without bound across iterations, and a whole-file read would
+keep injecting every stale note as memory forever, with no pruning. Every
+prompt that consults `NOTES.md` therefore carries a **pinned+tail read
+contract** instead of "read the file":
+
+- Read the `## Pinned` section at the top (if present) plus roughly the last
+  60 lines of the file — not the whole file.
+- `## Pinned` is for durable, always-relevant facts: project conventions,
+  invariants, gotchas that every future step needs. It is kept small, and it
+  is the one part of `NOTES.md` that may be edited in place rather than
+  appended to.
+- Everything else is appended chronologically below the pinned section, as
+  before; older entries are allowed to scroll out of the read window, so
+  anything that must survive long-term belongs in `## Pinned` — the step
+  prompt's append instruction says exactly that.
+
+The contract lives entirely in the prompt text: the orchestrator never parses,
+truncates, or rewrites `NOTES.md` itself.
 
 ## Exit codes
 

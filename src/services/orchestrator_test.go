@@ -453,13 +453,16 @@ func TestEachIterationTargetsTheNextIncompleteStep(t *testing.T) {
 	first := runner.prompt(1)
 	for _, want := range []string{
 		"You are one invocation of an orchestrated loop",
-		"Read NOTES.md if it exists before starting.",
+		"If NOTES.md exists, read its `## Pinned` section at the top plus roughly the last 60 lines, not the whole file, before starting.",
 		"If FIXES.md exists, read it too",
 		"Work on exactly step 2 and no other: 2. Wire the parser into the loop.",
 		"Its acceptance criterion: go test ./... passes.",
 		"mark step 2 `[x]` in STEPS.md only once it passes",
 		"do not create STOP.md",
 		"append to NOTES.md any decisions, conventions, or gotchas later steps need to know",
+		"promote durable, always-relevant facts",
+		"into the `## Pinned` section at the top",
+		"that section may be edited in place, everything below it is append-only",
 	} {
 		if !strings.Contains(first, want) {
 			t.Fatalf("expected iteration 1's prompt to contain %q, got:\n%s", want, first)
