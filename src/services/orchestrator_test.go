@@ -105,6 +105,13 @@ func stepsFileStore() *fakeFileStore {
 	return plannedFileStore(twoStepsNoneChecked)
 }
 
+// approvedStop is the STOP.md a well-behaved audit writes: the short report
+// plus the evidence block the orchestrator re-runs before accepting it. Each
+// acceptance therefore costs one extra `sh -c go build ./...` runner call
+// right after the approving audit's, which the scripted runners let succeed
+// by default.
+const approvedStop = "audit: plan satisfied\n\n```evidence\ngo build ./...\n```\n"
+
 // --- Functional tests: what can the user achieve? ---
 
 func TestRunEndsWhenAllBoxesAreChecked(t *testing.T) {
@@ -118,7 +125,7 @@ func TestRunEndsWhenAllBoxesAreChecked(t *testing.T) {
 		case 2:
 			fs.Write("STEPS.md", twoStepsAllChecked)
 		case 3: // the whole-plan audit approves
-			fs.Write("STOP.md", "audit: plan satisfied")
+			fs.Write("STOP.md", approvedStop)
 		}
 		return nil
 	}}
@@ -129,8 +136,8 @@ func TestRunEndsWhenAllBoxesAreChecked(t *testing.T) {
 	if outcome != models.OutcomeStopped || outcome.ExitCode() != 0 {
 		t.Fatalf("expected a clean completion, got %v (exit %d)", outcome, outcome.ExitCode())
 	}
-	if runner.calls != 3 {
-		t.Fatalf("expected the tool to run until every box is checked plus the audit (3 iterations), got %d", runner.calls)
+	if runner.calls != 4 {
+		t.Fatalf("expected the tool to run until every box is checked plus the audit and its evidence re-run (4 runs), got %d", runner.calls)
 	}
 	if len(logs.opened) != 3 || !strings.Contains(logs.opened[0].buf.String(), "working on step 1") {
 		t.Fatalf("expected a reviewable per-iteration log for each run, got %d logs", len(logs.opened))
@@ -152,7 +159,7 @@ func TestPrematureStopFileIsDeletedAndLoopContinues(t *testing.T) {
 		case 2:
 			fs.Write("STEPS.md", twoStepsAllChecked)
 		case 3: // the whole-plan audit approves
-			fs.Write("STOP.md", "audit: plan satisfied")
+			fs.Write("STOP.md", approvedStop)
 		}
 		return nil
 	}}
@@ -163,7 +170,7 @@ func TestPrematureStopFileIsDeletedAndLoopContinues(t *testing.T) {
 	if outcome != models.OutcomeStopped || outcome.ExitCode() != 0 {
 		t.Fatalf("expected the run to end only when all boxes are checked, got %v", outcome)
 	}
-	if runner.calls != 3 {
+	if runner.calls != 4 {
 		t.Fatalf("expected the loop to continue past each premature STOP.md, got %d invocations", runner.calls)
 	}
 	if got := strings.Count(terminal.String(), "unchecked steps remain"); got != 2 {
@@ -204,7 +211,7 @@ func TestFailedInvocationsAreRetriedUntilSuccess(t *testing.T) {
 		case 4:
 			fs.Write("STEPS.md", twoStepsAllChecked)
 		case 5: // the whole-plan audit approves
-			fs.Write("STOP.md", "audit: plan satisfied")
+			fs.Write("STOP.md", approvedStop)
 		}
 		return nil
 	}}
@@ -215,8 +222,8 @@ func TestFailedInvocationsAreRetriedUntilSuccess(t *testing.T) {
 	if outcome != models.OutcomeStopped || outcome.ExitCode() != 0 {
 		t.Fatalf("expected retries to carry the run to completion, got %v (exit %d)", outcome, outcome.ExitCode())
 	}
-	if runner.calls != 5 {
-		t.Fatalf("expected 2 failed attempts, a retry that succeeds, the final step, then the audit (5 runs), got %d", runner.calls)
+	if runner.calls != 6 {
+		t.Fatalf("expected 2 failed attempts, a retry that succeeds, the final step, the audit, then its evidence re-run (6 runs), got %d", runner.calls)
 	}
 	for call := 1; call <= 3; call++ {
 		if !strings.Contains(runner.prompt(call), "1. Add the widget.") {
@@ -374,7 +381,7 @@ func TestStallDetectionDisabledByZeroCap(t *testing.T) {
 
 func TestRunEndsImmediatelyWhenAllStepsCheckedAndAuditApproved(t *testing.T) {
 	fs := plannedFileStore("- [x] 1. Done already.\n  Done when: nothing remains.\n")
-	fs.Write("STOP.md", "audit: plan satisfied")
+	fs.Write("STOP.md", approvedStop)
 	runner := &fakeRunner{}
 	o := services.NewOrchestrator(runner, fs, &fakeClock{now: time.Now()}, &fakeLogSink{}, io.Discard, config(0))
 
@@ -383,8 +390,11 @@ func TestRunEndsImmediatelyWhenAllStepsCheckedAndAuditApproved(t *testing.T) {
 	if outcome != models.OutcomeStopped || outcome.ExitCode() != 0 {
 		t.Fatalf("expected an immediate clean exit, got %v (exit %d)", outcome, outcome.ExitCode())
 	}
-	if runner.calls != 0 {
-		t.Fatalf("expected no work when every step is checked and STOP.md exists, got %d invocations", runner.calls)
+	// Even a run that starts fully checked with STOP.md in place validates the
+	// evidence before exiting 0: the only invocation is the evidence re-run.
+	sh := runner.shInvocations()
+	if runner.calls != 1 || len(sh) != 1 || strings.Join(sh[0].Args, " ") != "-c go build ./..." {
+		t.Fatalf("expected only the pre-existing STOP.md's evidence re-run (1 sh run), got %d calls", runner.calls)
 	}
 }
 
@@ -429,7 +439,7 @@ func TestEachIterationTargetsTheNextIncompleteStep(t *testing.T) {
 					"- [x] 2. Wire the parser into the loop.\n  Done when: go test ./... passes.\n\n"+
 					"- [x] 3. Update the docs.\n  Done when: README describes the loop.\n")
 		case 3: // the whole-plan audit approves
-			fs.Write("STOP.md", "audit: plan satisfied")
+			fs.Write("STOP.md", approvedStop)
 		}
 		return nil
 	}}
@@ -437,8 +447,8 @@ func TestEachIterationTargetsTheNextIncompleteStep(t *testing.T) {
 
 	o.Run(context.Background())
 
-	if runner.calls != 3 {
-		t.Fatalf("expected 2 work iterations plus the audit, got %d", runner.calls)
+	if runner.calls != 4 {
+		t.Fatalf("expected 2 work iterations plus the audit and its evidence re-run, got %d", runner.calls)
 	}
 	first := runner.prompt(1)
 	for _, want := range []string{
@@ -531,7 +541,7 @@ func TestVerifierApprovalLetsTheLoopAdvance(t *testing.T) {
 			fs.Write("STEPS.md", twoStepsAllChecked)
 		case 4: // verifier approves step 2
 		case 5: // the whole-plan audit approves
-			fs.Write("STOP.md", "audit: plan satisfied")
+			fs.Write("STOP.md", approvedStop)
 		}
 		return nil
 	}}
@@ -542,8 +552,8 @@ func TestVerifierApprovalLetsTheLoopAdvance(t *testing.T) {
 	if outcome != models.OutcomeStopped || outcome.ExitCode() != 0 {
 		t.Fatalf("expected a clean completion, got %v (exit %d)", outcome, outcome.ExitCode())
 	}
-	if runner.calls != 5 {
-		t.Fatalf("expected work + verify per step plus the audit (5 runs), got %d", runner.calls)
+	if runner.calls != 6 {
+		t.Fatalf("expected work + verify per step plus the audit and its evidence re-run (6 runs), got %d", runner.calls)
 	}
 	verify := runner.prompt(2)
 	for _, want := range []string{
@@ -584,7 +594,7 @@ func TestVerifierRejectionRerunsTheSameStep(t *testing.T) {
 			fs.Write("STEPS.md", twoStepsAllChecked)
 		case 6: // verifier approves
 		case 7: // the whole-plan audit approves
-			fs.Write("STOP.md", "audit: plan satisfied")
+			fs.Write("STOP.md", approvedStop)
 		}
 		return nil
 	}}
@@ -595,8 +605,8 @@ func TestVerifierRejectionRerunsTheSameStep(t *testing.T) {
 	if outcome != models.OutcomeStopped || outcome.ExitCode() != 0 {
 		t.Fatalf("expected the rejected step to be redone and the run to complete, got %v", outcome)
 	}
-	if runner.calls != 7 {
-		t.Fatalf("expected the rejected step to cost an extra work+verify round (7 runs with the audit), got %d", runner.calls)
+	if runner.calls != 8 {
+		t.Fatalf("expected the rejected step to cost an extra work+verify round (8 runs with the audit and its evidence), got %d", runner.calls)
 	}
 	if !strings.Contains(runner.prompt(3), "1. Add the widget.") {
 		t.Fatalf("expected the loop to re-run the unchecked step, got:\n%s", runner.prompt(3))
@@ -642,7 +652,7 @@ func TestVerificationDisabledRunsNoVerifier(t *testing.T) {
 		case 2:
 			fs.Write("STEPS.md", twoStepsAllChecked)
 		case 3: // the whole-plan audit approves
-			fs.Write("STOP.md", "audit: plan satisfied")
+			fs.Write("STOP.md", approvedStop)
 		}
 		return nil
 	}}
@@ -653,8 +663,8 @@ func TestVerificationDisabledRunsNoVerifier(t *testing.T) {
 	if outcome != models.OutcomeStopped {
 		t.Fatalf("expected a clean completion, got %v", outcome)
 	}
-	if runner.calls != 3 {
-		t.Fatalf("expected only the work invocations plus the audit with --verify off, got %d", runner.calls)
+	if runner.calls != 4 {
+		t.Fatalf("expected only the work invocations plus the audit and its evidence with --verify off, got %d", runner.calls)
 	}
 	for call := 1; call <= 3; call++ {
 		if strings.Contains(runner.prompt(call), "claims complete") {
@@ -673,7 +683,7 @@ func TestAuditApprovalEndsTheRunSuccessfully(t *testing.T) {
 		case 2: // work: check step 2
 			fs.Write("STEPS.md", twoStepsAllChecked)
 		case 3: // audit approves the whole plan
-			fs.Write("STOP.md", "audit: plan satisfied")
+			fs.Write("STOP.md", approvedStop)
 		}
 		return nil
 	}}
@@ -684,8 +694,8 @@ func TestAuditApprovalEndsTheRunSuccessfully(t *testing.T) {
 	if outcome != models.OutcomeStopped || outcome.ExitCode() != 0 {
 		t.Fatalf("expected the audited run to end cleanly, got %v (exit %d)", outcome, outcome.ExitCode())
 	}
-	if runner.calls != 3 {
-		t.Fatalf("expected 2 work iterations plus 1 audit, got %d", runner.calls)
+	if runner.calls != 4 {
+		t.Fatalf("expected 2 work iterations plus 1 audit and its evidence re-run, got %d", runner.calls)
 	}
 	audit := runner.prompt(3)
 	for _, want := range []string{
@@ -695,6 +705,9 @@ func TestAuditApprovalEndsTheRunSuccessfully(t *testing.T) {
 		"append the reason to FIXES.md",
 		"do not fix anything yourself",
 		"create STOP.md containing a short report",
+		"fenced code block whose info string is `evidence`",
+		"```evidence\ngo build ./...\ngo test ./...\n```",
+		"re-run every listed command itself and reject STOP.md",
 	} {
 		if !strings.Contains(audit, want) {
 			t.Fatalf("expected the audit prompt to contain %q, got:\n%s", want, audit)
@@ -721,7 +734,7 @@ func TestAuditReopeningAStepResumesTheLoop(t *testing.T) {
 			fixesAtRerun = fs.Exists("FIXES.md")
 			fs.Write("STEPS.md", twoStepsAllChecked)
 		case 5: // audit approves this time
-			fs.Write("STOP.md", "audit: plan satisfied")
+			fs.Write("STOP.md", approvedStop)
 		}
 		return nil
 	}}
@@ -732,8 +745,8 @@ func TestAuditReopeningAStepResumesTheLoop(t *testing.T) {
 	if outcome != models.OutcomeStopped || outcome.ExitCode() != 0 {
 		t.Fatalf("expected the reopened step to be redone and the run to complete, got %v (exit %d)", outcome, outcome.ExitCode())
 	}
-	if runner.calls != 5 {
-		t.Fatalf("expected the audit rejection to cost an extra work+audit round (5 runs), got %d", runner.calls)
+	if runner.calls != 6 {
+		t.Fatalf("expected the audit rejection to cost an extra work+audit round (6 runs with the evidence re-run), got %d", runner.calls)
 	}
 	if !strings.Contains(runner.prompt(4), "2. Document the widget.") {
 		t.Fatalf("expected the loop to resume on the step the audit unchecked, got:\n%s", runner.prompt(4))
@@ -759,6 +772,234 @@ func TestAuditRejectionsCountTowardTheStallCap(t *testing.T) {
 	}
 	if runner.calls != 2 {
 		t.Fatalf("expected the stall cap to bound repeated audits (2 runs), got %d", runner.calls)
+	}
+}
+
+func TestStopEvidenceCommandsAreRerunInOrderBeforeSuccess(t *testing.T) {
+	fs := plannedFileStore(twoStepsAllChecked) // work already done, only the audit remains
+	runner := &fakeRunner{script: func(call int, _ io.Writer) error {
+		if call == 1 { // the audit approves with two evidence commands
+			fs.Write("STOP.md",
+				"audit: plan satisfied\n\n```evidence\ngo build ./...\ngo test ./...\n```\n")
+		}
+		return nil
+	}}
+	o := services.NewOrchestrator(runner, fs, &fakeClock{now: time.Now()}, &fakeLogSink{}, io.Discard, config(0))
+
+	outcome := o.Run(context.Background())
+
+	if outcome != models.OutcomeStopped || outcome.ExitCode() != 0 {
+		t.Fatalf("expected the validated approval to end the run cleanly, got %v (exit %d)", outcome, outcome.ExitCode())
+	}
+	sh := runner.shInvocations()
+	if len(sh) != 2 ||
+		strings.Join(sh[0].Args, " ") != "-c go build ./..." ||
+		strings.Join(sh[1].Args, " ") != "-c go test ./..." {
+		t.Fatalf("expected both evidence commands re-run in order via `sh -c`, got %v", sh)
+	}
+	if runner.calls != 3 {
+		t.Fatalf("expected the audit plus its two evidence re-runs (3 runs), got %d", runner.calls)
+	}
+}
+
+func TestStopWithoutEvidenceBlockIsRejectedAndTheAuditReprompted(t *testing.T) {
+	cfg := config(0)
+	cfg.MaxConsecutiveFailures = 1 // a counted failure would abort with exit 1
+	fs := plannedFileStore(twoStepsAllChecked)
+	var terminal bytes.Buffer
+	stopAtSecondAudit := true
+	runner := &fakeRunner{script: func(call int, _ io.Writer) error {
+		switch call {
+		case 1: // the audit approves without the required evidence block
+			fs.Write("STOP.md", "audit: plan satisfied")
+		case 2: // the audit re-runs; the rejected STOP.md is gone
+			stopAtSecondAudit = fs.Exists("STOP.md")
+			fs.Write("STOP.md", approvedStop)
+		}
+		return nil
+	}}
+	o := services.NewOrchestrator(runner, fs, &fakeClock{now: time.Now()}, &fakeLogSink{}, &terminal, cfg)
+
+	outcome := o.Run(context.Background())
+
+	if outcome != models.OutcomeStopped || outcome.ExitCode() != 0 {
+		t.Fatalf("expected the rejection not to count as a tool failure, got %v (exit %d)", outcome, outcome.ExitCode())
+	}
+	if runner.calls != 3 {
+		t.Fatalf("expected audit + corrected audit + evidence re-run (3 runs), got %d", runner.calls)
+	}
+	if stopAtSecondAudit {
+		t.Fatal("expected the evidence-less STOP.md deleted before the audit re-runs")
+	}
+	if !strings.Contains(terminal.String(), "lacks the required ```evidence block") {
+		t.Fatalf("expected a warning about the missing evidence block, got:\n%s", terminal.String())
+	}
+	if strings.Contains(runner.prompt(1), "previous STOP.md was rejected") {
+		t.Fatalf("expected no corrective note before any rejection, got:\n%s", runner.prompt(1))
+	}
+	if !strings.Contains(runner.prompt(2),
+		"previous STOP.md was rejected and deleted because it lacked the required ```evidence block") {
+		t.Fatalf("expected the re-run audit prompt to carry the corrective note, got:\n%s", runner.prompt(2))
+	}
+}
+
+func TestStopEvidenceRejectionsCountTowardTheStallCap(t *testing.T) {
+	cfg := config(0)
+	cfg.MaxStalledIterations = 2
+	fs := plannedFileStore(twoStepsAllChecked)
+	runner := &fakeRunner{script: func(int, io.Writer) error {
+		fs.Write("STOP.md", "audit: plan satisfied") // never any evidence
+		return nil
+	}}
+	o := services.NewOrchestrator(runner, fs, &fakeClock{now: time.Now()}, &fakeLogSink{}, io.Discard, cfg)
+
+	outcome := o.Run(context.Background())
+
+	if outcome != models.OutcomeStalled || outcome.ExitCode() != 3 {
+		t.Fatalf("expected evidence-less approvals to stall out like audit ping-pong, got %v (exit %d)", outcome, outcome.ExitCode())
+	}
+	if runner.calls != 2 {
+		t.Fatalf("expected the stall cap to bound the rejected approvals (2 audits), got %d", runner.calls)
+	}
+}
+
+func TestFailingStopEvidenceDeletesStopAndRecordsTheRejection(t *testing.T) {
+	cfg := config(0)
+	cfg.MaxConsecutiveFailures = 1 // a counted failure would abort with exit 1
+	fs := plannedFileStore(twoStepsAllChecked)
+	fixesAtSecondAudit, stopAtSecondAudit := "", true
+	runner := &fakeRunner{script: func(call int, out io.Writer) error {
+		switch call {
+		case 1: // the audit approves; its evidence will not hold up
+			fs.Write("STOP.md", approvedStop)
+		case 2: // the evidence command fails: a verdict, not a tool failure
+			fmt.Fprintln(out, "widget.go:1: undefined: Widget")
+			return errors.New("exit status 1")
+		case 3: // the audit re-runs with the failure on record
+			fixesAtSecondAudit, _ = fs.Read("FIXES.md")
+			stopAtSecondAudit = fs.Exists("STOP.md")
+			fs.Write("STOP.md", approvedStop)
+		case 4: // the evidence passes this time
+		}
+		return nil
+	}}
+	o := services.NewOrchestrator(runner, fs, &fakeClock{now: time.Now()}, &fakeLogSink{}, io.Discard, cfg)
+
+	outcome := o.Run(context.Background())
+
+	if outcome != models.OutcomeStopped || outcome.ExitCode() != 0 {
+		t.Fatalf("expected the loop to resume and the honest approval to land, got %v (exit %d)", outcome, outcome.ExitCode())
+	}
+	if runner.calls != 4 {
+		t.Fatalf("expected the failed evidence to cost one extra audit round (4 runs), got %d", runner.calls)
+	}
+	if stopAtSecondAudit {
+		t.Fatal("expected the rejected STOP.md deleted before the audit re-runs")
+	}
+	for _, want := range []string{
+		"## Audit",
+		"evidence command `go build ./...` failed",
+		"widget.go:1: undefined: Widget",
+	} {
+		if !strings.Contains(fixesAtSecondAudit, want) {
+			t.Fatalf("expected FIXES.md to contain %q when the audit re-runs, got:\n%s", want, fixesAtSecondAudit)
+		}
+	}
+	report := readRunReport(t, fs)
+	rejections, ok := report["rejections"].(map[string]any)
+	if !ok || rejections["audit"] != float64(1) {
+		t.Fatalf("expected the report to count the audit's evidence rejection, got %v", report["rejections"])
+	}
+}
+
+func TestStartupStopWithoutEvidenceIsRejectedNotTrusted(t *testing.T) {
+	fs := plannedFileStore(twoStepsAllChecked)
+	fs.Write("STOP.md", "looks done, no evidence") // left by an earlier run or tool
+	runner := &fakeRunner{script: func(call int, _ io.Writer) error {
+		if call == 1 { // the audit the rejection forces produces honest evidence
+			fs.Write("STOP.md", approvedStop)
+		}
+		return nil
+	}}
+	o := services.NewOrchestrator(runner, fs, &fakeClock{now: time.Now()}, &fakeLogSink{}, io.Discard, config(0))
+
+	outcome := o.Run(context.Background())
+
+	if outcome != models.OutcomeStopped || outcome.ExitCode() != 0 {
+		t.Fatalf("expected the run to end only after a validated approval, got %v (exit %d)", outcome, outcome.ExitCode())
+	}
+	if runner.calls != 2 {
+		t.Fatalf("expected the pre-existing STOP.md rejected, then one audit + evidence re-run (2 runs), got %d", runner.calls)
+	}
+	if !strings.Contains(runner.prompt(1), "previous STOP.md was rejected") {
+		t.Fatalf("expected the startup rejection's corrective note in the audit prompt, got:\n%s", runner.prompt(1))
+	}
+}
+
+func TestStopEvidenceTimeoutCountsAsRejectionNotToolFailure(t *testing.T) {
+	cfg := config(0)
+	cfg.MaxConsecutiveFailures = 1 // a counted failure would abort with exit 1
+	cfg.MaxStalledIterations = 1
+	fs := plannedFileStore(twoStepsAllChecked)
+	runner := &shDeadlineRunner{}
+	runner.script = func(call int, _ io.Writer) error {
+		switch call {
+		case 1: // the audit approves
+			fs.Write("STOP.md", approvedStop)
+		case 2: // the evidence command's 10-minute bound expires
+			return context.DeadlineExceeded
+		}
+		return nil
+	}
+	o := services.NewOrchestrator(runner, fs, &fakeClock{now: time.Now()}, &fakeLogSink{}, io.Discard, cfg)
+
+	outcome := o.Run(context.Background())
+
+	if outcome != models.OutcomeStalled || outcome.ExitCode() != 3 {
+		t.Fatalf("expected the timeout treated as a rejection (stall), not a tool failure, got %v (exit %d)", outcome, outcome.ExitCode())
+	}
+	if fs.Exists("STOP.md") {
+		t.Fatal("expected the timed-out approval deleted")
+	}
+	if len(runner.shHadDeadline) != 1 || !runner.shHadDeadline[0] {
+		t.Fatalf("expected the evidence command bounded by a deadline, got %v", runner.shHadDeadline)
+	}
+	if fixes, _ := fs.Read("FIXES.md"); !strings.Contains(fixes, "evidence command `go build ./...` failed") {
+		t.Fatalf("expected the timeout recorded in FIXES.md, got:\n%s", fixes)
+	}
+}
+
+func TestStallHandoffNamesAuditEvidenceRejections(t *testing.T) {
+	cfg := config(0)
+	cfg.MaxStalledIterations = 1
+	fs := plannedFileStore(twoStepsAllChecked)
+	runner := &fakeRunner{script: func(call int, _ io.Writer) error {
+		switch call {
+		case 1: // the audit approves
+			fs.Write("STOP.md", approvedStop)
+		case 2: // the evidence command fails; the approval is rejected
+			return errors.New("exit status 1")
+		}
+		return nil
+	}}
+	o := services.NewOrchestrator(runner, fs, &fakeClock{now: time.Now()}, &fakeLogSink{}, io.Discard, cfg)
+
+	outcome := o.Run(context.Background())
+
+	if outcome != models.OutcomeStalled {
+		t.Fatalf("expected a stalled stop, got %v", outcome)
+	}
+	handoff, err := fs.Read("STALLED.md")
+	if err != nil {
+		t.Fatalf("expected STALLED.md to be written: %v", err)
+	}
+	for _, want := range []string{
+		"# Run stalled at the whole-plan audit",
+		"  1. audit evidence failed: go build ./...",
+	} {
+		if !strings.Contains(handoff, want) {
+			t.Fatalf("expected the handoff to contain %q, got:\n%s", want, handoff)
+		}
 	}
 }
 
@@ -790,7 +1031,7 @@ func TestVerifiedStepIsGitCheckpointed(t *testing.T) {
 		case 6: // verifier approves step 2
 			// 7, 8: git add + git commit checkpoint step 2
 		case 9: // the whole-plan audit approves
-			fs.Write("STOP.md", "audit: plan satisfied")
+			fs.Write("STOP.md", approvedStop)
 		}
 		return nil
 	}}
@@ -834,7 +1075,7 @@ func TestGitCheckpointDisabledIssuesNoGitCommands(t *testing.T) {
 		case 3: // work: check step 2 (2 and 4 are verifier approvals)
 			fs.Write("STEPS.md", twoStepsAllChecked)
 		case 5: // the whole-plan audit approves
-			fs.Write("STOP.md", "audit: plan satisfied")
+			fs.Write("STOP.md", approvedStop)
 		}
 		return nil
 	}}
@@ -848,8 +1089,8 @@ func TestGitCheckpointDisabledIssuesNoGitCommands(t *testing.T) {
 	if got := runner.gitInvocations(); len(got) != 0 {
 		t.Fatalf("expected no git invocations with --git-checkpoint off, got %d", len(got))
 	}
-	if runner.calls != 5 {
-		t.Fatalf("expected only work + verify per step plus the audit (5 runs), got %d", runner.calls)
+	if runner.calls != 6 {
+		t.Fatalf("expected only work + verify per step plus the audit and its evidence (6 runs), got %d", runner.calls)
 	}
 }
 
@@ -866,7 +1107,7 @@ func TestGitCheckpointSkippedOutsideGitRepository(t *testing.T) {
 		case 3: // work: check step 2 (2 and 4 are verifier approvals)
 			fs.Write("STEPS.md", twoStepsAllChecked)
 		case 5: // the whole-plan audit approves
-			fs.Write("STOP.md", "audit: plan satisfied")
+			fs.Write("STOP.md", approvedStop)
 		}
 		return nil
 	}}
@@ -956,7 +1197,7 @@ func TestCheckCommandPassKeepsVerifierAndCompletesTheRun(t *testing.T) {
 		case 5: // check command passes again
 		case 6: // verifier approves step 2
 		case 7: // the whole-plan audit approves
-			fs.Write("STOP.md", "audit: plan satisfied")
+			fs.Write("STOP.md", approvedStop)
 		}
 		return nil
 	}}
@@ -967,17 +1208,20 @@ func TestCheckCommandPassKeepsVerifierAndCompletesTheRun(t *testing.T) {
 	if outcome != models.OutcomeStopped || outcome.ExitCode() != 0 {
 		t.Fatalf("expected a clean completion, got %v (exit %d)", outcome, outcome.ExitCode())
 	}
-	if runner.calls != 7 {
-		t.Fatalf("expected work + check + verify per step plus the audit (7 runs), got %d", runner.calls)
+	if runner.calls != 8 {
+		t.Fatalf("expected work + check + verify per step plus the audit and its evidence (8 runs), got %d", runner.calls)
 	}
 	sh := runner.shInvocations()
-	if len(sh) != 2 {
-		t.Fatalf("expected one check run per step-checking iteration (2), got %d", len(sh))
+	if len(sh) != 3 {
+		t.Fatalf("expected one check run per step-checking iteration plus the evidence re-run (3), got %d", len(sh))
 	}
-	for i, inv := range sh {
+	for i, inv := range sh[:2] {
 		if got := strings.Join(inv.Args, " "); got != "-c go test ./..." {
 			t.Fatalf("sh invocation %d: expected `-c go test ./...`, got %q", i+1, got)
 		}
+	}
+	if got := strings.Join(sh[2].Args, " "); got != "-c go build ./..." {
+		t.Fatalf("expected the last sh run to be the audit's evidence command, got %q", got)
 	}
 	if runner.invocations[1].Binary != "sh" {
 		t.Fatal("expected the check command to run before the verifier")
@@ -1013,7 +1257,7 @@ func TestCheckCommandFailureUnchecksStepAndSkipsVerifierAndCheckpoint(t *testing
 		case 9: // check command passes
 		case 10: // verifier approves step 2 (11, 12: git add + commit)
 		case 13: // the whole-plan audit approves
-			fs.Write("STOP.md", "audit: plan satisfied")
+			fs.Write("STOP.md", approvedStop)
 		}
 		return nil
 	}}
@@ -1024,8 +1268,8 @@ func TestCheckCommandFailureUnchecksStepAndSkipsVerifierAndCheckpoint(t *testing
 	if outcome != models.OutcomeStopped || outcome.ExitCode() != 0 {
 		t.Fatalf("expected the rejected step to be redone and the run to complete, got %v (exit %d)", outcome, outcome.ExitCode())
 	}
-	if runner.calls != 13 {
-		t.Fatalf("expected the failed check to cost one extra work+check round (13 runs), got %d", runner.calls)
+	if runner.calls != 14 {
+		t.Fatalf("expected the failed check to cost one extra work+check round (14 runs with the audit's evidence), got %d", runner.calls)
 	}
 	if stepsAtRerun != twoStepsNoneChecked {
 		t.Fatalf("expected the gate to uncheck step 1 preserving the file's exact content, got:\n%s", stepsAtRerun)
@@ -1060,7 +1304,7 @@ func TestCheckCommandFailuresDoNotCountTowardTheFailureCap(t *testing.T) {
 		case 5: // work: check step 2 (4 was the passing re-check)
 			fs.Write("STEPS.md", twoStepsAllChecked)
 		case 7: // the whole-plan audit approves (6 was the passing check)
-			fs.Write("STOP.md", "audit: plan satisfied")
+			fs.Write("STOP.md", approvedStop)
 		}
 		return nil
 	}}
@@ -1071,8 +1315,8 @@ func TestCheckCommandFailuresDoNotCountTowardTheFailureCap(t *testing.T) {
 	if outcome != models.OutcomeStopped || outcome.ExitCode() != 0 {
 		t.Fatalf("expected the check failure not to trip the failure cap, got %v (exit %d)", outcome, outcome.ExitCode())
 	}
-	if runner.calls != 7 {
-		t.Fatalf("expected the run to continue through the failed check (7 runs), got %d", runner.calls)
+	if runner.calls != 8 {
+		t.Fatalf("expected the run to continue through the failed check (8 runs with the audit's evidence), got %d", runner.calls)
 	}
 }
 
@@ -1091,7 +1335,7 @@ func TestExtraCheckedBoxIsRevertedAndTheCheckGateCoversTheSurvivor(t *testing.T)
 		case 3: // work: check step 2 legitimately
 			fs.Write("STEPS.md", twoStepsAllChecked)
 		case 5: // the whole-plan audit approves (4 was step 2's check run)
-			fs.Write("STOP.md", "audit: plan satisfied")
+			fs.Write("STOP.md", approvedStop)
 		}
 		return nil
 	}}
@@ -1109,8 +1353,8 @@ func TestExtraCheckedBoxIsRevertedAndTheCheckGateCoversTheSurvivor(t *testing.T)
 		"determined: warning: STEPS.md was altered beyond checking step 1 (step 2's checkbox changed); restoring it") {
 		t.Fatalf("expected a tamper warning naming the extra box, got:\n%s", terminal.String())
 	}
-	if got := runner.shInvocations(); len(got) != 2 {
-		t.Fatalf("expected one check run per surviving step (2), got %d", len(got))
+	if got := runner.shInvocations(); len(got) != 3 {
+		t.Fatalf("expected one check run per surviving step plus the audit's evidence (3), got %d", len(got))
 	}
 }
 
@@ -1123,7 +1367,7 @@ func TestCheckCommandDisabledRunsNoShellInvocations(t *testing.T) {
 		case 2:
 			fs.Write("STEPS.md", twoStepsAllChecked)
 		case 3: // the whole-plan audit approves
-			fs.Write("STOP.md", "audit: plan satisfied")
+			fs.Write("STOP.md", approvedStop)
 		}
 		return nil
 	}}
@@ -1134,11 +1378,12 @@ func TestCheckCommandDisabledRunsNoShellInvocations(t *testing.T) {
 	if outcome != models.OutcomeStopped {
 		t.Fatalf("expected a clean completion, got %v", outcome)
 	}
-	if got := runner.shInvocations(); len(got) != 0 {
-		t.Fatalf("expected no sh invocations with --check-cmd unset, got %d", len(got))
+	sh := runner.shInvocations()
+	if len(sh) != 1 || strings.Join(sh[0].Args, " ") != "-c go build ./..." {
+		t.Fatalf("expected only the audit's evidence sh run with --check-cmd unset, got %d", len(sh))
 	}
-	if runner.calls != 3 {
-		t.Fatalf("expected exactly today's 3 invocations with the gate disabled, got %d", runner.calls)
+	if runner.calls != 4 {
+		t.Fatalf("expected exactly the 3 tool invocations plus the evidence re-run with the gate disabled, got %d", runner.calls)
 	}
 }
 
@@ -1171,7 +1416,7 @@ func TestCommandDoneWhenIsVerifiedMechanicallyWithoutAReviewer(t *testing.T) {
 			fs.Write("STEPS.md", cmdStepsAllChecked)
 		case 6: // the reviewer approves step 2 (7, 8: git add + commit)
 		case 9: // the whole-plan audit approves
-			fs.Write("STOP.md", "audit: plan satisfied")
+			fs.Write("STOP.md", approvedStop)
 		}
 		return nil
 	}}
@@ -1183,12 +1428,12 @@ func TestCommandDoneWhenIsVerifiedMechanicallyWithoutAReviewer(t *testing.T) {
 	if outcome != models.OutcomeStopped || outcome.ExitCode() != 0 {
 		t.Fatalf("expected a clean completion, got %v (exit %d)", outcome, outcome.ExitCode())
 	}
-	if runner.calls != 9 {
-		t.Fatalf("expected the mechanical check to replace step 1's reviewer (9 runs), got %d", runner.calls)
+	if runner.calls != 10 {
+		t.Fatalf("expected the mechanical check to replace step 1's reviewer (10 runs with the audit's evidence), got %d", runner.calls)
 	}
 	sh := runner.shInvocations()
-	if len(sh) != 1 || strings.Join(sh[0].Args, " ") != "-c go test ./widget" {
-		t.Fatalf("expected the criterion's command run once via `sh -c`, got %v", sh)
+	if len(sh) != 2 || strings.Join(sh[0].Args, " ") != "-c go test ./widget" {
+		t.Fatalf("expected the criterion's command run once via `sh -c` before the audit's evidence, got %v", sh)
 	}
 	if runner.invocations[1].Binary != "sh" {
 		t.Fatal("expected the done-when check to run in the verification pass position")
@@ -1232,7 +1477,7 @@ func TestFailedDoneWhenCheckUnchecksTheStepAndRecordsTheRejection(t *testing.T) 
 			fs.Write("STEPS.md", cmdStepsAllChecked)
 		case 6: // the reviewer approves step 2
 		case 7: // the whole-plan audit approves
-			fs.Write("STOP.md", "audit: plan satisfied")
+			fs.Write("STOP.md", approvedStop)
 		}
 		return nil
 	}}
@@ -1243,8 +1488,8 @@ func TestFailedDoneWhenCheckUnchecksTheStepAndRecordsTheRejection(t *testing.T) 
 	if outcome != models.OutcomeStopped || outcome.ExitCode() != 0 {
 		t.Fatalf("expected the failed check not to trip the failure cap, got %v (exit %d)", outcome, outcome.ExitCode())
 	}
-	if runner.calls != 7 {
-		t.Fatalf("expected the failed check to cost one extra work+check round (7 runs), got %d", runner.calls)
+	if runner.calls != 8 {
+		t.Fatalf("expected the failed check to cost one extra work+check round (8 runs with the audit's evidence), got %d", runner.calls)
 	}
 	if stepsAtRerun != cmdStepsNoneChecked {
 		t.Fatalf("expected the check to uncheck step 1 preserving the file's exact content, got:\n%s", stepsAtRerun)
@@ -1325,7 +1570,7 @@ func TestNonCommandDoneWhenFallsBackToTheReviewer(t *testing.T) {
 					fs.Write("STEPS.md", checked)
 				case 2: // the reviewer approves it
 				case 3: // the whole-plan audit approves
-					fs.Write("STOP.md", "audit: plan satisfied")
+					fs.Write("STOP.md", approvedStop)
 				}
 				return nil
 			}}
@@ -1336,8 +1581,8 @@ func TestNonCommandDoneWhenFallsBackToTheReviewer(t *testing.T) {
 			if outcome != models.OutcomeStopped || outcome.ExitCode() != 0 {
 				t.Fatalf("expected a clean completion, got %v (exit %d)", outcome, outcome.ExitCode())
 			}
-			if got := runner.shInvocations(); len(got) != 0 {
-				t.Fatalf("expected no mechanical check for a non-command criterion, got %d sh runs", len(got))
+			if got := runner.shInvocations(); len(got) != 1 {
+				t.Fatalf("expected no mechanical check for a non-command criterion (only the audit's evidence sh run), got %d sh runs", len(got))
 			}
 			if got := runner.verifierPromptCount(); got != 1 {
 				t.Fatalf("expected the reviewer to verify the step exactly as before (1 run), got %d", got)
@@ -1416,7 +1661,7 @@ func TestVerifyOffStillRunsDoneWhenChecksButNoReviewer(t *testing.T) {
 		case 5: // work: check step 2; its prose criterion gets no reviewer
 			fs.Write("STEPS.md", cmdStepsAllChecked)
 		case 6: // the whole-plan audit approves
-			fs.Write("STOP.md", "audit: plan satisfied")
+			fs.Write("STOP.md", approvedStop)
 		}
 		return nil
 	}}
@@ -1427,11 +1672,11 @@ func TestVerifyOffStillRunsDoneWhenChecksButNoReviewer(t *testing.T) {
 	if outcome != models.OutcomeStopped || outcome.ExitCode() != 0 {
 		t.Fatalf("expected a clean completion, got %v (exit %d)", outcome, outcome.ExitCode())
 	}
-	if runner.calls != 6 {
-		t.Fatalf("expected done-when checks to run with --verify off (6 runs), got %d", runner.calls)
+	if runner.calls != 7 {
+		t.Fatalf("expected done-when checks to run with --verify off (7 runs with the audit's evidence), got %d", runner.calls)
 	}
-	if got := runner.shInvocations(); len(got) != 2 {
-		t.Fatalf("expected a mechanical check per step-1 round (2 sh runs), got %d", len(got))
+	if got := runner.shInvocations(); len(got) != 3 {
+		t.Fatalf("expected a mechanical check per step-1 round plus the audit's evidence (3 sh runs), got %d", len(got))
 	}
 	if got := runner.verifierPromptCount(); got != 0 {
 		t.Fatalf("expected no reviewer invocations with --verify off, got %d", got)
@@ -1542,7 +1787,7 @@ func TestLegitimateCheckSurvivesTamperRestoration(t *testing.T) {
 			fs.Write("STEPS.md", twoStepsAllChecked)
 		case 4: // verifier approves step 2
 		case 5: // the whole-plan audit approves
-			fs.Write("STOP.md", "audit: plan satisfied")
+			fs.Write("STOP.md", approvedStop)
 		}
 		return nil
 	}}
@@ -1596,7 +1841,7 @@ func TestAuditUncheckingStepsIsNotTreatedAsTampering(t *testing.T) {
 		case 2: // work redoes the reopened step
 			fs.Write("STEPS.md", twoStepsAllChecked)
 		case 3: // audit approves this time
-			fs.Write("STOP.md", "audit: plan satisfied")
+			fs.Write("STOP.md", approvedStop)
 		}
 		return nil
 	}}
@@ -1627,7 +1872,7 @@ func TestFallbackRewriteIsNotTreatedAsTampering(t *testing.T) {
 		case 3: // work: check step 2
 			fs.Write("STEPS.md", twoStepsAllChecked)
 		case 4: // the whole-plan audit approves
-			fs.Write("STOP.md", "audit: plan satisfied")
+			fs.Write("STOP.md", approvedStop)
 		}
 		return nil
 	}}
@@ -1692,7 +1937,7 @@ func TestStallTriggersReplanThatResumesTheRun(t *testing.T) {
 		case 6:
 			fs.Write("STEPS.md", splitStepsAllChecked)
 		case 7: // the whole-plan audit approves
-			fs.Write("STOP.md", "audit: plan satisfied")
+			fs.Write("STOP.md", approvedStop)
 		}
 		return nil
 	}}
@@ -1703,8 +1948,8 @@ func TestStallTriggersReplanThatResumesTheRun(t *testing.T) {
 	if outcome != models.OutcomeStopped || outcome.ExitCode() != 0 {
 		t.Fatalf("expected the replanned run to complete cleanly, got %v (exit %d)", outcome, outcome.ExitCode())
 	}
-	if runner.calls != 7 {
-		t.Fatalf("expected 2 stalls + 1 replan + 3 split steps + the audit (7 runs), got %d", runner.calls)
+	if runner.calls != 8 {
+		t.Fatalf("expected 2 stalls + 1 replan + 3 split steps + the audit and its evidence (8 runs), got %d", runner.calls)
 	}
 	replan := runner.prompt(3)
 	for _, want := range []string{
@@ -1896,7 +2141,7 @@ func TestSecondRejectionStashesTheAttemptAndTheRetryStartsClean(t *testing.T) {
 		case 17: // verifier approves step 2
 		case 18, 19: // git add + git commit checkpoint step 2
 		case 20: // the whole-plan audit approves
-			fs.Write("STOP.md", "audit: plan satisfied")
+			fs.Write("STOP.md", approvedStop)
 		}
 		return nil
 	}
@@ -1908,8 +2153,8 @@ func TestSecondRejectionStashesTheAttemptAndTheRetryStartsClean(t *testing.T) {
 	if outcome != models.OutcomeStopped || outcome.ExitCode() != 0 {
 		t.Fatalf("expected a clean completion, got %v (exit %d)", outcome, outcome.ExitCode())
 	}
-	if runner.calls != 20 {
-		t.Fatalf("expected the second rejection to cost one stash round (20 runs), got %d", runner.calls)
+	if runner.calls != 21 {
+		t.Fatalf("expected the second rejection to cost one stash round (21 runs with the audit's evidence), got %d", runner.calls)
 	}
 	pushes := runner.stashPushInvocations()
 	if len(pushes) != 1 {
@@ -1958,7 +2203,7 @@ func TestFirstRejectionRetriesInPlaceWithoutStashing(t *testing.T) {
 			fs.Write("STEPS.md", twoStepsAllChecked)
 		case 9: // verifier approves (10, 11: git add + commit)
 		case 12: // the whole-plan audit approves
-			fs.Write("STOP.md", "audit: plan satisfied")
+			fs.Write("STOP.md", approvedStop)
 		}
 		return nil
 	}
@@ -2000,7 +2245,7 @@ func TestDirtyTreeAtStartupDisablesStashing(t *testing.T) {
 			fs.Write("STEPS.md", twoStepsAllChecked)
 		case 11: // verifier approves (12, 13: git add + commit)
 		case 14: // the whole-plan audit approves
-			fs.Write("STOP.md", "audit: plan satisfied")
+			fs.Write("STOP.md", approvedStop)
 		}
 		return nil
 	}
@@ -2039,7 +2284,7 @@ func TestStashingRequiresGitCheckpointing(t *testing.T) {
 			fs.Write("STEPS.md", twoStepsAllChecked)
 		case 8: // verifier approves step 2
 		case 9: // the whole-plan audit approves
-			fs.Write("STOP.md", "audit: plan satisfied")
+			fs.Write("STOP.md", approvedStop)
 		}
 		return nil
 	}
@@ -2105,7 +2350,7 @@ func TestRunReportWrittenOnSuccess(t *testing.T) {
 		case 2:
 			fs.Write("STEPS.md", twoStepsAllChecked)
 		case 3: // the whole-plan audit approves
-			fs.Write("STOP.md", "audit: plan satisfied")
+			fs.Write("STOP.md", approvedStop)
 		}
 		return nil
 	}}
@@ -2123,8 +2368,8 @@ func TestRunReportWrittenOnSuccess(t *testing.T) {
 	assertReportFields(t, report, map[string]any{
 		"outcome":      "success",
 		"exit":         float64(0),
-		"iterations":   float64(3),
-		"wall_seconds": float64(180),
+		"iterations":   float64(3), // the evidence re-run is not a tool iteration
+		"wall_seconds": float64(240),
 		"log_dir":      "logs",
 	})
 	assertReportSteps(t, report, 2, 2)
@@ -2223,7 +2468,7 @@ func TestRunReportRecordsPerStepRejections(t *testing.T) {
 			fs.Write("STEPS.md", twoStepsAllChecked)
 		case 6: // verifier approves
 		case 7: // the whole-plan audit approves
-			fs.Write("STOP.md", "audit: plan satisfied")
+			fs.Write("STOP.md", approvedStop)
 		}
 		return nil
 	}}
@@ -2293,7 +2538,7 @@ func TestRunReportWriteFailureDoesNotChangeTheOutcome(t *testing.T) {
 		case 2:
 			fs.Write("STEPS.md", twoStepsAllChecked)
 		case 3: // the whole-plan audit approves
-			fs.Write("STOP.md", "audit: plan satisfied")
+			fs.Write("STOP.md", approvedStop)
 		}
 		return nil
 	}}
@@ -2447,7 +2692,7 @@ func TestStallHandoffAbsentOnSuccessAndStaleOneRemovedAtStartup(t *testing.T) {
 		case 2:
 			fs.Write("STEPS.md", twoStepsAllChecked)
 		case 3: // the whole-plan audit approves
-			fs.Write("STOP.md", "audit: plan satisfied")
+			fs.Write("STOP.md", approvedStop)
 		}
 		return nil
 	}}
@@ -2528,15 +2773,21 @@ func notifyConfig() models.Config {
 	return cfg
 }
 
-// notifyInvocation returns the single recorded `sh -c` notify invocation;
-// the tests using it run without --check-cmd, so the hook's is the only sh run.
+// notifyInvocation returns the single recorded `sh -c` notify invocation —
+// the only sh run carrying DET_* environment variables, which tells it apart
+// from the audit's evidence re-run on a successful exit.
 func (r *fakeRunner) notifyInvocation(t *testing.T) models.Invocation {
 	t.Helper()
-	sh := r.shInvocations()
-	if len(sh) != 1 {
-		t.Fatalf("expected exactly one notify invocation, got %d", len(sh))
+	var notify []models.Invocation
+	for _, inv := range r.shInvocations() {
+		if len(inv.Env) > 0 {
+			notify = append(notify, inv)
+		}
 	}
-	return sh[0]
+	if len(notify) != 1 {
+		t.Fatalf("expected exactly one notify invocation, got %d", len(notify))
+	}
+	return notify[0]
 }
 
 // assertNotifyEnv checks a notify invocation's DET_* variables: every want
@@ -2564,14 +2815,16 @@ func TestNotifyCommandRunsOnSuccessWithTheOutcomeEnv(t *testing.T) {
 	fs := stepsFileStore()
 	clock := &fakeClock{now: time.Now()}
 	runner := &fakeRunner{script: func(call int, _ io.Writer) error {
-		clock.advance(14 * time.Minute)
+		if call <= 3 { // only the tool invocations consume wall time here
+			clock.advance(14 * time.Minute)
+		}
 		switch call {
 		case 1:
 			fs.Write("STEPS.md", twoStepsFirstChecked)
 		case 2:
 			fs.Write("STEPS.md", twoStepsAllChecked)
-		case 3: // the whole-plan audit approves
-			fs.Write("STOP.md", "audit: plan satisfied")
+		case 3: // the whole-plan audit approves (4 is the evidence re-run)
+			fs.Write("STOP.md", approvedStop)
 		}
 		return nil
 	}}
@@ -2657,9 +2910,9 @@ func TestNotifyCommandFailureDoesNotChangeTheOutcome(t *testing.T) {
 			fs.Write("STEPS.md", twoStepsFirstChecked)
 		case 2:
 			fs.Write("STEPS.md", twoStepsAllChecked)
-		case 3: // the whole-plan audit approves
-			fs.Write("STOP.md", "audit: plan satisfied")
-		case 4: // the notify command itself fails
+		case 3: // the whole-plan audit approves (4 is the evidence re-run)
+			fs.Write("STOP.md", approvedStop)
+		case 5: // the notify command itself fails
 			return errors.New("exit status 1")
 		}
 		return nil
@@ -2685,7 +2938,7 @@ func TestNotifyCommandDisabledRunsNoShellInvocations(t *testing.T) {
 		case 2:
 			fs.Write("STEPS.md", twoStepsAllChecked)
 		case 3: // the whole-plan audit approves
-			fs.Write("STOP.md", "audit: plan satisfied")
+			fs.Write("STOP.md", approvedStop)
 		}
 		return nil
 	}}
@@ -2696,8 +2949,10 @@ func TestNotifyCommandDisabledRunsNoShellInvocations(t *testing.T) {
 	if outcome != models.OutcomeStopped {
 		t.Fatalf("expected a clean completion, got %v", outcome)
 	}
-	if got := runner.shInvocations(); len(got) != 0 {
-		t.Fatalf("expected no sh invocations with --notify-cmd unset, got %d", len(got))
+	for _, inv := range runner.shInvocations() {
+		if len(inv.Env) > 0 {
+			t.Fatalf("expected no notify invocation with --notify-cmd unset, got %v", inv)
+		}
 	}
 }
 

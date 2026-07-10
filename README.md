@@ -33,7 +33,11 @@ work. Unlike the one-liner, it does not trust the tool's word for progress:
   counts; a failure unchecks the step mechanically, with no AI judgment
   involved.
 - **Final audit** — once every box is checked, one more invocation audits the
-  whole plan; only its approval (`STOP.md`) ends the run successfully.
+  whole plan; only its approval (`STOP.md`) ends the run successfully — and
+  the approval must carry a validated evidence block: a fenced
+  ` ```evidence ` code block naming the build/test commands the audit ran,
+  which the orchestrator re-runs itself, rejecting `STOP.md` (and resuming
+  the loop) if the block is missing or any command fails.
 - **Stall detection, retries, and timeouts** — no-progress iterations,
   consecutive failures, and single-invocation duration are all bounded.
 - **Replan escalation** (`--max-replans`) — a step that keeps failing

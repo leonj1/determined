@@ -23,8 +23,9 @@ worker was given (see below).
 ## Each iteration
 
 1. **Completion check** — if every step is checked *and* the whole-plan
-   audit's `STOP.md` exists → exit **0**. A `STOP.md` that appears while
-   unchecked steps remain is deleted (with a warning) and the loop continues.
+   audit's `STOP.md` exists with validated evidence (see the whole-plan
+   audit below) → exit **0**. A `STOP.md` that appears while unchecked steps
+   remain is deleted (with a warning) and the loop continues.
 2. **Budget check** — if `--max-duration` is exhausted → exit **1**. The
    budget is checked *between* iterations, so an in-flight tool run always
    finishes first.
@@ -227,7 +228,39 @@ individually verified steps:
 - If everything is satisfied, the audit creates `STOP.md` containing a short
   report: what was built, what checks ran, and their results.
 
-Only *all steps checked + `STOP.md` present* ends the run with exit **0**.
+The audit's approval is not taken on its word: `STOP.md` must carry an
+**evidence block** — a fenced code block with the `evidence` info string
+listing, one per line, the project's real build/test commands the audit
+actually ran:
+
+    ```evidence
+    go build ./...
+    go test ./...
+    ```
+
+The lines are just the commands, no exit codes — the orchestrator re-runs
+every listed command itself (via `sh -c`, streamed live, each bounded by the
+same 10-minute timeout as the other gates) before accepting the approval:
+
+- **Missing or empty block** — `STOP.md` is rejected: deleted with a warning,
+  and the audit re-runs next iteration with a corrective note in its prompt
+  naming the omission. The rejection is a verdict on the audit's output, not
+  a tool failure, so it never counts toward `--max-consecutive-failures`; it
+  does count as a no-progress iteration for stall detection, bounding audit
+  ping-pong exactly like a verifier rejection.
+- **A listed command fails or times out** — `STOP.md` is deleted, a
+  `## Audit` entry naming the command and the tail of its output (last 4000
+  bytes) is appended to `FIXES.md` (mirroring the check-gate entry), and the
+  rejection is recorded as `audit evidence failed: <cmd>` so `STALLED.md` and
+  `run-report.json` see it. The loop resumes: the audit should uncheck the
+  step that broke or produce honest evidence, never fix anything itself.
+  Again a verdict, never a tool failure.
+- **Every command exits 0** — the approval stands and the run ends **0**.
+
+Only *all steps checked + a validated `STOP.md`* ends the run with exit
+**0** — even a run that starts with every box already checked and a
+`STOP.md` in place validates the evidence before exiting, so success never
+bypasses the check.
 
 ## The run report
 
@@ -259,7 +292,7 @@ happen before the loop runs) write no report.
 | `exit` | The process exit code the run returns. |
 | `steps` | How many steps the final `STEPS.md` holds (`total`) and how many are checked (`checked`); omitted when nothing parses. |
 | `stuck_step` | The 1-based step a stalled run could not get past; present only when stalled. |
-| `rejections` | Per-step counts of check-gate, done-when-check, verifier, and audit rejections, keyed by the step's current number (or by its text, when a replan removed the step from the file); omitted when nothing was rejected. |
+| `rejections` | Per-step counts of check-gate, done-when-check, verifier, and audit rejections, keyed by the step's current number (or by its text, when a replan removed the step from the file); `STOP.md` evidence rejections appear under the `audit` key. Omitted when nothing was rejected. |
 | `report` | Names the human-readable `STALLED.md` handoff (see above); present only when the run stalled and the handoff was actually written. |
 | `replans_used` | Replan invocations spent on stuck steps; omitted when zero. |
 | `iterations` | Total tool invocations of the run: work, verify, audit, and replan alike. |
@@ -301,7 +334,7 @@ runs it.
 |------------|-------------------------------------------------------------------|
 | `PLAN.md`  | The plan the steps implement; read by the audit. Required at startup. |
 | `STEPS.md` | Checkbox step list with `Done when:` criteria; the loop's source of truth. Required at startup. A work invocation may only check its own step's box — the tamper guard reverts any other edit to the parsed steps. |
-| `STOP.md`  | Created by the whole-plan audit to approve the finished run, holding a short audit report; deleted if it appears early. |
+| `STOP.md`  | Created by the whole-plan audit to approve the finished run, holding a short audit report plus an `evidence` fenced block naming the build/test commands the audit ran; the orchestrator re-runs those commands and accepts the file only when they all pass (see above). Deleted if it appears early or fails validation. |
 | `NOTES.md` | Cross-iteration memory (see below); created by the tool on first use. |
 | `FIXES.md` | Why the check gate, done-when check, verifier, or audit reopened a step; appended by reviewer invocations (and mechanically by a failed `--check-cmd`, a failed done-when check, or a stashed attempt), read back by the worker when it re-runs a reopened step. |
 | `run-report.json` | Machine-readable summary written by the orchestrator on every termination of the execute loop (see above); a stale one is removed at startup. |
@@ -319,7 +352,7 @@ to know before finishing. The file lives in the working directory alongside
 
 | Code | Meaning                                            |
 |------|----------------------------------------------------|
-| `0`  | All steps checked and the audit created `STOP.md` (execute), or `PLAN.md` + `STEPS.md` written (plan). |
+| `0`  | All steps checked and the audit created a `STOP.md` whose evidence validated (execute), or `PLAN.md` + `STEPS.md` written (plan). |
 | `1`  | Any other termination: too many consecutive tool failures, budget exhausted, interrupted, missing `PLAN.md`/`STEPS.md` at startup, or a stalled plan round. |
 | `2`  | Usage error (e.g. an unsupported `--tool`).        |
 | `3`  | Stalled: too many consecutive iterations without a newly checked step, after any `--max-replans` budget was spent or the replan proved ineffective. |

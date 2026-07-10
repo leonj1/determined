@@ -36,8 +36,9 @@ type LogSink interface {
 // file and aims the tool at exactly the next unchecked step; once every box
 // is checked, the next iteration is an audit of the whole plan instead. The
 // run ends successfully only when all steps are checked AND the audit has
-// created STOP.md: a STOP.md created while unchecked steps remain is deleted
-// and the loop continues.
+// created STOP.md carrying an evidence block whose commands, re-run by the
+// orchestrator itself, all pass: a STOP.md created while unchecked steps
+// remain is deleted and the loop continues.
 type Orchestrator struct {
 	runner   CommandRunner
 	files    FileStore
@@ -72,6 +73,15 @@ type Orchestrator struct {
 	// stashingEnabled reports whether failed-attempt stashing is available for
 	// this run; initAttemptStashing decides once at startup.
 	stashingEnabled bool
+	// stopValidated remembers that the current STOP.md's evidence block was
+	// parsed and every listed command re-run successfully, so acceptance never
+	// runs the commands twice. A rejection deletes the file instead, so the
+	// flag never describes a stale STOP.md.
+	stopValidated bool
+	// auditLackedEvidence notes that the last STOP.md was rejected for missing
+	// the required evidence block, so the next audit prompt carries a
+	// corrective note; cleared as soon as a STOP.md with a block appears.
+	auditLackedEvidence bool
 }
 
 // NewOrchestrator wires an orchestrator from its dependencies.
@@ -154,6 +164,7 @@ func (o *Orchestrator) run(ctx context.Context) models.Outcome {
 			o.checkpointNewSteps(ctx, before)
 		}
 		o.recordRejections(ctx, intent, before, afterWork, gatePassed, doneWhenFailed)
+		o.validateStopFile(ctx)
 		if o.stalledOut(CompletedStepCount(before)) {
 			outcome, stop, resumed := o.replanStuckStep(ctx)
 			if stop {
@@ -193,7 +204,7 @@ func (o *Orchestrator) preIteration(ctx context.Context, deadline time.Time) (mo
 	if ctx.Err() != nil {
 		return models.OutcomeInterrupted, true
 	}
-	if outcome, stop := o.checkCompletion(); stop {
+	if outcome, stop := o.checkCompletion(ctx); stop {
 		return outcome, true
 	}
 	if o.budgetExceeded(deadline) {
@@ -205,10 +216,14 @@ func (o *Orchestrator) preIteration(ctx context.Context, deadline time.Time) (mo
 // checkCompletion decides whether the run is finished by parsing the steps
 // file. Checked boxes alone are not success: the run ends cleanly only when
 // every step is checked AND the whole-plan audit has recorded its approval as
-// STOP.md. All boxes checked without STOP.md means the audit still has to run
-// (the next iteration is the audit), and a STOP.md that appears while
-// unchecked steps remain is deleted so the loop keeps going.
-func (o *Orchestrator) checkCompletion() (models.Outcome, bool) {
+// STOP.md with validated evidence. The validation normally happened at the
+// bottom of the audit's own iteration (stopEvidenceValidated is then a cached
+// yes), but a run that starts with every box already checked and a STOP.md in
+// place validates here — success never bypasses the evidence check. All boxes
+// checked without STOP.md means the audit still has to run (the next
+// iteration is the audit), and a STOP.md that appears while unchecked steps
+// remain is deleted so the loop keeps going.
+func (o *Orchestrator) checkCompletion(ctx context.Context) (models.Outcome, bool) {
 	content, err := o.files.Read(o.cfg.StepsFile)
 	if err != nil {
 		return models.OutcomeStopped, false // runOnce reports the read failure
@@ -216,7 +231,7 @@ func (o *Orchestrator) checkCompletion() (models.Outcome, bool) {
 	steps := ParseSteps(content)
 	switch {
 	case AllStepsComplete(steps):
-		if o.files.Exists(o.cfg.StopFile) {
+		if o.files.Exists(o.cfg.StopFile) && o.stopEvidenceValidated(ctx) {
 			return models.OutcomeStopped, true
 		}
 	case len(steps) > 0:
@@ -241,6 +256,131 @@ func (o *Orchestrator) deletePrematureStop() {
 	}
 	fmt.Fprintf(o.terminal,
 		"determined: warning: %s existed while unchecked steps remain; deleted it and continuing\n",
+		o.cfg.StopFile)
+}
+
+// auditRejectionKey keys the audit-level STOP.md rejections in the rejections
+// map. A plain word can never collide with a real step's key, which always
+// embeds a NUL separator, and reportRejections' text fallback renders it as
+// "audit" in run-report.json.
+const auditRejectionKey = "audit"
+
+// parseEvidenceCommands extracts the commands from a STOP.md evidence block:
+// a fenced code block opened by a line reading exactly ```evidence and closed
+// by ```, one command per non-blank line. The commands carry no exit codes —
+// the orchestrator re-runs them itself, so the lines are just what to run.
+// The rule is deliberately mechanical: the first such block wins, and a
+// missing, empty, or never-closed block yields no commands, which rejects
+// the STOP.md.
+func parseEvidenceCommands(content string) []string {
+	var cmds []string
+	inBlock := false
+	for _, line := range strings.Split(content, "\n") {
+		trimmed := strings.TrimSpace(line)
+		switch {
+		case !inBlock:
+			inBlock = trimmed == "```evidence"
+		case trimmed == "```":
+			return cmds
+		case trimmed != "":
+			cmds = append(cmds, trimmed)
+		}
+	}
+	return nil // no ```evidence block, or one never closed
+}
+
+// validateStopFile applies the evidence validation at the bottom of an
+// iteration, before the stall counter reads the file state: whenever a
+// STOP.md sits alongside a fully checked steps file, its evidence must hold
+// up. A rejection deletes STOP.md, so the round reads as no progress to
+// stalledOut — bounding audit ping-pong exactly like a verifier rejection —
+// while an accepted STOP.md keeps runComplete true and the next
+// checkCompletion ends the run without re-running the commands.
+func (o *Orchestrator) validateStopFile(ctx context.Context) {
+	if !AllStepsComplete(o.parsedSteps()) || !o.files.Exists(o.cfg.StopFile) {
+		return
+	}
+	o.stopEvidenceValidated(ctx)
+}
+
+// stopEvidenceValidated reports whether the current STOP.md may be trusted.
+// A bare STOP.md would make the final audit a single trusted invocation, so
+// approval must carry a ```evidence fenced block naming the commands the
+// audit ran, and every listed command — re-run by the orchestrator itself via
+// `sh -c`, streamed live and bounded per command by the same 10-minute
+// timeout as the other gates — must exit 0. Both rejections delete the file
+// and send the loop back to the audit; each is a verdict on the audit's
+// output, never a tool failure, so the consecutive-failure cap is untouched.
+// A validated STOP.md is remembered so acceptance never re-runs the commands.
+func (o *Orchestrator) stopEvidenceValidated(ctx context.Context) bool {
+	if o.stopValidated {
+		return true
+	}
+	content, err := o.files.Read(o.cfg.StopFile)
+	if err != nil {
+		fmt.Fprintf(o.terminal, "determined: could not read %s: %v\n", o.cfg.StopFile, err)
+		return false
+	}
+	cmds := parseEvidenceCommands(content)
+	if len(cmds) == 0 {
+		o.rejectStopMissingEvidence()
+		return false
+	}
+	o.auditLackedEvidence = false
+	for _, cmd := range cmds {
+		fmt.Fprintf(o.terminal, "determined: re-running audit evidence command: %s\n", cmd)
+		var output bytes.Buffer
+		runCtx, cancel := context.WithTimeout(ctx, checkCmdTimeout)
+		err := o.runner.Run(runCtx,
+			models.Invocation{Binary: "sh", Args: []string{"-c", cmd}},
+			io.MultiWriter(o.terminal, &output))
+		cancel()
+		if err != nil {
+			o.rejectStopFailedEvidence(cmd, output.String(), err)
+			return false
+		}
+	}
+	o.stopValidated = true
+	return true
+}
+
+// rejectStopMissingEvidence rejects a STOP.md that carries no evidence block:
+// the file is deleted with a warning and the next audit prompt gains a
+// corrective note. Deleting the file makes the round read as no progress to
+// the stall counter, which bounds audit ping-pong; a failed delete is noted
+// and ignored, matching deletePrematureStop.
+func (o *Orchestrator) rejectStopMissingEvidence() {
+	o.auditLackedEvidence = true
+	fmt.Fprintf(o.terminal,
+		"determined: warning: %s lacks the required ```evidence block; deleting it and re-running the audit\n",
+		o.cfg.StopFile)
+	if err := o.files.Remove(o.cfg.StopFile); err != nil {
+		fmt.Fprintf(o.terminal, "determined: could not delete %s: %v\n", o.cfg.StopFile, err)
+	}
+}
+
+// rejectStopFailedEvidence rejects a STOP.md whose evidence did not hold up:
+// the failing command's output tail is recorded under a `## Audit` FIXES.md
+// heading mirroring the check-gate entry, the rejection reason joins the
+// accounting so STALLED.md and run-report.json see it, and STOP.md is deleted
+// so the loop resumes on the audit — which should uncheck whatever broke or
+// produce honest evidence, never fix anything itself. File errors are noted
+// and ignored: like the other gates, this delivers verdicts, it never ends
+// the run.
+func (o *Orchestrator) rejectStopFailedEvidence(cmd, output string, cause error) {
+	entry := fmt.Sprintf(
+		"## Audit\n\n%s evidence command `%s` failed (%v). Output tail:\n\n```\n%s\n```\n\n",
+		o.cfg.StopFile, cmd, cause, tail(output, checkOutputTailLimit))
+	if err := o.files.Append("FIXES.md", entry); err != nil {
+		fmt.Fprintf(o.terminal, "determined: could not record the evidence failure in FIXES.md: %v\n", err)
+	}
+	o.rejections[auditRejectionKey] = append(o.rejections[auditRejectionKey],
+		"audit evidence failed: "+cmd)
+	if err := o.files.Remove(o.cfg.StopFile); err != nil {
+		fmt.Fprintf(o.terminal, "determined: could not delete %s: %v\n", o.cfg.StopFile, err)
+	}
+	fmt.Fprintf(o.terminal,
+		"determined: audit evidence command failed; deleted %s and recorded the output in FIXES.md\n",
 		o.cfg.StopFile)
 }
 
@@ -1021,7 +1161,9 @@ const noParsableStepsPrompt = promptPreamble +
 // It must actually build and test rather than read: it is the only invocation
 // positioned to catch integration failures between individually verified
 // steps. STOP.md carries a short evidence report so approval cannot be an
-// empty rubber stamp.
+// empty rubber stamp, and the required evidence block makes the report
+// checkable: the orchestrator re-runs the listed commands itself before
+// accepting the approval.
 const auditPrompt = promptPreamble +
 	"All steps in STEPS.md are checked complete. Read PLAN.md and STEPS.md. " +
 	"Audit whether the implementation genuinely satisfies the plan. " +
@@ -1030,8 +1172,20 @@ const auditPrompt = promptPreamble +
 	"If a step is not actually satisfied, change its `[x]` back to `[ ]` in STEPS.md " +
 	"and append the reason to FIXES.md; do not fix anything yourself. " +
 	"If everything is satisfied, create STOP.md containing a short report: what was " +
-	"built, what checks you ran, and their results. " +
+	"built, what checks you ran, and their results. STOP.md must also contain a " +
+	"fenced code block whose info string is `evidence`, listing one command per line " +
+	"— the project's real build and test commands you actually ran, for example:\n\n" +
+	"```evidence\ngo build ./...\ngo test ./...\n```\n\n" +
+	"The orchestrator will re-run every listed command itself and reject STOP.md if " +
+	"the block is missing or any command fails. " +
 	"Do not start work beyond this audit."
+
+// auditMissingEvidenceNote extends the audit prompt after a STOP.md was
+// rejected for lacking the evidence block, so the re-run audit knows exactly
+// why its previous approval did not stand.
+const auditMissingEvidenceNote = " Note: a previous STOP.md was rejected and deleted " +
+	"because it lacked the required ```evidence block; this time include the block " +
+	"listing the commands you ran."
 
 // iterationPrompt reads the steps file and builds this iteration's instruction:
 // the whole-plan audit when every box is checked (checkCompletion only ends
@@ -1048,7 +1202,11 @@ func (o *Orchestrator) iterationPrompt() (string, iterationIntent, error) {
 	if AllStepsComplete(steps) {
 		fmt.Fprintln(o.terminal,
 			"determined: all steps checked; auditing the whole plan before declaring success")
-		return auditPrompt, iterationIntent{kind: invocationAudit}, nil
+		prompt := auditPrompt
+		if o.auditLackedEvidence {
+			prompt += auditMissingEvidenceNote
+		}
+		return prompt, iterationIntent{kind: invocationAudit}, nil
 	}
 	i, step, ok := NextIncompleteStep(steps)
 	if !ok {
@@ -1210,7 +1368,7 @@ type runReport struct {
 	// Rejections counts, per step, how many times the check gate, done-when
 	// check, verifier, or audit rejected a checked box, keyed by the step's
 	// current number (or by its text, when a replan removed the step from the
-	// file).
+	// file); STOP.md evidence rejections appear under the "audit" key.
 	Rejections map[string]int `json:"rejections,omitempty"`
 	// Report names the human-readable stall handoff written alongside this
 	// report; present only when the run stalled and STALLED.md was written.
@@ -1417,10 +1575,17 @@ func (o *Orchestrator) stalledReport(start time.Time) string {
 		}
 	case len(steps) > 0:
 		// Audit ping-pong: every box is checked but the whole-plan audit
-		// neither approved nor reopened anything, so no single step is stuck.
+		// neither approved nor reopened anything — or its approvals kept
+		// failing evidence validation — so no single step is stuck.
 		b.WriteString("# Run stalled at the whole-plan audit\n\n")
 		fmt.Fprintf(&b, "Every step is checked, but the audit neither approved (no %s) "+
 			"nor reopened a step.\n", o.cfg.StopFile)
+		if reasons := o.rejections[auditRejectionKey]; len(reasons) > 0 {
+			fmt.Fprintf(&b, "rejections: %d (full entries in FIXES.md)\n", len(reasons))
+			for n, reason := range reasons {
+				fmt.Fprintf(&b, "  %d. %s\n", n+1, reason)
+			}
+		}
 	default:
 		b.WriteString("# Run stalled\n\n")
 		fmt.Fprintf(&b, "%s holds no parseable checkbox steps, so no stuck step can be named.\n",
