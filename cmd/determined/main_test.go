@@ -22,28 +22,40 @@ func TestNormalRunIsNotUpdateCommand(t *testing.T) {
 }
 
 func TestUserCanSelectMVPPlanning(t *testing.T) {
-	mode, err := selectPlanMode(true, true, false)
+	mode, err := selectPlanMode(true, false, true, false)
 	if err != nil || mode != models.PlanModeMVP {
 		t.Fatalf("expected MVP planning, got mode %q and error %v", mode, err)
 	}
 }
 
 func TestUserCanSelectPrototypePlanning(t *testing.T) {
-	mode, err := selectPlanMode(true, false, true)
+	mode, err := selectPlanMode(true, false, false, true)
 	if err != nil || mode != models.PlanModePrototype {
 		t.Fatalf("expected prototype planning, got mode %q and error %v", mode, err)
 	}
 }
 
 func TestUserCannotCombinePlanningModes(t *testing.T) {
-	if _, err := selectPlanMode(true, true, true); err == nil {
+	if _, err := selectPlanMode(true, false, true, true); err == nil {
 		t.Fatal("expected combined MVP and prototype modes to be rejected")
 	}
 }
 
 func TestUserCannotSelectPlanningModeDuringExecution(t *testing.T) {
-	if _, err := selectPlanMode(false, true, false); err == nil {
+	if _, err := selectPlanMode(false, false, true, false); err == nil {
 		t.Fatal("expected MVP without -plan to be rejected")
+	}
+}
+
+func TestUserCannotCreateAndReviewPlanTogether(t *testing.T) {
+	if _, err := selectPlanMode(true, true, false, false); err == nil {
+		t.Fatal("expected -plan and -review-plan together to be rejected")
+	}
+}
+
+func TestUserCannotApplyCreationModesToReview(t *testing.T) {
+	if _, err := selectPlanMode(false, true, true, false); err == nil {
+		t.Fatal("expected -mvp with -review-plan to be rejected")
 	}
 }
 

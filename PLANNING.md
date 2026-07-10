@@ -90,3 +90,23 @@ Unlike the execute loop, planning is **attended**: it reads your answers from
 stdin. `--max-duration` / `-t` still bounds it, guarding against a tool that keeps
 asking forever. The protocol filenames (`GOAL.md` / `QUESTIONS.md` /
 `ANSWERS.md` / `REFINEMENTS.md` / `PLAN.md` / `STEPS.md`) are hardcoded.
+
+## Reviewing an existing plan
+
+Use review mode when `PLAN.md` and `STEPS.md` already exist and you want to
+critique and revise them before execution:
+
+```bash
+./determined --review-plan --tool claude
+```
+
+The assessor checks scope, assumptions, edge cases, risks, sequencing,
+dependencies, validation, and acceptance criteria. Findings whose resolution
+depends on product intent, preference, or risk tolerance become terminal
+interview questions. Answers are recorded in `REVIEW_ANSWERS.md`, then used as
+authoritative input while revising `PLAN.md` and `STEPS.md`. The result is
+assessed again until it passes or reaches `--max-step-passes`.
+
+Review mode requires both plan files, never creates a new plan, and never enters
+the execute loop. `--plan` and `--review-plan` are mutually exclusive; `--mvp`
+and `--prototype` apply only to `--plan`.

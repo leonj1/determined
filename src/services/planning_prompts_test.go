@@ -43,3 +43,17 @@ func TestPrototypePlanPrioritizesExperimentation(t *testing.T) {
 		}
 	}
 }
+
+func TestReviewInterviewsUserAboutConsequentialFindings(t *testing.T) {
+	prompts := services.ReviewPrompts()
+	for _, expected := range []string{"assumptions", "edge cases", "risk tolerance", "REVIEW_QUESTIONS.md", "options and tradeoffs"} {
+		if !strings.Contains(prompts.Assess, expected) {
+			t.Fatalf("expected review assessment prompt to contain %q", expected)
+		}
+	}
+	for _, expected := range []string{"REVIEW_ANSWERS.md", "authoritative", "Do not implement"} {
+		if !strings.Contains(prompts.Refine, expected) {
+			t.Fatalf("expected review refinement prompt to contain %q", expected)
+		}
+	}
+}

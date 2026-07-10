@@ -13,6 +13,7 @@ go build -o determined ./cmd/determined
 ./determined update                # update this binary from the latest GitHub Release
 ./determined --plan "build a todo CLI"   # interview, then write PLAN.md / STEPS.md
 ./determined --plan "try a todo UI" -prototype # fast experiment, minimal detail
+./determined --review-plan              # interview, critique, and revise an existing plan
 ```
 
 ## Versioned release build

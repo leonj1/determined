@@ -45,6 +45,23 @@ func PlanningPrompts(mode models.PlanMode) models.PlanningPrompts {
 	}
 }
 
+// ReviewPrompts returns instructions for interviewing the user about an
+// existing plan before applying the resulting revisions.
+func ReviewPrompts() models.PlanningPrompts {
+	return models.PlanningPrompts{
+		Assess: "Read GOAL.md if it exists, PLAN.md, STEPS.md, and REVIEW_ANSWERS.md if it exists. " +
+			"Critique scope boundaries, assumptions, edge cases, risks, sequencing, dependencies, validation, and acceptance criteria. " +
+			"Write every specific actionable finding as a markdown list item in REFINEMENTS.md, or exactly NONE when the plan is sound. " +
+			"For each consequential finding that depends on user preference, product intent, or risk tolerance, also write one concrete " +
+			"interview question to REVIEW_QUESTIONS.md as a markdown numbered list; include options and tradeoffs when useful. " +
+			"Do not ask about choices that can be safely inferred. Do not modify the plan or implement anything.",
+		Refine: "Read GOAL.md if it exists, PLAN.md, STEPS.md, REFINEMENTS.md, and REVIEW_ANSWERS.md if it exists. " +
+			"Treat the user's review answers as authoritative and resolve every finding by rewriting PLAN.md and/or STEPS.md. " +
+			"Preserve confirmed scope, make assumptions and edge-case decisions explicit, order dependencies, and give each incomplete " +
+			"`- [ ]` step a concrete `Done when:` acceptance condition. Do not implement anything or create STOP.md.",
+	}
+}
+
 func assessmentPrompt(mode models.PlanMode) string {
 	criteria := "Review PLAN.md and STEPS.md against the full quality gate and applicable task template. "
 	if mode == models.PlanModeMVP {

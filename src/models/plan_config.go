@@ -2,15 +2,14 @@ package models
 
 import "time"
 
-// PlanConfig holds everything one interactive planning run needs. Planning is
-// attended: the tool asks clarifying questions via QuestionsFile, determined
-// relays them to the user and records the replies in AnswersFile, and the run
-// completes once the tool has written both PlanFile and StepsFile.
+// PlanConfig holds everything one attended plan operation needs. During plan
+// creation or review, the tool asks questions via QuestionsFile, determined
+// relays them to the user, and records the replies in AnswersFile.
 //
-// Once a plan exists, determined runs a quality-refinement loop. It checks plan
-// completeness, task-template coverage, step size and acceptance criteria,
-// then resolves findings until the plan passes or MaxRefinePasses is reached.
+// Once a plan exists, determined checks its quality and resolves findings until
+// it passes or MaxRefinePasses is reached.
 type PlanConfig struct {
+	Operation  PlanOperation // create a plan or review an existing one
 	Goal       string        // the user's goal or a file reference used to seed GoalFile
 	Invocation Invocation    // the planning tool command (print mode) run each round
 	Budget     time.Duration // wall-clock budget; 0 means unlimited

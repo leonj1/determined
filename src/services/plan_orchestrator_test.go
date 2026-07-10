@@ -59,6 +59,7 @@ func (p *fakePrompter) Ask(question string) (string, error) {
 
 func planConfig(budget time.Duration) models.PlanConfig {
 	return models.PlanConfig{
+		Operation:        models.PlanOperationCreate,
 		Goal:             "build a todo CLI",
 		Invocation:       models.Invocation{Binary: "claude", Args: []string{"-p", "plan"}},
 		Budget:           budget,
@@ -72,6 +73,17 @@ func planConfig(budget time.Duration) models.PlanConfig {
 		StepsFile:        "STEPS.md",
 		AssessmentFile:   "REFINEMENTS.md",
 	}
+}
+
+func reviewConfig() models.PlanConfig {
+	cfg := planConfig(0)
+	cfg.Operation = models.PlanOperationReview
+	cfg.Goal = ""
+	cfg.Invocation = models.Invocation{}
+	cfg.MaxRefinePasses = 3
+	cfg.QuestionsFile = "REVIEW_QUESTIONS.md"
+	cfg.AnswersFile = "REVIEW_ANSWERS.md"
+	return cfg
 }
 
 // --- Functional tests ---
@@ -352,6 +364,87 @@ func TestPlanRefinesOversizedSteps(t *testing.T) {
 	}
 	if !strings.Contains(fs.data["STEPS.md"], "Add storage") {
 		t.Fatalf("expected STEPS.md to hold the broken-down steps, got %q", fs.data["STEPS.md"])
+	}
+}
+
+func TestUserCanReviewExistingPlanThroughAnInterview(t *testing.T) {
+	fs := newFakeFileStore()
+	fs.Write("GOAL.md", "ship a safe import flow")
+	fs.Write("PLAN.md", "Import all files")
+	fs.Write("STEPS.md", "- [ ] Add import. Done when: it works")
+	prompter := &fakePrompter{answers: []string{"Skip invalid rows and report them"}}
+	runner := &fakeRunner{script: func(call int, _ io.Writer) error {
+		switch call {
+		case 1:
+			fs.Write("REFINEMENTS.md", "- Decide how partially invalid imports behave")
+			fs.Write("REVIEW_QUESTIONS.md", "1. Should one invalid row reject the whole import, or should valid rows continue?\n")
+		case 2:
+			fs.Write("PLAN.md", "Import valid rows; skip and report invalid rows")
+			fs.Write("STEPS.md", "- [ ] Add partial import reporting. Done when: valid rows persist and invalid rows appear in the summary")
+		case 3:
+			fs.Write("REFINEMENTS.md", "NONE")
+		}
+		return nil
+	}}
+	o := services.NewPlanOrchestrator(runner, fs, prompter, &fakeClock{now: time.Now()}, &fakeLogSink{}, io.Discard, reviewConfig())
+
+	outcome := o.Run(context.Background())
+
+	if outcome != models.OutcomePlanReviewed || outcome.ExitCode() != 0 {
+		t.Fatalf("expected a reviewed plan (exit 0), got %v (exit %d)", outcome, outcome.ExitCode())
+	}
+	if len(prompter.asked) != 1 || !strings.Contains(prompter.asked[0], "invalid row") {
+		t.Fatalf("expected one edge-case interview question, got %#v", prompter.asked)
+	}
+	for _, want := range []string{"Should one invalid row", "Skip invalid rows"} {
+		if !strings.Contains(fs.data["REVIEW_ANSWERS.md"], want) {
+			t.Fatalf("expected review answers to contain %q, got %q", want, fs.data["REVIEW_ANSWERS.md"])
+		}
+	}
+	if !strings.Contains(fs.data["PLAN.md"], "skip and report invalid rows") {
+		t.Fatalf("expected the answer to be reflected in PLAN.md, got %q", fs.data["PLAN.md"])
+	}
+	if fs.Exists("REVIEW_QUESTIONS.md") || fs.Exists("REFINEMENTS.md") {
+		t.Fatal("expected transient review files to be cleared after review passes")
+	}
+}
+
+func TestReviewRequiresAnExistingPlanAndSteps(t *testing.T) {
+	fs := newFakeFileStore()
+	fs.Write("PLAN.md", "plan without steps")
+	runner := &fakeRunner{}
+	var terminal strings.Builder
+	o := services.NewPlanOrchestrator(runner, fs, &fakePrompter{}, &fakeClock{now: time.Now()}, &fakeLogSink{}, &terminal, reviewConfig())
+
+	outcome := o.Run(context.Background())
+
+	if outcome != models.OutcomeMissingFiles || outcome.ExitCode() != 1 {
+		t.Fatalf("expected missing files (exit 1), got %v (exit %d)", outcome, outcome.ExitCode())
+	}
+	if runner.calls != 0 || !strings.Contains(terminal.String(), "review requires PLAN.md and STEPS.md") {
+		t.Fatalf("expected a clear error before invoking the tool, calls=%d output=%q", runner.calls, terminal.String())
+	}
+}
+
+func TestReviewResumesAPendingInterview(t *testing.T) {
+	fs := newFakeFileStore()
+	fs.Write("PLAN.md", "existing plan")
+	fs.Write("STEPS.md", "existing steps")
+	fs.Write("REVIEW_QUESTIONS.md", "1. Keep backward compatibility?\n")
+	prompter := &fakePrompter{answers: []string{"Yes"}}
+	runner := &fakeRunner{script: func(_ int, _ io.Writer) error {
+		fs.Write("REFINEMENTS.md", "NONE")
+		return nil
+	}}
+	o := services.NewPlanOrchestrator(runner, fs, prompter, &fakeClock{now: time.Now()}, &fakeLogSink{}, io.Discard, reviewConfig())
+
+	outcome := o.Run(context.Background())
+
+	if outcome != models.OutcomePlanReviewed {
+		t.Fatalf("expected a resumed review to complete, got %v", outcome)
+	}
+	if !strings.Contains(fs.data["REVIEW_ANSWERS.md"], "Yes") || fs.Exists("REVIEW_QUESTIONS.md") {
+		t.Fatalf("expected the pending answer to be recorded and question cleared, files=%#v", fs.data)
 	}
 }
 
