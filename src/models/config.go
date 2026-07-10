@@ -53,6 +53,15 @@ type Config struct {
 	// replan that changes nothing cannot be retried forever. 0 disables
 	// replanning; the run then stalls exactly as without it.
 	MaxReplans int
+	// MaxPlanChanges bounds how many worker plan-change proposals from
+	// PROPOSALS.md may be applied to the steps file per run. Workers may not
+	// edit the steps file beyond checking their own box (the tamper guard
+	// reverts anything else), but they may append structured `## Proposal`
+	// sections to PROPOSALS.md; the orchestrator validates each one
+	// mechanically between iterations and applies the valid ones — unchecked
+	// steps only — itself. Each applied proposal consumes one; proposals
+	// beyond the budget are rejected. 0 disables the channel entirely.
+	MaxPlanChanges int
 	// StashAttempts git-stashes the working tree's rejected attempt once the
 	// same step has been rejected a second time (by the check gate, verifier,
 	// or audit), so the retry starts from the last verified checkpoint instead

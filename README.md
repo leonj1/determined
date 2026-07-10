@@ -44,6 +44,13 @@ work. Unlike the one-liner, it does not trust the tool's word for progress:
   verification is usually too big, not impossible: before exiting stalled,
   one invocation replaces the stuck step with 2–4 smaller ones and the loop
   resumes.
+- **Plan-change proposals** (`--max-plan-changes`) — execution discovers
+  things planning missed, and the tamper guard blocks direct plan edits, so
+  workers may instead append structured `## Proposal` sections to
+  `PROPOSALS.md` (add, remove, or reword an *unchecked* step); the
+  orchestrator validates each one mechanically between iterations and applies
+  the valid ones to `STEPS.md` itself, bounded per run (see
+  [EXECUTION.md](EXECUTION.md)).
 - **Memory and checkpoints** — `NOTES.md` carries knowledge between otherwise
   independent invocations, and each verified step is git-committed.
 - **Failed-attempt stashing** — a step rejected a second time has its failed
@@ -154,12 +161,13 @@ codes.
 | `--check-cmd`    | —        | Shell command (run via `sh -c`) that must succeed after each iteration that checks a step; on failure the step is unchecked and the output tail recorded in `FIXES.md`. Empty disables the gate. |
 | `--notify-cmd`   | —        | Shell command (run via `sh -c`) run once when the execute run ends — however it ends — after the reports are written, with the outcome exported as `DET_*` environment variables. A failure is warned and ignored. Empty disables the hook. |
 | `--max-replans`  | `1`      | When the stall cap is hit, ask the tool to replace the stuck step with smaller steps instead of stopping, at most this many times per run. `0` disables replanning. |
+| `--max-plan-changes` | `3`  | Max worker plan-change proposals from `PROPOSALS.md` applied to `STEPS.md` per run; each applied proposal consumes one, and proposals beyond the budget are rejected (recorded in `FIXES.md`). `0` disables the channel entirely. |
 | `--stash-attempts` | `true` | From a step's second rejection on, `git stash` the failed attempt (recording its hash and diffstat in `FIXES.md`) so retries start from the last verified checkpoint. Needs `--git-checkpoint` and a working tree that starts the run clean; otherwise retries build in place as before. |
 | `--log-dir`      | `logs`   | Directory for per-iteration log files.                          |
 | `--version`      | —        | Print the binary's semantic version and exit.                  |
 
 The protocol filenames (`PLAN.md` / `STEPS.md` / `STOP.md` / `NOTES.md` /
-`FIXES.md`) are hardcoded, as are the `run-report.json` summary every execute
+`FIXES.md` / `PROPOSALS.md`) are hardcoded, as are the `run-report.json` summary every execute
 run writes on exit and the `STALLED.md` handoff a stalled run writes; the
 prompt is rebuilt each iteration from the next unchecked step in `STEPS.md`.
 

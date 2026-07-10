@@ -85,6 +85,8 @@ func main() {
 		"shell command (run via `sh -c`) that must succeed after each iteration that checks a step; on failure the step is unchecked and the output tail recorded in FIXES.md; empty disables the gate")
 	maxReplans := flag.Int("max-replans", 1,
 		"when the stall cap is hit, ask the tool to replace the stuck step with smaller steps instead of stopping, at most this many times per run; 0 disables replanning")
+	maxPlanChanges := flag.Int("max-plan-changes", 3,
+		"max worker plan-change proposals from PROPOSALS.md applied to STEPS.md per run; proposals beyond the budget are rejected with the reason recorded in FIXES.md; 0 disables the channel")
 	notifyCmd := flag.String("notify-cmd", "",
 		"shell command (run via `sh -c`) run once when the execute run ends, after the reports are written, with the outcome exported as DET_* environment variables; a failure is warned and ignored; empty disables the hook")
 	stashAttempts := flag.Bool("stash-attempts", true,
@@ -113,7 +115,7 @@ func main() {
 	if *plan != "" {
 		outcome = runPlan(ctx, selected, *plan, *budget, *maxStepPasses, clock, logs)
 	} else {
-		outcome = runLoop(ctx, selected, *budget, *maxStalled, *maxFailures, *maxIterationDuration, *verify, *gitCheckpoint, *checkCmd, *notifyCmd, *maxReplans, *stashAttempts, *logDir, clock, logs)
+		outcome = runLoop(ctx, selected, *budget, *maxStalled, *maxFailures, *maxIterationDuration, *verify, *gitCheckpoint, *checkCmd, *notifyCmd, *maxReplans, *maxPlanChanges, *stashAttempts, *logDir, clock, logs)
 	}
 
 	fmt.Fprintf(os.Stderr, "\ndetermined: %s\n", outcome)
@@ -121,7 +123,7 @@ func main() {
 }
 
 // runLoop runs the unattended execute loop against PLAN.md / STEPS.md.
-func runLoop(ctx context.Context, tool models.Tool, budget time.Duration, maxStalled, maxFailures int, maxIterationDuration time.Duration, verify, gitCheckpoint bool, checkCmd, notifyCmd string, maxReplans int, stashAttempts bool, logDir string, clock services.Clock, logs services.LogSink) models.Outcome {
+func runLoop(ctx context.Context, tool models.Tool, budget time.Duration, maxStalled, maxFailures int, maxIterationDuration time.Duration, verify, gitCheckpoint bool, checkCmd, notifyCmd string, maxReplans, maxPlanChanges int, stashAttempts bool, logDir string, clock services.Clock, logs services.LogSink) models.Outcome {
 	// The notify hook exports the run's directory as DET_DIR; a Getwd failure
 	// leaves it empty rather than blocking the run.
 	workDir, _ := os.Getwd()
@@ -140,6 +142,7 @@ func runLoop(ctx context.Context, tool models.Tool, budget time.Duration, maxSta
 		NotifyCmd:              notifyCmd,
 		WorkDir:                workDir,
 		MaxReplans:             maxReplans,
+		MaxPlanChanges:         maxPlanChanges,
 		StashAttempts:          stashAttempts,
 		LogDir:                 logDir,
 	}

@@ -2083,6 +2083,321 @@ func TestAuditPingPongIsNeverReplanned(t *testing.T) {
 	}
 }
 
+// proposalConfig returns a config with the plan-change proposal channel open
+// at main.go's default budget.
+func proposalConfig() models.Config {
+	cfg := config(0)
+	cfg.MaxPlanChanges = 3
+	return cfg
+}
+
+// addLoaderProposal is a valid add-after proposal inserting a loader step
+// after step 1 of the two-step plan.
+const addLoaderProposal = "## Proposal\n" +
+	"action: add-after 1\n" +
+	"step: - [ ] 1b. Migrate the config loader. Done when: loader tests pass.\n" +
+	"reason: step 2 assumes the new loader exists\n"
+
+func TestValidAddAfterProposalIsAppliedAndRecorded(t *testing.T) {
+	fs := stepsFileStore()
+	var terminal bytes.Buffer
+	stepsAfterProposal, proposalsAfter := "", true
+	runner := &fakeRunner{script: func(call int, _ io.Writer) error {
+		switch call {
+		case 1: // work checks step 1 and proposes a step planning missed
+			fs.Write("STEPS.md", twoStepsFirstChecked)
+			fs.Write("PROPOSALS.md", addLoaderProposal)
+		case 2: // work sees the amended plan; the proposals file is gone
+			stepsAfterProposal, _ = fs.Read("STEPS.md")
+			proposalsAfter = fs.Exists("PROPOSALS.md")
+			fs.Write("STEPS.md", services.CheckSteps(stepsAfterProposal, []int{1}))
+		case 3: // work: check the final step
+			content, _ := fs.Read("STEPS.md")
+			fs.Write("STEPS.md", services.CheckSteps(content, []int{2}))
+		case 4: // the whole-plan audit approves
+			fs.Write("STOP.md", approvedStop)
+		}
+		return nil
+	}}
+	o := services.NewOrchestrator(runner, fs, &fakeClock{now: time.Now()}, &fakeLogSink{}, &terminal, proposalConfig())
+
+	outcome := o.Run(context.Background())
+
+	if outcome != models.OutcomeStopped || outcome.ExitCode() != 0 {
+		t.Fatalf("expected the amended plan to carry the run to completion, got %v (exit %d)", outcome, outcome.ExitCode())
+	}
+	want := "- [x] 1. Add the widget.\n  Done when: widget tests pass.\n\n" +
+		"- [ ] 1b. Migrate the config loader.\n  Done when: loader tests pass.\n\n" +
+		"- [ ] 2. Document the widget.\n  Done when: README mentions the widget.\n"
+	if stepsAfterProposal != want {
+		t.Fatalf("expected the proposed step inserted after step 1, got:\n%s", stepsAfterProposal)
+	}
+	if proposalsAfter {
+		t.Fatal("expected PROPOSALS.md removed once its proposals were processed")
+	}
+	if !strings.Contains(runner.prompt(1), "append a section to PROPOSALS.md") {
+		t.Fatalf("expected the worker prompt to name the proposal channel, got:\n%s", runner.prompt(1))
+	}
+	if !strings.Contains(runner.prompt(2), "1b. Migrate the config loader.") {
+		t.Fatalf("expected the next iteration to target the inserted step, got:\n%s", runner.prompt(2))
+	}
+	notes, _ := fs.Read("NOTES.md")
+	for _, wanted := range []string{"## Plan change", "add-after 1", "step 2 assumes the new loader exists"} {
+		if !strings.Contains(notes, wanted) {
+			t.Fatalf("expected NOTES.md to record %q for later invocations, got:\n%s", wanted, notes)
+		}
+	}
+	if !strings.Contains(terminal.String(), "applied plan change `add-after 1` (1 of 3)") {
+		t.Fatalf("expected a terminal note naming the applied change and the budget, got:\n%s", terminal.String())
+	}
+}
+
+func TestRemoveAndRewordProposalsReshapeOnlyUncheckedSteps(t *testing.T) {
+	cfg := proposalConfig()
+	cfg.MaxStalledIterations = 1
+	fs := plannedFileStore(
+		"- [x] 1. Add the parser.\n  Done when: parser tests pass.\n\n" +
+			"- [ ] 2. Wire the parser.\n  Done when: wiring tests pass.\n\n" +
+			"- [ ] 3. Add the legacy shim.\n  Done when: shim tests pass.\n")
+	var terminal bytes.Buffer
+	runner := &fakeRunner{script: func(int, io.Writer) error {
+		fs.Write("PROPOSALS.md", "## Proposal\n"+
+			"action: reword 2\n"+
+			"step: - [ ] 2. Wire the parser into the loop. Done when: `go test ./loop` exits 0\n"+
+			"reason: the original criterion was untestable\n\n"+
+			"## Proposal\n"+
+			"action: remove 3\n"+
+			"reason: the shim is obsolete now\n")
+		return nil
+	}}
+	o := services.NewOrchestrator(runner, fs, &fakeClock{now: time.Now()}, &fakeLogSink{}, &terminal, cfg)
+
+	outcome := o.Run(context.Background())
+
+	if outcome != models.OutcomeStalled {
+		t.Fatalf("expected the no-progress run to stall, got %v", outcome)
+	}
+	want := "- [x] 1. Add the parser.\n  Done when: parser tests pass.\n\n" +
+		"- [ ] 2. Wire the parser into the loop.\n  Done when: `go test ./loop` exits 0\n"
+	if got, _ := fs.Read("STEPS.md"); got != want {
+		t.Fatalf("expected step 2 reworded and step 3 removed with step 1's check intact, got:\n%s", got)
+	}
+	for _, wanted := range []string{"applied plan change `reword 2`", "applied plan change `remove 3`"} {
+		if !strings.Contains(terminal.String(), wanted) {
+			t.Fatalf("expected a terminal note %q, got:\n%s", wanted, terminal.String())
+		}
+	}
+}
+
+func TestInvalidProposalsAreRejectedAndRecordedInFixes(t *testing.T) {
+	cases := []struct {
+		name     string
+		proposal string
+		reason   string
+	}{
+		{"reword of a checked step",
+			"## Proposal\naction: reword 1\nstep: - [ ] 1. Add the widget quickly. Done when: it compiles.\nreason: too slow\n",
+			"step 1 is checked; completed work is never reworded"},
+		{"remove of a checked step",
+			"## Proposal\naction: remove 1\nreason: obsolete\n",
+			"step 1 is checked; completed work is never removed"},
+		{"index out of range",
+			"## Proposal\naction: add-after 3\nstep: - [ ] 3. Extra. Done when: tests pass.\nreason: missing\n",
+			"add-after 3 is out of range for a 2-step plan"},
+		{"malformed step line",
+			"## Proposal\naction: add-after 1\nstep: not a checkbox at all\nreason: missing\n",
+			"not a `- [ ]` checkbox item"},
+		{"pre-checked step line",
+			"## Proposal\naction: add-after 1\nstep: - [x] Pre-done. Done when: tests pass.\nreason: missing\n",
+			"proposals may only introduce unchecked steps"},
+		{"missing criterion",
+			"## Proposal\naction: add-after 1\nstep: - [ ] No criterion here.\nreason: missing\n",
+			"has no `Done when:` criterion"},
+		{"unknown action",
+			"## Proposal\naction: split 2\nstep: - [ ] Half. Done when: tests pass.\nreason: too big\n",
+			"unrecognized action \"split 2\""},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			cfg := proposalConfig()
+			cfg.MaxStalledIterations = 1
+			fs := plannedFileStore(twoStepsFirstChecked)
+			var terminal bytes.Buffer
+			runner := &fakeRunner{script: func(int, io.Writer) error {
+				fs.Write("PROPOSALS.md", c.proposal)
+				return nil
+			}}
+			o := services.NewOrchestrator(runner, fs, &fakeClock{now: time.Now()}, &fakeLogSink{}, &terminal, cfg)
+
+			outcome := o.Run(context.Background())
+
+			if outcome != models.OutcomeStalled {
+				t.Fatalf("expected the no-progress run to stall, got %v", outcome)
+			}
+			if got, _ := fs.Read("STEPS.md"); got != twoStepsFirstChecked {
+				t.Fatalf("expected STEPS.md untouched by the rejected proposal, got:\n%s", got)
+			}
+			if fs.Exists("PROPOSALS.md") {
+				t.Fatal("expected PROPOSALS.md removed even when every proposal is rejected")
+			}
+			fixes, _ := fs.Read("FIXES.md")
+			if !strings.Contains(fixes, "## Proposal") || !strings.Contains(fixes, c.reason) {
+				t.Fatalf("expected FIXES.md to record the rejection %q, got:\n%s", c.reason, fixes)
+			}
+			if !strings.Contains(terminal.String(), "rejected plan proposal") {
+				t.Fatalf("expected a terminal rejection note, got:\n%s", terminal.String())
+			}
+		})
+	}
+}
+
+func TestProposalsBeyondThePlanChangeBudgetAreRejected(t *testing.T) {
+	cfg := proposalConfig()
+	cfg.MaxPlanChanges = 1
+	cfg.MaxStalledIterations = 1
+	fs := stepsFileStore()
+	runner := &fakeRunner{script: func(int, io.Writer) error {
+		fs.Write("PROPOSALS.md", "## Proposal\n"+
+			"action: add-after 0\n"+
+			"step: - [ ] 0a. Prepare the fixtures. Done when: fixtures exist.\n"+
+			"reason: missing groundwork\n\n"+
+			"## Proposal\n"+
+			"action: add-after 0\n"+
+			"step: - [ ] 0b. Prepare more fixtures. Done when: more fixtures exist.\n"+
+			"reason: missing groundwork\n")
+		return nil
+	}}
+	o := services.NewOrchestrator(runner, fs, &fakeClock{now: time.Now()}, &fakeLogSink{}, io.Discard, cfg)
+
+	outcome := o.Run(context.Background())
+
+	if outcome != models.OutcomeStalled {
+		t.Fatalf("expected the no-progress run to stall, got %v", outcome)
+	}
+	want := "- [ ] 0a. Prepare the fixtures.\n  Done when: fixtures exist.\n\n" +
+		"- [ ] 1. Add the widget.\n  Done when: widget tests pass.\n\n" +
+		"- [ ] 2. Document the widget.\n  Done when: README mentions the widget.\n"
+	if got, _ := fs.Read("STEPS.md"); got != want {
+		t.Fatalf("expected only the budgeted first proposal applied, got:\n%s", got)
+	}
+	if fixes, _ := fs.Read("FIXES.md"); !strings.Contains(fixes, "plan-change budget exhausted") {
+		t.Fatalf("expected the over-budget proposal rejected in FIXES.md, got:\n%s", fixes)
+	}
+}
+
+func TestZeroMaxPlanChangesDisablesTheProposalChannel(t *testing.T) {
+	cfg := config(0) // MaxPlanChanges stays zero
+	cfg.MaxStalledIterations = 1
+	fs := stepsFileStore()
+	runner := &fakeRunner{script: func(int, io.Writer) error {
+		fs.Write("PROPOSALS.md", addLoaderProposal)
+		return nil
+	}}
+	o := services.NewOrchestrator(runner, fs, &fakeClock{now: time.Now()}, &fakeLogSink{}, io.Discard, cfg)
+
+	outcome := o.Run(context.Background())
+
+	if outcome != models.OutcomeStalled {
+		t.Fatalf("expected the no-progress run to stall, got %v", outcome)
+	}
+	if got, _ := fs.Read("STEPS.md"); got != twoStepsNoneChecked {
+		t.Fatalf("expected no proposal applied with the channel disabled, got:\n%s", got)
+	}
+	if fs.Exists("FIXES.md") {
+		t.Fatal("expected no rejection record either: the channel is off, not judging")
+	}
+	if strings.Contains(runner.prompt(1), "PROPOSALS.md") {
+		t.Fatalf("expected the worker prompt not to offer the disabled channel, got:\n%s", runner.prompt(1))
+	}
+}
+
+func TestAppliedProposalsDoNotResetTheStallCounter(t *testing.T) {
+	cfg := proposalConfig()
+	cfg.MaxStalledIterations = 2
+	fs := stepsFileStore()
+	runner := &fakeRunner{script: func(call int, _ io.Writer) error {
+		// Every iteration proposes (and gets) a plan change but checks nothing.
+		fs.Write("PROPOSALS.md", fmt.Sprintf("## Proposal\n"+
+			"action: add-after 0\n"+
+			"step: - [ ] 0.%d Prepare. Done when: preparation %d exists.\n"+
+			"reason: missing groundwork\n", call, call))
+		return nil
+	}}
+	o := services.NewOrchestrator(runner, fs, &fakeClock{now: time.Now()}, &fakeLogSink{}, io.Discard, cfg)
+
+	outcome := o.Run(context.Background())
+
+	if outcome != models.OutcomeStalled || outcome.ExitCode() != 3 {
+		t.Fatalf("expected applied proposals to count as no progress (stall), got %v (exit %d)", outcome, outcome.ExitCode())
+	}
+	if runner.calls != 2 {
+		t.Fatalf("expected the stall cap to bound proposal-only iterations (2 runs), got %d", runner.calls)
+	}
+}
+
+func TestTamperGuardStillRevertsDirectEditsWhenAProposalIsProcessed(t *testing.T) {
+	cfg := proposalConfig()
+	cfg.MaxStalledIterations = 1
+	fs := stepsFileStore()
+	var terminal bytes.Buffer
+	runner := &fakeRunner{script: func(int, io.Writer) error {
+		// The worker rewords step 1 directly AND files a legitimate proposal.
+		fs.Write("STEPS.md", strings.Replace(twoStepsNoneChecked, "Add the widget", "Add a stub", 1))
+		fs.Write("PROPOSALS.md", addLoaderProposal)
+		return nil
+	}}
+	o := services.NewOrchestrator(runner, fs, &fakeClock{now: time.Now()}, &fakeLogSink{}, &terminal, cfg)
+
+	outcome := o.Run(context.Background())
+
+	if outcome != models.OutcomeStalled {
+		t.Fatalf("expected the reverted iteration to end as a stall, got %v", outcome)
+	}
+	want := "- [ ] 1. Add the widget.\n  Done when: widget tests pass.\n\n" +
+		"- [ ] 1b. Migrate the config loader.\n  Done when: loader tests pass.\n\n" +
+		"- [ ] 2. Document the widget.\n  Done when: README mentions the widget.\n"
+	if got, _ := fs.Read("STEPS.md"); got != want {
+		t.Fatalf("expected the direct edit reverted and the proposal applied to the restored plan, got:\n%s", got)
+	}
+	if !strings.Contains(terminal.String(), tamperGuardWarning(1, "step 1's text changed")) {
+		t.Fatalf("expected the tamper warning alongside the proposal, got:\n%s", terminal.String())
+	}
+	if !strings.Contains(terminal.String(), "applied plan change `add-after 1`") {
+		t.Fatalf("expected the proposal applied in the same iteration, got:\n%s", terminal.String())
+	}
+}
+
+func TestStaleProposalsFileIsRemovedAtStartup(t *testing.T) {
+	fs := stepsFileStore()
+	fs.Write("PROPOSALS.md", addLoaderProposal) // left by an earlier run
+	staleAtFirstIteration := false
+	runner := &fakeRunner{script: func(call int, _ io.Writer) error {
+		switch call {
+		case 1:
+			staleAtFirstIteration = fs.Exists("PROPOSALS.md")
+			fs.Write("STEPS.md", twoStepsFirstChecked)
+		case 2:
+			fs.Write("STEPS.md", twoStepsAllChecked)
+		case 3: // the whole-plan audit approves
+			fs.Write("STOP.md", approvedStop)
+		}
+		return nil
+	}}
+	o := services.NewOrchestrator(runner, fs, &fakeClock{now: time.Now()}, &fakeLogSink{}, io.Discard, proposalConfig())
+
+	outcome := o.Run(context.Background())
+
+	if outcome != models.OutcomeStopped || outcome.ExitCode() != 0 {
+		t.Fatalf("expected a clean completion, got %v (exit %d)", outcome, outcome.ExitCode())
+	}
+	if staleAtFirstIteration {
+		t.Fatal("expected the stale PROPOSALS.md removed at startup")
+	}
+	if got, _ := fs.Read("STEPS.md"); got != twoStepsAllChecked {
+		t.Fatalf("expected the stale proposal never applied, got:\n%s", got)
+	}
+}
+
 // stashConfig returns a config with verification, checkpointing, and
 // failed-attempt stashing all enabled, the wiring main.go produces by default.
 func stashConfig() models.Config {
@@ -2164,7 +2479,7 @@ func TestSecondRejectionStashesTheAttemptAndTheRetryStartsClean(t *testing.T) {
 	if !strings.Contains(push, "step 1 rejected attempt 2") {
 		t.Fatalf("expected the stash message to name the step and attempt, got %q", push)
 	}
-	for _, protected := range []string{":(exclude)STEPS.md", ":(exclude)FIXES.md", ":(exclude)NOTES.md", ":(exclude)STALLED.md", ":(exclude)logs"} {
+	for _, protected := range []string{":(exclude)STEPS.md", ":(exclude)FIXES.md", ":(exclude)NOTES.md", ":(exclude)PROPOSALS.md", ":(exclude)STALLED.md", ":(exclude)logs"} {
 		if !strings.Contains(push, protected) {
 			t.Fatalf("expected the stash push to exclude %s, got %q", protected, push)
 		}

@@ -1,6 +1,9 @@
 package services
 
-import "strings"
+import (
+	"fmt"
+	"strings"
+)
 
 // Step is one checkbox item parsed from a STEPS.md file.
 type Step struct {
@@ -137,6 +140,31 @@ func setStepMarks(content string, indices []int, completed bool) string {
 	return strings.Join(lines, "\n")
 }
 
+// renderSteps writes a parsed step list back out as canonical STEPS.md
+// content: one `- [ ]` / `- [x]` item per step with its `Done when:`
+// criterion on the indented line ParseSteps reads it from, blank-line
+// separated. The proposal channel rewrites the file from the parsed model
+// after applying a plan change, so shifting positions can never alter another
+// step's text, criterion, or check; prose around the items — which the parser
+// ignores anyway — does not survive the rewrite.
+func renderSteps(steps []Step) string {
+	var b strings.Builder
+	for i, s := range steps {
+		if i > 0 {
+			b.WriteString("\n")
+		}
+		mark := " "
+		if s.Completed {
+			mark = "x"
+		}
+		fmt.Fprintf(&b, "- [%s] %s\n", mark, s.Text)
+		if s.DoneWhen != "" {
+			fmt.Fprintf(&b, "  %s %s\n", doneWhenPrefix, s.DoneWhen)
+		}
+	}
+	return b.String()
+}
+
 // checkboxItem parses a markdown checkbox list item ("- [ ] text" or
 // "- [x] text"; "*" bullets are accepted too) and reports whether the line was
 // one. Bullets without a checkbox, or with an unrecognized mark, are not items.
@@ -163,6 +191,17 @@ func checkboxItem(line string) (Step, bool) {
 // hasFoldPrefix reports whether s starts with prefix, ignoring case.
 func hasFoldPrefix(s, prefix string) bool {
 	return len(s) >= len(prefix) && strings.EqualFold(s[:len(prefix)], prefix)
+}
+
+// foldIndex returns the byte index of the first case-insensitive occurrence
+// of substr in s, or -1 when there is none.
+func foldIndex(s, substr string) int {
+	for i := 0; i+len(substr) <= len(s); i++ {
+		if strings.EqualFold(s[i:i+len(substr)], substr) {
+			return i
+		}
+	}
+	return -1
 }
 
 // isIndented reports whether the line starts with whitespace, marking it a

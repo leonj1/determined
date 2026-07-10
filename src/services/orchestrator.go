@@ -58,6 +58,10 @@ type Orchestrator struct {
 	// replansUsed counts replan invocations spent on stalled steps; once it
 	// reaches cfg.MaxReplans, hitting the stall cap ends the run for good.
 	replansUsed int
+	// planChangesUsed counts the PROPOSALS.md plan changes applied to the
+	// steps file; once it reaches cfg.MaxPlanChanges, further proposals are
+	// rejected with "plan-change budget exhausted".
+	planChangesUsed int
 	// rejections records, per step (keyed by stepKey), one short reason string
 	// per rejection of a checked box by the check gate, done-when check,
 	// verifier, or audit, in order — a step's rejection count is its slice's
@@ -164,6 +168,7 @@ func (o *Orchestrator) run(ctx context.Context) models.Outcome {
 			o.checkpointNewSteps(ctx, before)
 		}
 		o.recordRejections(ctx, intent, before, afterWork, gatePassed, doneWhenFailed)
+		o.processProposals()
 		o.validateStopFile(ctx)
 		if o.stalledOut(CompletedStepCount(before)) {
 			outcome, stop, resumed := o.replanStuckStep(ctx)
@@ -512,6 +517,263 @@ func completedStepsPreserved(before, after []Step) bool {
 		remaining[s]--
 	}
 	return true
+}
+
+// proposalsFile is the protocol file through which a worker may legitimately
+// propose mid-run plan changes: the tamper guard reverts any direct steps-file
+// edit beyond the worker's own box, so discoveries that planning missed — an
+// obsolete step, a missing one, a wrong criterion — are appended here as
+// structured `## Proposal` sections for the orchestrator to judge between
+// iterations.
+const proposalsFile = "PROPOSALS.md"
+
+// proposal is one `## Proposal` section parsed from PROPOSALS.md: the
+// requested action ("add-after 4", "remove 2", "reword 3"), the proposed step
+// line where the action needs one, and the worker's stated reason.
+type proposal struct {
+	action string
+	step   string
+	reason string
+}
+
+// parseProposals extracts the `## Proposal` sections from PROPOSALS.md
+// content: each section starts at a `## Proposal` heading and carries
+// `action:`, `step:`, and `reason:` lines. Lines outside a section and
+// unrecognized lines inside one are ignored, so surrounding chatter parses
+// cleanly, exactly as ParseSteps treats the steps file.
+func parseProposals(content string) []proposal {
+	var proposals []proposal
+	var cur *proposal
+	for _, line := range strings.Split(content, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "## Proposal" {
+			proposals = append(proposals, proposal{})
+			cur = &proposals[len(proposals)-1]
+			continue
+		}
+		if cur == nil {
+			continue
+		}
+		switch {
+		case hasFoldPrefix(trimmed, "action:"):
+			cur.action = strings.TrimSpace(trimmed[len("action:"):])
+		case hasFoldPrefix(trimmed, "step:"):
+			cur.step = strings.TrimSpace(trimmed[len("step:"):])
+		case hasFoldPrefix(trimmed, "reason:"):
+			cur.reason = strings.TrimSpace(trimmed[len("reason:"):])
+		}
+	}
+	return proposals
+}
+
+// parseProposalAction splits an action like "add-after 4" into its verb and
+// index. Anything but exactly one verb and one integer is unrecognized.
+func parseProposalAction(action string) (string, int, bool) {
+	fields := strings.Fields(action)
+	if len(fields) != 2 {
+		return "", 0, false
+	}
+	n, err := strconv.Atoi(fields[1])
+	if err != nil {
+		return "", 0, false
+	}
+	return fields[0], n, true
+}
+
+// parseProposalStep validates the step line an add-after or reword proposal
+// carries: a single line that parses as an unchecked `- [ ]` checkbox item
+// whose text carries an inline `Done when:` criterion, both parts non-empty —
+// the same shape ParseSteps reads back once renderSteps splits the criterion
+// onto its indented line. It returns the parsed step, or the problem that
+// rejects the proposal.
+func parseProposalStep(line string) (Step, string) {
+	item, ok := checkboxItem(line)
+	if !ok {
+		return Step{}, fmt.Sprintf("step line %q is not a `- [ ]` checkbox item", line)
+	}
+	if item.Completed {
+		return Step{}, "the proposed step is checked; proposals may only introduce unchecked steps"
+	}
+	i := foldIndex(item.Text, doneWhenPrefix)
+	if i < 0 {
+		return Step{}, "the proposed step has no `Done when:` criterion"
+	}
+	text := strings.TrimSpace(item.Text[:i])
+	doneWhen := strings.TrimSpace(item.Text[i+len(doneWhenPrefix):])
+	if text == "" {
+		return Step{}, "the proposed step has no text before its `Done when:` criterion"
+	}
+	if doneWhen == "" {
+		return Step{}, "the proposed step's `Done when:` criterion is empty"
+	}
+	return Step{Text: text, DoneWhen: doneWhen}, ""
+}
+
+// unrecognizedProposalAction is the rejection for an action the mechanical
+// judge does not know, naming the supported forms so the worker can correct
+// the proposal instead of guessing.
+func unrecognizedProposalAction(action string) string {
+	return fmt.Sprintf("unrecognized action %q (supported: `add-after N`, `remove N`, `reword N`)", action)
+}
+
+// judgeProposal validates one proposal against the current parsed steps and,
+// when valid, returns the steps with it applied plus a short description of
+// the change; otherwise it returns only the rejection reason. The rules are
+// deliberately mechanical: `add-after N` (N in 0..len, 0 inserts at the top)
+// inserts a well-formed unchecked step, and `remove N` / `reword N` (1..len)
+// touch only an unchecked step N — completed work is never removed or
+// reworded. No action can alter any other step's text, criterion, or checked
+// state, because the mutation is built from the parsed model itself and only
+// shifts positions around the target.
+func judgeProposal(steps []Step, p proposal) (after []Step, change, reason string) {
+	verb, n, ok := parseProposalAction(p.action)
+	if !ok {
+		return nil, "", unrecognizedProposalAction(p.action)
+	}
+	switch verb {
+	case "add-after":
+		if n < 0 || n > len(steps) {
+			return nil, "", fmt.Sprintf("add-after %d is out of range for a %d-step plan", n, len(steps))
+		}
+		step, problem := parseProposalStep(p.step)
+		if problem != "" {
+			return nil, "", problem
+		}
+		after = append(after, steps[:n]...)
+		after = append(after, step)
+		after = append(after, steps[n:]...)
+		return after, fmt.Sprintf("inserted %q as step %d", step.Text, n+1), ""
+	case "remove":
+		if n < 1 || n > len(steps) {
+			return nil, "", fmt.Sprintf("remove %d is out of range for a %d-step plan", n, len(steps))
+		}
+		if steps[n-1].Completed {
+			return nil, "", fmt.Sprintf("step %d is checked; completed work is never removed", n)
+		}
+		after = append(after, steps[:n-1]...)
+		after = append(after, steps[n:]...)
+		return after, fmt.Sprintf("removed step %d (%q)", n, steps[n-1].Text), ""
+	case "reword":
+		if n < 1 || n > len(steps) {
+			return nil, "", fmt.Sprintf("reword %d is out of range for a %d-step plan", n, len(steps))
+		}
+		if steps[n-1].Completed {
+			return nil, "", fmt.Sprintf("step %d is checked; completed work is never reworded", n)
+		}
+		step, problem := parseProposalStep(p.step)
+		if problem != "" {
+			return nil, "", problem
+		}
+		after = append(after, steps...)
+		after[n-1] = step
+		return after, fmt.Sprintf("replaced step %d (%q) with %q", n, steps[n-1].Text, step.Text), ""
+	}
+	return nil, "", unrecognizedProposalAction(p.action)
+}
+
+// processProposals is the bounded, legitimate channel for mid-run plan
+// changes. Execution discovers things planning missed, and the tamper guard
+// (rightly) reverts direct steps-file edits — so workers append `## Proposal`
+// sections to PROPOSALS.md instead, and each is judged mechanically here,
+// between iterations: recognized action, valid index against the current
+// parsed steps, a well-formed unchecked step line where one is required, and
+// no effect on any checked step or on any other step's content (judged
+// against the parsed model, exactly as replan validation judges by effect).
+// A valid proposal is applied by rewriting the steps file from the parsed
+// model — so shifting positions can never alter another step — announced on
+// the terminal, and recorded in NOTES.md; an invalid one is rejected with the
+// reason recorded in FIXES.md, never applied. cfg.MaxPlanChanges bounds the
+// applied proposals per run, and the file is removed once processed so no
+// proposal is judged twice. Applied changes are plan activity, not step
+// progress: they leave the completed-step count untouched, so the stall
+// counter (updated after this runs) never resets for them and a worker cannot
+// dodge stall detection by proposing forever.
+func (o *Orchestrator) processProposals() {
+	if o.cfg.MaxPlanChanges <= 0 || !o.files.Exists(proposalsFile) {
+		return
+	}
+	content, err := o.files.Read(proposalsFile)
+	if err != nil {
+		fmt.Fprintf(o.terminal, "determined: could not read %s: %v\n", proposalsFile, err)
+		return
+	}
+	proposals := parseProposals(content)
+	if len(proposals) == 0 {
+		return
+	}
+	raw, err := o.files.Read(o.cfg.StepsFile)
+	if err != nil {
+		// Leave the proposals for the next iteration; the loop surfaces the
+		// read failure itself.
+		return
+	}
+	steps := ParseSteps(raw)
+	applied := 0
+	for _, p := range proposals {
+		if o.planChangesUsed >= o.cfg.MaxPlanChanges {
+			o.rejectProposal(p, "plan-change budget exhausted")
+			continue
+		}
+		after, change, reason := judgeProposal(steps, p)
+		if reason == "" && !completedStepsPreserved(steps, after) {
+			// Unreachable by construction — the per-action rules forbid
+			// touching a checked step — but judged by effect anyway, exactly
+			// like a replan.
+			reason = "applying it would lose a completed step"
+		}
+		if reason != "" {
+			o.rejectProposal(p, reason)
+			continue
+		}
+		steps = after
+		o.planChangesUsed++
+		applied++
+		o.recordPlanChange(p, change)
+	}
+	if applied > 0 {
+		if err := o.files.Write(o.cfg.StepsFile, renderSteps(steps)); err != nil {
+			fmt.Fprintf(o.terminal, "determined: could not write the plan changes to %s: %v\n",
+				o.cfg.StepsFile, err)
+		}
+	}
+	if err := o.files.Remove(proposalsFile); err != nil {
+		fmt.Fprintf(o.terminal, "determined: could not remove %s: %v\n", proposalsFile, err)
+	}
+}
+
+// recordPlanChange announces an applied proposal on the terminal and appends
+// it to NOTES.md. NOTES.md over FIXES.md deliberately: an applied change is
+// knowledge later invocations need — the plan they are working on changed —
+// which is exactly what the cross-iteration memory file carries and where
+// every step prompt already tells the worker to look first, while FIXES.md
+// records rejected and reopened work, which an accepted proposal is not. A
+// file error is noted and ignored: recording is an observer, never a gate.
+func (o *Orchestrator) recordPlanChange(p proposal, change string) {
+	reason := p.reason
+	if reason == "" {
+		reason = "no reason given"
+	}
+	fmt.Fprintf(o.terminal, "determined: applied plan change `%s` (%d of %d): %s; reason: %s\n",
+		p.action, o.planChangesUsed, o.cfg.MaxPlanChanges, change, reason)
+	entry := fmt.Sprintf("## Plan change\n\nApplied a worker proposal to %s: `%s` — %s. Reason: %s\n\n",
+		o.cfg.StepsFile, p.action, change, reason)
+	if err := o.files.Append("NOTES.md", entry); err != nil {
+		fmt.Fprintf(o.terminal, "determined: could not record the plan change in NOTES.md: %v\n", err)
+	}
+}
+
+// rejectProposal declines a proposal without applying it, appending which
+// proposal failed and why to FIXES.md — the file the next worker is told to
+// read first — so the worker can correct or drop the proposal instead of
+// re-submitting it blind. A file error is noted and ignored.
+func (o *Orchestrator) rejectProposal(p proposal, reason string) {
+	fmt.Fprintf(o.terminal, "determined: rejected plan proposal `%s`: %s\n", p.action, reason)
+	entry := fmt.Sprintf(
+		"## Proposal\n\nThe plan proposal `%s` (step: %q, reason given: %q) was rejected and not applied: %s.\n\n",
+		p.action, p.step, p.reason, reason)
+	if err := o.files.Append("FIXES.md", entry); err != nil {
+		fmt.Fprintf(o.terminal, "determined: could not record the rejected proposal in FIXES.md: %v\n", err)
+	}
 }
 
 // invocationKind classifies what an iteration's invocation was asked to do,
@@ -922,14 +1184,14 @@ func (o *Orchestrator) git(ctx context.Context, args ...string) (string, error) 
 
 // protectedPaths lists the files an attempt stash must never touch: STEPS.md
 // and FIXES.md hold the rejection the retry needs to see, NOTES.md is
-// cross-iteration memory, the planning files may sit uncommitted from a
-// --plan session in the same directory, the run report and stall handoff are
-// the orchestrator's own output, and the log directory holds the run's own
-// iteration logs.
+// cross-iteration memory, PROPOSALS.md may hold plan proposals awaiting
+// judgment, the planning files may sit uncommitted from a --plan session in
+// the same directory, the run report and stall handoff are the orchestrator's
+// own output, and the log directory holds the run's own iteration logs.
 func (o *Orchestrator) protectedPaths() []string {
 	paths := []string{
 		o.cfg.PlanFile, o.cfg.StepsFile, o.cfg.StopFile,
-		"NOTES.md", "FIXES.md", "GOAL.md", "QUESTIONS.md", "ANSWERS.md", "OVERSIZED.md",
+		"NOTES.md", "FIXES.md", proposalsFile, "GOAL.md", "QUESTIONS.md", "ANSWERS.md", "OVERSIZED.md",
 		runReportFile, stalledReportFile,
 	}
 	if o.cfg.LogDir != "" {
@@ -1216,8 +1478,27 @@ func (o *Orchestrator) iterationPrompt() (string, iterationIntent, error) {
 	if records := o.stashes[stepKey(step)]; len(records) > 0 {
 		prompt += stashNote(records[len(records)-1].hash)
 	}
+	if o.cfg.MaxPlanChanges > 0 {
+		prompt += proposalNote
+	}
 	return prompt, iterationIntent{kind: invocationStep, target: i}, nil
 }
+
+// proposalNote extends a step prompt when the proposal channel is open
+// (cfg.MaxPlanChanges > 0). The tamper guard makes direct plan edits futile,
+// so without this note a worker that discovers the plan is wrong could only
+// plough on; the note names the one legitimate way to change the plan, in the
+// exact format the orchestrator judges mechanically — a free-form proposal
+// would only earn a FIXES.md rejection.
+const proposalNote = " Direct STEPS.md edits beyond checking your own step's box are " +
+	"reverted. If you discover the plan itself needs to change — a step is obsolete, " +
+	"missing, or wrongly specified — append a section to PROPOSALS.md in exactly this " +
+	"format:\n\n## Proposal\naction: add-after 2\nstep: - [ ] <new step text>. " +
+	"Done when: <checkable criterion>\nreason: <why the plan must change>\n\n" +
+	"Supported actions: `add-after N` (insert the step: line after step N; 0 inserts at " +
+	"the top), `remove N`, and `reword N` (step: holds the replacement line). The " +
+	"orchestrator validates and applies proposals mechanically between iterations; only " +
+	"unchecked steps may be changed, and rejected proposals are explained in FIXES.md."
 
 // stepPrompt builds the execute instruction for a single step: work only that
 // step, meet its acceptance criterion, and check its box when done. NOTES.md
@@ -1409,10 +1690,12 @@ func reportOutcome(outcome models.Outcome) string {
 
 // removeStaleReports deletes the run-report.json and STALLED.md a previous
 // run may have left, so a fresh run never sits alongside reports describing
-// an older one. Runs before anything else, so even a run that ends at the
-// missing-files check replaces the stale reports with its own.
+// an older one — and a stale PROPOSALS.md, so plan proposals meant for an
+// older run are never applied to this one. Runs before anything else, so even
+// a run that ends at the missing-files check replaces the stale reports with
+// its own.
 func (o *Orchestrator) removeStaleReports() {
-	for _, f := range []string{runReportFile, stalledReportFile} {
+	for _, f := range []string{runReportFile, stalledReportFile, proposalsFile} {
 		if !o.files.Exists(f) {
 			continue
 		}

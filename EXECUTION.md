@@ -111,7 +111,14 @@ worker was given (see below).
     same step onward, the failed attempt is `git stash`ed so the retry starts
     from the last verified checkpoint instead of on top of work that keeps
     failing (see below).
-11. **Stall detection** — if `--max-stalled-iterations` consecutive iterations
+11. **Plan-change proposals** (`--max-plan-changes`, default **3**) — if the
+    invocation appended `## Proposal` sections to `PROPOSALS.md`, each is
+    validated mechanically against the current parsed steps and, when valid,
+    applied to `STEPS.md` by the orchestrator itself; invalid ones are
+    rejected with the reason recorded in `FIXES.md`, and the file is removed
+    once processed (see below). An applied change is plan activity, not step
+    progress: it never resets the stall counter below.
+12. **Stall detection** — if `--max-stalled-iterations` consecutive iterations
     (default **3**) finish without a newly checked step, the run first tries a
     replan of the stuck step (see below); only when no replan is available or
     the replan is ineffective does it exit **3**, writing the `STALLED.md`
@@ -130,9 +137,9 @@ mechanically, like the check gate, never by asking the tool:
 
 - `git stash push --include-untracked` captures everything the attempt
   changed since the last checkpoint, **excluding** the protocol files
-  (`PLAN.md`, `STEPS.md`, `STOP.md`, `NOTES.md`, `FIXES.md`, the planning
-  files) and the log directory, so the rejection record the retry needs to
-  read survives the stash.
+  (`PLAN.md`, `STEPS.md`, `STOP.md`, `NOTES.md`, `FIXES.md`, `PROPOSALS.md`,
+  the planning files) and the log directory, so the rejection record the
+  retry needs to read survives the stash.
 - The attempt is preserved as evidence, not discarded: a mechanical
   `## Step N` entry in `FIXES.md` records the stash's immutable commit hash
   (`stash@{N}` positions rot as new stashes push in) and a diffstat of what it
@@ -174,6 +181,67 @@ The result is judged by its effect on the file, never the tool's word:
 attempt consumes one regardless of outcome. Replanning never applies when
 every box is already checked (audit ping-pong) — there is no single stuck
 step to split.
+
+## Plan-change proposals (PROPOSALS.md)
+
+Execution discovers things planning missed — a step becomes obsolete, a
+missing step is uncovered, a criterion turns out wrong — and the tamper guard
+(rightly) reverts any direct `STEPS.md` edit beyond the worker's own box, so
+that knowledge needs a legitimate channel. Workers may **append** structured
+proposals to `PROPOSALS.md`; between iterations (after the tamper guard has
+run, before the next prompt is built) the orchestrator judges each one
+mechanically and applies the valid ones to `STEPS.md` itself. The tamper
+guard on `STEPS.md` is unchanged, and every step prompt names the channel and
+its exact format. One or more sections:
+
+```markdown
+## Proposal
+action: add-after 4
+step: - [ ] Migrate the config loader. Done when: `go test ./src/config` exits 0
+reason: step 5 assumes the new loader exists
+```
+
+Supported actions:
+
+- `add-after N` (N = 0..step count; 0 inserts at the top) — `step:` holds the
+  new step line.
+- `remove N` — remove step N, only while step N is *unchecked*: completed
+  work is never removed.
+- `reword N` — `step:` holds step N's replacement line, again only while step
+  N is unchecked.
+
+Validation is purely mechanical, judged against the current parsed steps like
+a replan is judged by its effect: the action must be one of the three above
+with an in-range index, the `step:` line (where the action needs one) must
+parse as a valid *unchecked* checkbox step carrying a non-empty `Done when:`
+criterion, and applying the proposal may never touch a checked step or change
+any other step's text, criterion, or checked state — an add or remove shifts
+positions, never content, because the orchestrator applies the change to the
+parsed model and rewrites `STEPS.md` from it (prose around the checkbox
+items, which the parser ignores anyway, does not survive that rewrite).
+
+`--max-plan-changes` (default **3**, `0` disables the channel entirely —
+proposals are then neither judged nor offered in the prompt) bounds the
+**applied** proposals per run; each applied proposal consumes one, and
+proposals beyond the budget are rejected with the reason
+`plan-change budget exhausted`. An applied proposal is announced on the
+terminal (action and reason) and recorded under a `## Plan change` heading in
+`NOTES.md` — the cross-iteration memory every worker is told to read first —
+so future invocations know the plan changed; `FIXES.md` is deliberately not
+used for that, since it records rejected and reopened work, which an accepted
+change is not. A rejected proposal is exactly such a record, though: which
+proposal failed and why is appended to `FIXES.md` under a `## Proposal`
+heading, so the next worker can correct or drop it. After processing,
+`PROPOSALS.md` is removed — no proposal is ever judged twice — and a stale
+one left by a previous run is removed at startup.
+
+Applied changes are plan activity, not step progress: they never reset the
+stall counter, so a worker cannot dodge stall detection by proposing forever.
+Rejection counts are keyed by step text and criterion, so a reworded step
+starts its rejection history fresh — consistent with how a replan reshapes
+steps. The whole-plan audit and the replan escalation are unaffected, and
+`PROPOSALS.md` joins the protocol files excluded from attempt stashes and the
+startup cleanliness check.
 
 ## The stall handoff (STALLED.md)
 
@@ -336,7 +404,8 @@ runs it.
 | `STEPS.md` | Checkbox step list with `Done when:` criteria; the loop's source of truth. Required at startup. A work invocation may only check its own step's box — the tamper guard reverts any other edit to the parsed steps. |
 | `STOP.md`  | Created by the whole-plan audit to approve the finished run, holding a short audit report plus an `evidence` fenced block naming the build/test commands the audit ran; the orchestrator re-runs those commands and accepts the file only when they all pass (see above). Deleted if it appears early or fails validation. |
 | `NOTES.md` | Cross-iteration memory (see below); created by the tool on first use. |
-| `FIXES.md` | Why the check gate, done-when check, verifier, or audit reopened a step; appended by reviewer invocations (and mechanically by a failed `--check-cmd`, a failed done-when check, or a stashed attempt), read back by the worker when it re-runs a reopened step. |
+| `FIXES.md` | Why the check gate, done-when check, verifier, or audit reopened a step; appended by reviewer invocations (and mechanically by a failed `--check-cmd`, a failed done-when check, a stashed attempt, or a rejected plan proposal), read back by the worker when it re-runs a reopened step. |
+| `PROPOSALS.md` | Structured `## Proposal` sections a worker appends to propose mid-run plan changes (see above); judged mechanically and removed by the orchestrator between iterations, excluded from attempt stashes like the other protocol files, and a stale one is removed at startup. |
 | `run-report.json` | Machine-readable summary written by the orchestrator on every termination of the execute loop (see above); a stale one is removed at startup. |
 | `STALLED.md` | Human-readable stall handoff written by the orchestrator only on a stalled exit (see above): the stuck step, its rejection reasons, stashed attempts, and the run's counters. A stale one is removed at startup; a non-stall exit leaves none behind. |
 
