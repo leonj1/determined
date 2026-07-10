@@ -2220,6 +2220,227 @@ func TestStallHandoffWriteFailureDoesNotChangeTheOutcome(t *testing.T) {
 	}
 }
 
+// notifyConfig returns a config with the notify hook enabled, the wiring
+// main.go produces for --notify-cmd.
+func notifyConfig() models.Config {
+	cfg := config(0)
+	cfg.NotifyCmd = "notify-send done"
+	cfg.WorkDir = "/work/project"
+	return cfg
+}
+
+// notifyInvocation returns the single recorded `sh -c` notify invocation;
+// the tests using it run without --check-cmd, so the hook's is the only sh run.
+func (r *fakeRunner) notifyInvocation(t *testing.T) models.Invocation {
+	t.Helper()
+	sh := r.shInvocations()
+	if len(sh) != 1 {
+		t.Fatalf("expected exactly one notify invocation, got %d", len(sh))
+	}
+	return sh[0]
+}
+
+// assertNotifyEnv checks a notify invocation's DET_* variables: every want
+// entry must be present with its value, and the absent names not set at all.
+func assertNotifyEnv(t *testing.T, inv models.Invocation, want map[string]string, absent ...string) {
+	t.Helper()
+	env := map[string]string{}
+	for _, kv := range inv.Env {
+		k, v, _ := strings.Cut(kv, "=")
+		env[k] = v
+	}
+	for k, v := range want {
+		if got, ok := env[k]; !ok || got != v {
+			t.Fatalf("expected notify env %s=%q, got %q in %v", k, v, got, inv.Env)
+		}
+	}
+	for _, k := range absent {
+		if _, ok := env[k]; ok {
+			t.Fatalf("expected notify env %s unset, got %v", k, inv.Env)
+		}
+	}
+}
+
+func TestNotifyCommandRunsOnSuccessWithTheOutcomeEnv(t *testing.T) {
+	fs := stepsFileStore()
+	clock := &fakeClock{now: time.Now()}
+	runner := &fakeRunner{script: func(call int, _ io.Writer) error {
+		clock.advance(14 * time.Minute)
+		switch call {
+		case 1:
+			fs.Write("STEPS.md", twoStepsFirstChecked)
+		case 2:
+			fs.Write("STEPS.md", twoStepsAllChecked)
+		case 3: // the whole-plan audit approves
+			fs.Write("STOP.md", "audit: plan satisfied")
+		}
+		return nil
+	}}
+	o := services.NewOrchestrator(runner, fs, clock, &fakeLogSink{}, io.Discard, notifyConfig())
+
+	outcome := o.Run(context.Background())
+
+	if outcome != models.OutcomeStopped || outcome.ExitCode() != 0 {
+		t.Fatalf("expected a clean completion, got %v (exit %d)", outcome, outcome.ExitCode())
+	}
+	notify := runner.notifyInvocation(t)
+	if got := strings.Join(notify.Args, " "); got != "-c notify-send done" {
+		t.Fatalf("expected the notify command run via `sh -c`, got %q", got)
+	}
+	assertNotifyEnv(t, notify, map[string]string{
+		"DET_OUTCOME": "success",
+		"DET_EXIT":    "0",
+		"DET_WALL":    "42m",
+		"DET_DIR":     "/work/project",
+	}, "DET_STEP")
+}
+
+func TestNotifyCommandRunsOnStallNamingTheStuckStep(t *testing.T) {
+	cfg := notifyConfig()
+	cfg.MaxStalledIterations = 2
+	fs := stepsFileStore()
+	reportAtNotify, handoffAtNotify := false, false
+	runner := &fakeRunner{}
+	runner.script = func(call int, _ io.Writer) error {
+		switch call {
+		case 1: // step 1 lands; step 2 never does
+			fs.Write("STEPS.md", twoStepsFirstChecked)
+		case 4: // the notify hook runs after 2 stalled iterations end the run
+			reportAtNotify = fs.Exists("run-report.json")
+			handoffAtNotify = fs.Exists("STALLED.md")
+		}
+		return nil
+	}
+	o := services.NewOrchestrator(runner, fs, &fakeClock{now: time.Now()}, &fakeLogSink{}, io.Discard, cfg)
+
+	outcome := o.Run(context.Background())
+
+	if outcome != models.OutcomeStalled || outcome.ExitCode() != 3 {
+		t.Fatalf("expected a stalled stop, got %v (exit %d)", outcome, outcome.ExitCode())
+	}
+	if !reportAtNotify || !handoffAtNotify {
+		t.Fatal("expected the notify hook to run only after the reports are written")
+	}
+	assertNotifyEnv(t, runner.notifyInvocation(t), map[string]string{
+		"DET_OUTCOME": "stalled",
+		"DET_EXIT":    "3",
+		"DET_STEP":    "2",
+		"DET_DIR":     "/work/project",
+	})
+}
+
+func TestNotifyCommandRunsOnToolFailureAbort(t *testing.T) {
+	runner := &fakeRunner{script: func(call int, _ io.Writer) error {
+		if call == 1 {
+			return errors.New("droid: rate limited")
+		}
+		return nil
+	}}
+	o := services.NewOrchestrator(runner, stepsFileStore(), &fakeClock{now: time.Now()}, &fakeLogSink{}, io.Discard, notifyConfig())
+
+	outcome := o.Run(context.Background())
+
+	if outcome != models.OutcomeDroidFailed || outcome.ExitCode() != 1 {
+		t.Fatalf("expected a tool-failure abort, got %v (exit %d)", outcome, outcome.ExitCode())
+	}
+	assertNotifyEnv(t, runner.notifyInvocation(t), map[string]string{
+		"DET_OUTCOME": "failed",
+		"DET_EXIT":    "1",
+	}, "DET_STEP")
+}
+
+func TestNotifyCommandFailureDoesNotChangeTheOutcome(t *testing.T) {
+	fs := stepsFileStore()
+	var terminal bytes.Buffer
+	runner := &fakeRunner{script: func(call int, _ io.Writer) error {
+		switch call {
+		case 1:
+			fs.Write("STEPS.md", twoStepsFirstChecked)
+		case 2:
+			fs.Write("STEPS.md", twoStepsAllChecked)
+		case 3: // the whole-plan audit approves
+			fs.Write("STOP.md", "audit: plan satisfied")
+		case 4: // the notify command itself fails
+			return errors.New("exit status 1")
+		}
+		return nil
+	}}
+	o := services.NewOrchestrator(runner, fs, &fakeClock{now: time.Now()}, &fakeLogSink{}, &terminal, notifyConfig())
+
+	outcome := o.Run(context.Background())
+
+	if outcome != models.OutcomeStopped || outcome.ExitCode() != 0 {
+		t.Fatalf("expected the failed notify to leave the outcome alone, got %v (exit %d)", outcome, outcome.ExitCode())
+	}
+	if !strings.Contains(terminal.String(), "notify command failed") {
+		t.Fatalf("expected a terminal warning about the failed notify, got:\n%s", terminal.String())
+	}
+}
+
+func TestNotifyCommandDisabledRunsNoShellInvocations(t *testing.T) {
+	fs := stepsFileStore() // config() leaves NotifyCmd empty
+	runner := &fakeRunner{script: func(call int, _ io.Writer) error {
+		switch call {
+		case 1:
+			fs.Write("STEPS.md", twoStepsFirstChecked)
+		case 2:
+			fs.Write("STEPS.md", twoStepsAllChecked)
+		case 3: // the whole-plan audit approves
+			fs.Write("STOP.md", "audit: plan satisfied")
+		}
+		return nil
+	}}
+	o := services.NewOrchestrator(runner, fs, &fakeClock{now: time.Now()}, &fakeLogSink{}, io.Discard, config(0))
+
+	outcome := o.Run(context.Background())
+
+	if outcome != models.OutcomeStopped {
+		t.Fatalf("expected a clean completion, got %v", outcome)
+	}
+	if got := runner.shInvocations(); len(got) != 0 {
+		t.Fatalf("expected no sh invocations with --notify-cmd unset, got %d", len(got))
+	}
+}
+
+// ctxAwareRunner extends fakeRunner with real context behaviour: an
+// invocation run on an already-cancelled context fails, like a real child
+// killed by exec.CommandContext.
+type ctxAwareRunner struct{ fakeRunner }
+
+func (r *ctxAwareRunner) Run(ctx context.Context, inv models.Invocation, out io.Writer) error {
+	if err := r.fakeRunner.Run(ctx, inv, out); err != nil {
+		return err
+	}
+	return ctx.Err()
+}
+
+func TestNotifyCommandRunsEvenWhenTheRunIsInterrupted(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var terminal bytes.Buffer
+	runner := &ctxAwareRunner{}
+	runner.script = func(call int, _ io.Writer) error {
+		if call == 1 { // Ctrl-C lands mid-invocation
+			cancel()
+		}
+		return nil
+	}
+	o := services.NewOrchestrator(runner, stepsFileStore(), &fakeClock{now: time.Now()}, &fakeLogSink{}, &terminal, notifyConfig())
+
+	outcome := o.Run(ctx)
+
+	if outcome != models.OutcomeInterrupted || outcome.ExitCode() != 1 {
+		t.Fatalf("expected an interrupted stop, got %v (exit %d)", outcome, outcome.ExitCode())
+	}
+	assertNotifyEnv(t, runner.notifyInvocation(t), map[string]string{
+		"DET_OUTCOME": "failed",
+		"DET_EXIT":    "1",
+	}, "DET_STEP")
+	if strings.Contains(terminal.String(), "notify command failed") {
+		t.Fatalf("expected the notify to run on a fresh context, not the cancelled one, got:\n%s", terminal.String())
+	}
+}
+
 func TestRunAbortsWhenStepsFileVanishesMidRun(t *testing.T) {
 	fs := stepsFileStore()
 	runner := &fakeRunner{script: func(int, io.Writer) error {

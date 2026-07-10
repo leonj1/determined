@@ -61,6 +61,23 @@ func TestRunnerReportsFailureWhenToolIsMissing(t *testing.T) {
 	}
 }
 
+func TestRunnerAppendsInvocationEnvToTheInheritedEnvironment(t *testing.T) {
+	t.Setenv("DET_TEST_INHERITED", "kept")
+	runner := clients.NewExecCommandRunner()
+	var out bytes.Buffer
+	inv := models.Invocation{
+		Binary: "sh",
+		Args:   []string{"-c", "echo $DET_OUTCOME $DET_TEST_INHERITED"},
+		Env:    []string{"DET_OUTCOME=success"},
+	}
+
+	err := runner.Run(context.Background(), inv, &out)
+
+	if err != nil || strings.TrimSpace(out.String()) != "success kept" {
+		t.Fatalf("expected the child to see the injected and inherited env, got %q (err %v)", out.String(), err)
+	}
+}
+
 func TestUserCanManageProtocolFiles(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "ANSWERS.md")

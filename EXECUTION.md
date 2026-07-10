@@ -247,6 +247,31 @@ Fields that do not apply to a run are omitted rather than written empty.
 Writing the report never changes the run's outcome: a write failure is warned
 to the terminal and ignored.
 
+## The exit notification (--notify-cmd)
+
+Nothing else tells the user an unattended run finished. `--notify-cmd`
+(default **off**) runs a shell command once via `sh -c` when the execute run
+ends — on **every** termination: success, stall, tool-failure abort,
+exhausted budget, interruption, even missing protocol files — after
+`run-report.json` (and, on a stall, `STALLED.md`) is written. The run's
+terminal state is exported to the command as environment variables, appended
+to the inherited environment:
+
+| Variable | Value |
+|----------|-------|
+| `DET_OUTCOME` | `success`, `stalled`, or `failed` — the same mapping `run-report.json` uses. |
+| `DET_EXIT` | The process exit code the run returns (`0`, `1`, or `3`). |
+| `DET_STEP` | The 1-based stuck step, mirroring the report's `stuck_step`; set only when a stalled run has one to name, unset otherwise. |
+| `DET_WALL` | The run's wall time in the same human format `STALLED.md` uses (e.g. `42m`). |
+| `DET_DIR` | The working directory's absolute path. |
+
+The command's output streams to the terminal. It is deliberately not bound to
+the run's own context: an interrupted (`SIGINT`/`SIGTERM`) run still
+notifies, on a fresh context bounded by a 1-minute timeout. Like the reports,
+the hook is an observer — a failing or timed-out command is warned to the
+terminal and ignored, never changing the run's exit code. Plan mode never
+runs it.
+
 ## Protocol files
 
 | File       | Role                                                              |

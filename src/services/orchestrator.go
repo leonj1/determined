@@ -99,7 +99,8 @@ func NewOrchestrator(
 // missing protocol files — also writes the machine-readable run-report.json
 // summary, built from state the loop already tracks; a stalled termination
 // additionally writes the human-readable STALLED.md handoff from the same
-// state. Reporting is an observer and never changes the outcome.
+// state. Once the reports are written, the --notify-cmd exit hook runs.
+// Reporting and notification are observers and never change the outcome.
 func (o *Orchestrator) Run(ctx context.Context) models.Outcome {
 	start := o.clock.Now()
 	o.removeStaleReports()
@@ -109,6 +110,7 @@ func (o *Orchestrator) Run(ctx context.Context) models.Outcome {
 		report = stalledReportFile
 	}
 	o.writeRunReport(outcome, start, report)
+	o.runNotifyCmd(outcome, start)
 	return outcome
 }
 
@@ -1231,6 +1233,45 @@ func (o *Orchestrator) reportRejections(steps []Step) map[string]int {
 		rejections[label] += len(reasons)
 	}
 	return rejections
+}
+
+// notifyCmdTimeout bounds the notify command so a hung notification hook
+// cannot keep a finished run from exiting.
+const notifyCmdTimeout = time.Minute
+
+// runNotifyCmd runs the --notify-cmd exit hook once, after the reports are
+// written, exporting the run's terminal state as DET_* environment variables
+// so an unattended run can announce how it ended. It deliberately ignores the
+// run context: an interrupted run must still notify, so the command gets a
+// fresh context bounded by notifyCmdTimeout instead of the already-cancelled
+// one. Like reporting, the hook is an observer: a failing or timed-out
+// command is warned to the terminal and ignored, never changing the outcome.
+func (o *Orchestrator) runNotifyCmd(outcome models.Outcome, start time.Time) {
+	if o.cfg.NotifyCmd == "" {
+		return
+	}
+	env := []string{
+		"DET_OUTCOME=" + reportOutcome(outcome),
+		"DET_EXIT=" + strconv.Itoa(outcome.ExitCode()),
+		"DET_WALL=" + formatDuration(o.clock.Now().Sub(start)),
+		"DET_DIR=" + o.cfg.WorkDir,
+	}
+	if outcome == models.OutcomeStalled {
+		// DET_STEP mirrors the run report's stuck_step: the first unchecked
+		// step, set only when a stalled run has one to name.
+		if i, _, ok := NextIncompleteStep(o.parsedSteps()); ok {
+			env = append(env, "DET_STEP="+strconv.Itoa(i+1))
+		}
+	}
+	fmt.Fprintf(o.terminal, "determined: running notify command: %s\n", o.cfg.NotifyCmd)
+	runCtx, cancel := context.WithTimeout(context.Background(), notifyCmdTimeout)
+	defer cancel()
+	err := o.runner.Run(runCtx,
+		models.Invocation{Binary: "sh", Args: []string{"-c", o.cfg.NotifyCmd}, Env: env},
+		o.terminal)
+	if err != nil {
+		fmt.Fprintf(o.terminal, "determined: warning: notify command failed: %v\n", err)
+	}
 }
 
 // writeStalledReport writes the STALLED.md handoff on a stalled termination

@@ -6,6 +6,9 @@ import "time"
 type Invocation struct {
 	Binary string
 	Args   []string
+	// Env lists extra KEY=value pairs appended to the inherited environment
+	// when the invocation runs; nil runs with the inherited environment alone.
+	Env []string
 }
 
 // Config holds everything one orchestrator run needs.
@@ -56,6 +59,16 @@ type Config struct {
 	// repository, and a working tree that starts the run clean apart from the
 	// protocol files; otherwise the run degrades to retrying in place.
 	StashAttempts bool
+	// NotifyCmd, when non-empty, is a shell command (run via `sh -c`) run once
+	// at the end of every execute run — success, stall, failure, or
+	// interruption — after the reports are written, with the run's terminal
+	// state exported as DET_* environment variables. A failing or timed-out
+	// command is warned and ignored; it never changes the run's exit code.
+	// Empty disables the hook.
+	NotifyCmd string
+	// WorkDir is the working directory's absolute path, exported to the
+	// notify command as DET_DIR.
+	WorkDir string
 	// LogDir is the per-iteration log directory; attempt stashes and the
 	// startup cleanliness check exclude it alongside the protocol files.
 	LogDir string

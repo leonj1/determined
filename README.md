@@ -51,6 +51,11 @@ work. Unlike the one-liner, it does not trust the tool's word for progress:
   was rejected, and the stashed attempts to inspect — built mechanically from
   data the orchestrator already tracks, with no extra AI invocation (see
   [EXECUTION.md](EXECUTION.md)).
+- **Exit notification** (`--notify-cmd`) — optionally run a shell command
+  once when the run ends — success, stall, failure, even interruption —
+  after the reports are written, with the outcome exported as `DET_*`
+  environment variables; a failing hook is warned and ignored (see
+  [EXECUTION.md](EXECUTION.md)).
 
 It has two modes:
 
@@ -139,6 +144,7 @@ codes.
 | `--verify`       | `true`   | After each newly checked step, run an independent verifier invocation that unchecks it (recording why in `FIXES.md`) if its acceptance criterion is not met. |
 | `--git-checkpoint` | `true` | Git-commit the working tree after each verified step when running in a git repository. |
 | `--check-cmd`    | —        | Shell command (run via `sh -c`) that must succeed after each iteration that checks a step; on failure the step is unchecked and the output tail recorded in `FIXES.md`. Empty disables the gate. |
+| `--notify-cmd`   | —        | Shell command (run via `sh -c`) run once when the execute run ends — however it ends — after the reports are written, with the outcome exported as `DET_*` environment variables. A failure is warned and ignored. Empty disables the hook. |
 | `--max-replans`  | `1`      | When the stall cap is hit, ask the tool to replace the stuck step with smaller steps instead of stopping, at most this many times per run. `0` disables replanning. |
 | `--stash-attempts` | `true` | From a step's second rejection on, `git stash` the failed attempt (recording its hash and diffstat in `FIXES.md`) so retries start from the last verified checkpoint. Needs `--git-checkpoint` and a working tree that starts the run clean; otherwise retries build in place as before. |
 | `--log-dir`      | `logs`   | Directory for per-iteration log files.                          |
