@@ -3,6 +3,7 @@ package services_test
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -1752,6 +1753,263 @@ func TestStashingRequiresGitCheckpointing(t *testing.T) {
 	}
 	if got := runner.gitInvocations(); len(got) != 0 {
 		t.Fatalf("expected no git commands at all with checkpointing off, got %d", len(got))
+	}
+}
+
+// readRunReport decodes the run-report.json a run left in the file store.
+func readRunReport(t *testing.T, fs services.FileStore) map[string]any {
+	t.Helper()
+	content, err := fs.Read("run-report.json")
+	if err != nil {
+		t.Fatalf("expected run-report.json to be written: %v", err)
+	}
+	var report map[string]any
+	if err := json.Unmarshal([]byte(content), &report); err != nil {
+		t.Fatalf("run-report.json is not valid JSON: %v\n%s", err, content)
+	}
+	return report
+}
+
+// assertReportFields checks each named field of the decoded report; JSON
+// numbers decode as float64.
+func assertReportFields(t *testing.T, report map[string]any, want map[string]any) {
+	t.Helper()
+	for field, v := range want {
+		if report[field] != v {
+			t.Fatalf("expected report %s = %v, got %v", field, v, report[field])
+		}
+	}
+}
+
+// assertReportSteps checks the report's steps tally.
+func assertReportSteps(t *testing.T, report map[string]any, total, checked int) {
+	t.Helper()
+	steps, ok := report["steps"].(map[string]any)
+	if !ok || steps["total"] != float64(total) || steps["checked"] != float64(checked) {
+		t.Fatalf("expected %d of %d steps checked in the report, got %v", checked, total, report["steps"])
+	}
+}
+
+func TestRunReportWrittenOnSuccess(t *testing.T) {
+	cfg := config(0)
+	cfg.LogDir = "logs"
+	fs := stepsFileStore()
+	fs.Write("run-report.json", `{"outcome":"stalled"}`) // stale report from a previous run
+	clock := &fakeClock{now: time.Now()}
+	staleAtFirstIteration := false
+	runner := &fakeRunner{script: func(call int, _ io.Writer) error {
+		clock.advance(time.Minute)
+		switch call {
+		case 1:
+			staleAtFirstIteration = fs.Exists("run-report.json")
+			fs.Write("STEPS.md", twoStepsFirstChecked)
+		case 2:
+			fs.Write("STEPS.md", twoStepsAllChecked)
+		case 3: // the whole-plan audit approves
+			fs.Write("STOP.md", "audit: plan satisfied")
+		}
+		return nil
+	}}
+	o := services.NewOrchestrator(runner, fs, clock, &fakeLogSink{}, io.Discard, cfg)
+
+	outcome := o.Run(context.Background())
+
+	if outcome != models.OutcomeStopped || outcome.ExitCode() != 0 {
+		t.Fatalf("expected a clean completion, got %v (exit %d)", outcome, outcome.ExitCode())
+	}
+	if staleAtFirstIteration {
+		t.Fatal("expected the stale run-report.json removed at startup")
+	}
+	report := readRunReport(t, fs)
+	assertReportFields(t, report, map[string]any{
+		"outcome":      "success",
+		"exit":         float64(0),
+		"iterations":   float64(3),
+		"wall_seconds": float64(180),
+		"log_dir":      "logs",
+	})
+	assertReportSteps(t, report, 2, 2)
+	for _, absent := range []string{"stuck_step", "rejections", "replans_used"} {
+		if _, ok := report[absent]; ok {
+			t.Fatalf("expected %s omitted from a clean run's report, got %v", absent, report[absent])
+		}
+	}
+}
+
+func TestRunReportWrittenOnStall(t *testing.T) {
+	cfg := config(0)
+	cfg.MaxStalledIterations = 3
+	fs := stepsFileStore()
+	runner := &fakeRunner{script: func(call int, _ io.Writer) error {
+		if call == 1 { // step 1 lands; step 2 never does
+			fs.Write("STEPS.md", twoStepsFirstChecked)
+		}
+		return nil
+	}}
+	o := services.NewOrchestrator(runner, fs, &fakeClock{now: time.Now()}, &fakeLogSink{}, io.Discard, cfg)
+
+	outcome := o.Run(context.Background())
+
+	if outcome != models.OutcomeStalled || outcome.ExitCode() != 3 {
+		t.Fatalf("expected a stalled stop, got %v (exit %d)", outcome, outcome.ExitCode())
+	}
+	report := readRunReport(t, fs)
+	assertReportFields(t, report, map[string]any{
+		"outcome":    "stalled",
+		"exit":       float64(3),
+		"stuck_step": float64(2),
+		"iterations": float64(4),
+	})
+	assertReportSteps(t, report, 2, 1)
+}
+
+func TestRunReportWrittenOnToolFailureAbort(t *testing.T) {
+	fs := stepsFileStore()
+	runner := &fakeRunner{script: func(call int, _ io.Writer) error {
+		if call == 2 {
+			return errors.New("droid: rate limited")
+		}
+		return nil
+	}}
+	o := services.NewOrchestrator(runner, fs, &fakeClock{now: time.Now()}, &fakeLogSink{}, io.Discard, config(0))
+
+	outcome := o.Run(context.Background())
+
+	if outcome != models.OutcomeDroidFailed || outcome.ExitCode() != 1 {
+		t.Fatalf("expected a tool-failure abort, got %v (exit %d)", outcome, outcome.ExitCode())
+	}
+	report := readRunReport(t, fs)
+	assertReportFields(t, report, map[string]any{
+		"outcome":    "failed",
+		"exit":       float64(1),
+		"iterations": float64(2),
+	})
+	assertReportSteps(t, report, 2, 0)
+}
+
+func TestRunReportWrittenWhenProtocolFilesMissing(t *testing.T) {
+	fs := newFakeFileStore()
+	o := services.NewOrchestrator(&fakeRunner{}, fs, &fakeClock{now: time.Now()}, &fakeLogSink{}, io.Discard, config(0))
+
+	outcome := o.Run(context.Background())
+
+	if outcome != models.OutcomeMissingFiles {
+		t.Fatalf("expected a missing-files abort, got %v", outcome)
+	}
+	report := readRunReport(t, fs)
+	assertReportFields(t, report, map[string]any{
+		"outcome":    "failed",
+		"exit":       float64(1),
+		"iterations": float64(0),
+	})
+	if _, ok := report["steps"]; ok {
+		t.Fatalf("expected the steps tally omitted with no steps file, got %v", report["steps"])
+	}
+}
+
+func TestRunReportRecordsPerStepRejections(t *testing.T) {
+	cfg := config(0)
+	cfg.Verify = true
+	fs := stepsFileStore()
+	runner := &fakeRunner{script: func(call int, _ io.Writer) error {
+		switch call {
+		case 1: // work: check step 1
+			fs.Write("STEPS.md", twoStepsFirstChecked)
+		case 2: // verifier rejects step 1
+			fs.Write("STEPS.md", twoStepsNoneChecked)
+		case 3: // work re-runs step 1
+			fs.Write("STEPS.md", twoStepsFirstChecked)
+		case 4: // verifier approves this time
+		case 5: // work: check step 2
+			fs.Write("STEPS.md", twoStepsAllChecked)
+		case 6: // verifier approves
+		case 7: // the whole-plan audit approves
+			fs.Write("STOP.md", "audit: plan satisfied")
+		}
+		return nil
+	}}
+	o := services.NewOrchestrator(runner, fs, &fakeClock{now: time.Now()}, &fakeLogSink{}, io.Discard, cfg)
+
+	outcome := o.Run(context.Background())
+
+	if outcome != models.OutcomeStopped {
+		t.Fatalf("expected a clean completion, got %v", outcome)
+	}
+	report := readRunReport(t, fs)
+	rejections, ok := report["rejections"].(map[string]any)
+	if !ok || len(rejections) != 1 || rejections["1"] != float64(1) {
+		t.Fatalf("expected the report to count step 1's rejection once, got %v", report["rejections"])
+	}
+	assertReportFields(t, report, map[string]any{"outcome": "success", "iterations": float64(7)})
+}
+
+func TestRunReportRecordsReplansUsed(t *testing.T) {
+	cfg := config(0)
+	cfg.MaxStalledIterations = 2
+	cfg.MaxReplans = 1
+	fs := stepsFileStore()
+	runner := &fakeRunner{script: func(call int, _ io.Writer) error {
+		if call == 3 { // the only replan splits step 1; nothing else ever progresses
+			fs.Write("STEPS.md", splitStepsNoneChecked)
+		}
+		return nil
+	}}
+	o := services.NewOrchestrator(runner, fs, &fakeClock{now: time.Now()}, &fakeLogSink{}, io.Discard, cfg)
+
+	outcome := o.Run(context.Background())
+
+	if outcome != models.OutcomeStalled {
+		t.Fatalf("expected the run to stall once the replan budget is spent, got %v", outcome)
+	}
+	report := readRunReport(t, fs)
+	assertReportFields(t, report, map[string]any{
+		"outcome":      "stalled",
+		"replans_used": float64(1),
+		"stuck_step":   float64(1),
+		"iterations":   float64(5),
+	})
+	assertReportSteps(t, report, 3, 0)
+}
+
+// failingWriteStore wraps a fakeFileStore, failing every write to one path.
+type failingWriteStore struct {
+	*fakeFileStore
+	failPath string
+}
+
+func (s *failingWriteStore) Write(path, content string) error {
+	if path == s.failPath {
+		return errors.New("disk full")
+	}
+	return s.fakeFileStore.Write(path, content)
+}
+
+func TestRunReportWriteFailureDoesNotChangeTheOutcome(t *testing.T) {
+	fs := &failingWriteStore{fakeFileStore: stepsFileStore(), failPath: "run-report.json"}
+	var terminal bytes.Buffer
+	runner := &fakeRunner{script: func(call int, _ io.Writer) error {
+		switch call {
+		case 1:
+			fs.Write("STEPS.md", twoStepsFirstChecked)
+		case 2:
+			fs.Write("STEPS.md", twoStepsAllChecked)
+		case 3: // the whole-plan audit approves
+			fs.Write("STOP.md", "audit: plan satisfied")
+		}
+		return nil
+	}}
+	o := services.NewOrchestrator(runner, fs, &fakeClock{now: time.Now()}, &fakeLogSink{}, &terminal, config(0))
+
+	outcome := o.Run(context.Background())
+
+	if outcome != models.OutcomeStopped || outcome.ExitCode() != 0 {
+		t.Fatalf("expected the failed report write to leave the outcome alone, got %v (exit %d)", outcome, outcome.ExitCode())
+	}
+	if !strings.Contains(terminal.String(), "could not write run-report.json") {
+		t.Fatalf("expected a terminal warning about the failed report write, got:\n%s", terminal.String())
+	}
+	if fs.Exists("run-report.json") {
+		t.Fatal("expected no run-report.json after the failed write")
 	}
 }
 

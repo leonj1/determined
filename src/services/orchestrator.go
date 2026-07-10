@@ -3,8 +3,10 @@ package services
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
+	"strconv"
 	"strings"
 	"time"
 
@@ -90,8 +92,21 @@ func NewOrchestrator(
 	}
 }
 
-// Run executes the loop and returns the terminal outcome.
+// Run executes the loop and returns the terminal outcome. Every termination —
+// success, stall, tool-failure abort, exhausted budget, interruption, even
+// missing protocol files — also writes the machine-readable run-report.json
+// summary, built from state the loop already tracks; reporting is an observer
+// and never changes the outcome.
 func (o *Orchestrator) Run(ctx context.Context) models.Outcome {
+	start := o.clock.Now()
+	o.removeStaleReport()
+	outcome := o.run(ctx)
+	o.writeRunReport(outcome, start)
+	return outcome
+}
+
+// run is the execute loop proper.
+func (o *Orchestrator) run(ctx context.Context) models.Outcome {
 	if !o.protocolFilesPresent() {
 		return models.OutcomeMissingFiles
 	}
@@ -676,12 +691,13 @@ func (o *Orchestrator) git(ctx context.Context, args ...string) (string, error) 
 // protectedPaths lists the files an attempt stash must never touch: STEPS.md
 // and FIXES.md hold the rejection the retry needs to see, NOTES.md is
 // cross-iteration memory, the planning files may sit uncommitted from a
-// --plan session in the same directory, and the log directory holds the run's
-// own iteration logs.
+// --plan session in the same directory, the run report is the orchestrator's
+// own output, and the log directory holds the run's own iteration logs.
 func (o *Orchestrator) protectedPaths() []string {
 	paths := []string{
 		o.cfg.PlanFile, o.cfg.StepsFile, o.cfg.StopFile,
 		"NOTES.md", "FIXES.md", "GOAL.md", "QUESTIONS.md", "ANSWERS.md", "OVERSIZED.md",
+		runReportFile,
 	}
 	if o.cfg.LogDir != "" {
 		paths = append(paths, o.cfg.LogDir)
@@ -1046,4 +1062,129 @@ func (o *Orchestrator) budgetExceeded(deadline time.Time) bool {
 		return false
 	}
 	return !o.clock.Now().Before(deadline)
+}
+
+// runReportFile is where every execute run writes its machine-readable
+// summary, alongside the protocol files in the working directory.
+const runReportFile = "run-report.json"
+
+// runReport is the summary written to runReportFile on every termination of
+// the execute loop, so success and failure report symmetrically instead of
+// success getting STOP.md and everything else just an exit code. Fields that
+// do not apply to a run are omitted rather than written empty.
+type runReport struct {
+	// Outcome is a short machine string: "success", "stalled", or "failed".
+	Outcome string `json:"outcome"`
+	// Exit mirrors the process exit code the run returns.
+	Exit int `json:"exit"`
+	// Steps summarizes the final steps file; omitted when nothing parses.
+	Steps *runReportSteps `json:"steps,omitempty"`
+	// StuckStep is the 1-based step a stalled run could not get past; present
+	// only when the run stalled.
+	StuckStep int `json:"stuck_step,omitempty"`
+	// Rejections counts, per step, how many times the check gate, verifier,
+	// or audit rejected a checked box, keyed by the step's current number (or
+	// by its text, when a replan removed the step from the file).
+	Rejections map[string]int `json:"rejections,omitempty"`
+	// ReplansUsed is how many replan invocations the run spent on stuck steps.
+	ReplansUsed int `json:"replans_used,omitempty"`
+	// Iterations is the run's total tool invocations: work, verify, audit,
+	// and replan alike.
+	Iterations int `json:"iterations"`
+	// WallSeconds is the run's wall-clock duration.
+	WallSeconds int `json:"wall_seconds"`
+	// LogDir is where the per-iteration logs were written.
+	LogDir string `json:"log_dir,omitempty"`
+}
+
+// runReportSteps is the report's step tally: how many steps the final steps
+// file holds and how many of them are checked.
+type runReportSteps struct {
+	Total   int `json:"total"`
+	Checked int `json:"checked"`
+}
+
+// reportOutcome maps the run's terminal outcome onto the report's machine
+// string: "success" for a clean completion, "stalled" for a no-progress stop,
+// and "failed" for every other termination (tool-failure abort, exhausted
+// budget, interruption, missing protocol files) — the same grouping
+// Outcome.ExitCode uses.
+func reportOutcome(outcome models.Outcome) string {
+	switch outcome {
+	case models.OutcomeStopped:
+		return "success"
+	case models.OutcomeStalled:
+		return "stalled"
+	default:
+		return "failed"
+	}
+}
+
+// removeStaleReport deletes a run-report.json left by a previous run, so a
+// fresh run never sits alongside a report describing an older one. Runs
+// before anything else, so even a run that ends at the missing-files check
+// replaces the stale report with its own.
+func (o *Orchestrator) removeStaleReport() {
+	if !o.files.Exists(runReportFile) {
+		return
+	}
+	if err := o.files.Remove(runReportFile); err != nil {
+		fmt.Fprintf(o.terminal, "determined: warning: could not remove stale %s: %v\n",
+			runReportFile, err)
+	}
+}
+
+// writeRunReport writes the machine-readable run summary, built entirely from
+// state the loop already tracks. Reporting is an observer, never a
+// participant: a write failure is warned to the terminal and ignored, so it
+// can never change the run's outcome.
+func (o *Orchestrator) writeRunReport(outcome models.Outcome, start time.Time) {
+	steps := o.parsedSteps()
+	report := runReport{
+		Outcome:     reportOutcome(outcome),
+		Exit:        outcome.ExitCode(),
+		Rejections:  o.reportRejections(steps),
+		ReplansUsed: o.replansUsed,
+		Iterations:  o.iteration,
+		WallSeconds: int(o.clock.Now().Sub(start) / time.Second),
+		LogDir:      o.cfg.LogDir,
+	}
+	if len(steps) > 0 {
+		report.Steps = &runReportSteps{Total: len(steps), Checked: CompletedStepCount(steps)}
+	}
+	if outcome == models.OutcomeStalled {
+		if i, _, ok := NextIncompleteStep(steps); ok {
+			report.StuckStep = i + 1
+		}
+	}
+	data, err := json.MarshalIndent(report, "", "  ")
+	if err == nil {
+		err = o.files.Write(runReportFile, string(data)+"\n")
+	}
+	if err != nil {
+		fmt.Fprintf(o.terminal, "determined: warning: could not write %s: %v\n", runReportFile, err)
+	}
+}
+
+// reportRejections rekeys the per-step rejection counts for the report: the
+// loop tracks them by step text and criterion so they survive replans, but a
+// step's current number is what a reader of the report can act on. A rejected
+// step a replan removed from the file falls back to its text as the key.
+func (o *Orchestrator) reportRejections(steps []Step) map[string]int {
+	if len(o.rejections) == 0 {
+		return nil
+	}
+	numbers := make(map[string]string, len(steps))
+	for i, s := range steps {
+		numbers[stepKey(s)] = strconv.Itoa(i + 1)
+	}
+	rejections := make(map[string]int, len(o.rejections))
+	for key, count := range o.rejections {
+		label, ok := numbers[key]
+		if !ok {
+			label = strings.SplitN(key, "\x00", 2)[0]
+		}
+		rejections[label] += count
+	}
+	return rejections
 }

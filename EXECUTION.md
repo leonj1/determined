@@ -15,6 +15,9 @@ worker was given (see below).
   directory.
 - A stale `STOP.md` sitting alongside unchecked steps is deleted with a
   warning instead of instantly ending the run as success.
+- A `run-report.json` left by a previous run is removed, so a fresh run never
+  sits alongside a report describing an older one; every termination — even
+  the missing-files exit above — writes a fresh one (see below).
 
 ## Each iteration
 
@@ -163,6 +166,45 @@ individually verified steps:
 
 Only *all steps checked + `STOP.md` present* ends the run with exit **0**.
 
+## The run report
+
+Success and failure report symmetrically: on **every** termination of the
+execute loop — success, stall, tool-failure abort, exhausted budget,
+interruption, even missing `PLAN.md`/`STEPS.md` at startup — the orchestrator
+writes a machine-readable `run-report.json` to the working directory, built
+from data it already tracks. Plan mode and usage errors (exit **2**, which
+happen before the loop runs) write no report.
+
+```json
+{
+  "outcome": "stalled",
+  "exit": 3,
+  "steps": {"total": 8, "checked": 3},
+  "stuck_step": 4,
+  "rejections": {"4": 3},
+  "replans_used": 1,
+  "iterations": 9,
+  "wall_seconds": 2520,
+  "log_dir": "logs"
+}
+```
+
+| Field | Meaning |
+|-------|---------|
+| `outcome` | `"success"` (all steps checked and the audit approved), `"stalled"` (no-progress stop), or `"failed"` (every other termination: tool failures, budget, interruption, missing files) — the same grouping the exit codes use. |
+| `exit` | The process exit code the run returns. |
+| `steps` | How many steps the final `STEPS.md` holds (`total`) and how many are checked (`checked`); omitted when nothing parses. |
+| `stuck_step` | The 1-based step a stalled run could not get past; present only when stalled. |
+| `rejections` | Per-step counts of check-gate, verifier, and audit rejections, keyed by the step's current number (or by its text, when a replan removed the step from the file); omitted when nothing was rejected. |
+| `replans_used` | Replan invocations spent on stuck steps; omitted when zero. |
+| `iterations` | Total tool invocations of the run: work, verify, audit, and replan alike. |
+| `wall_seconds` | The run's wall-clock duration. |
+| `log_dir` | Where the per-iteration logs were written. |
+
+Fields that do not apply to a run are omitted rather than written empty.
+Writing the report never changes the run's outcome: a write failure is warned
+to the terminal and ignored.
+
 ## Protocol files
 
 | File       | Role                                                              |
@@ -172,6 +214,7 @@ Only *all steps checked + `STOP.md` present* ends the run with exit **0**.
 | `STOP.md`  | Created by the whole-plan audit to approve the finished run, holding a short audit report; deleted if it appears early. |
 | `NOTES.md` | Cross-iteration memory (see below); created by the tool on first use. |
 | `FIXES.md` | Why the check gate, verifier, or audit reopened a step; appended by reviewer invocations (and mechanically by a failed `--check-cmd` or a stashed attempt), read back by the worker when it re-runs a reopened step. |
+| `run-report.json` | Machine-readable summary written by the orchestrator on every termination of the execute loop (see above); a stale one is removed at startup. |
 
 ## NOTES.md
 

@@ -42,6 +42,10 @@ work. Unlike the one-liner, it does not trust the tool's word for progress:
   attempt `git stash`ed (hash and diffstat recorded in `FIXES.md`), so the
   retry starts clean from the last verified checkpoint instead of building on
   broken work; the stashes are dropped once the step finally passes.
+- **Run report** — every execute run, however it ends (success, stall,
+  failure, interruption), writes a machine-readable `run-report.json`
+  summarizing the outcome, exit code, step tally, per-step rejections, and
+  iteration/wall-clock totals (see [EXECUTION.md](EXECUTION.md)).
 
 It has two modes:
 
@@ -136,7 +140,8 @@ codes.
 | `--version`      | —        | Print the binary's semantic version and exit.                  |
 
 The protocol filenames (`PLAN.md` / `STEPS.md` / `STOP.md` / `NOTES.md` /
-`FIXES.md`) are hardcoded; the prompt is rebuilt each iteration from the next
+`FIXES.md`) are hardcoded, as is the `run-report.json` summary every execute
+run writes on exit; the prompt is rebuilt each iteration from the next
 unchecked step in `STEPS.md`.
 
 ## Layout
