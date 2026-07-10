@@ -12,6 +12,7 @@ go build -o determined ./cmd/determined
 ./determined --version             # print the semantic version and exit
 ./determined update                # update this binary from the latest GitHub Release
 ./determined --plan "build a todo CLI"   # interview, then write PLAN.md / STEPS.md
+./determined --plan "try a todo UI" -prototype # fast experiment, minimal detail
 ```
 
 ## Versioned release build

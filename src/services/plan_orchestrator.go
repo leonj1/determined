@@ -204,10 +204,8 @@ func (o *PlanOrchestrator) useExistingGoal() (bool, error) {
 	}
 }
 
-// refine runs the step-granularity loop once a plan exists: it asks the tool to
-// flag steps that are too large to implement in one pass, then to break those
-// down, repeating until every step is small enough, the budget runs out, or the
-// pass cap is hit. A hit cap leaves the usable plan in place with a warning.
+// refine independently checks the completed plan and resolves quality findings
+// until it passes, the budget runs out, or the pass cap is hit.
 func (o *PlanOrchestrator) refine(ctx context.Context, deadline time.Time) models.Outcome {
 	if o.cfg.MaxRefinePasses == 0 {
 		return models.OutcomePlanReady // refinement disabled
@@ -223,28 +221,28 @@ func (o *PlanOrchestrator) refine(ctx context.Context, deadline time.Time) model
 		if outcome, stop := o.runInvocation(ctx, o.cfg.AssessInvocation); stop {
 			return outcome
 		}
-		content, err := o.files.Read(o.cfg.OversizedFile)
+		content, err := o.files.Read(o.cfg.AssessmentFile)
 		if err != nil {
-			fmt.Fprintf(o.terminal, "determined: could not read %s: %v\n", o.cfg.OversizedFile, err)
+			fmt.Fprintf(o.terminal, "determined: could not read %s: %v\n", o.cfg.AssessmentFile, err)
 			return models.OutcomeDroidFailed
 		}
-		oversized := OversizedSteps(content)
-		if len(oversized) == 0 {
-			o.files.Remove(o.cfg.OversizedFile)
-			return models.OutcomePlanReady // every step is small enough
+		issues := RefinementIssues(content)
+		if len(issues) == 0 {
+			o.files.Remove(o.cfg.AssessmentFile)
+			return models.OutcomePlanReady
 		}
 		if pass >= o.cfg.MaxRefinePasses {
 			fmt.Fprintf(o.terminal,
-				"determined: %d step(s) still look too large after %d refine pass(es); leaving the plan as-is\n",
-				len(oversized), pass)
-			o.files.Remove(o.cfg.OversizedFile)
+				"determined: %d planning issue(s) remain after %d refine pass(es); leaving the plan as-is\n",
+				len(issues), pass)
+			o.files.Remove(o.cfg.AssessmentFile)
 			return models.OutcomePlanReady
 		}
 
-		if outcome, stop := o.runInvocation(ctx, o.cfg.BreakdownInvocation); stop {
+		if outcome, stop := o.runInvocation(ctx, o.cfg.RefineInvocation); stop {
 			return outcome
 		}
-		o.files.Remove(o.cfg.OversizedFile)
+		o.files.Remove(o.cfg.AssessmentFile)
 	}
 }
 

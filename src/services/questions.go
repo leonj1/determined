@@ -17,11 +17,9 @@ func ParseQuestions(content string) []string {
 	return questions
 }
 
-// OversizedSteps interprets the assessor's OVERSIZED.md verdict: the markdown
-// list of steps judged too large to implement in one pass. An empty list, or a
-// lone "NONE" sentinel (in any case, with or without a list marker), means every
-// step is already small enough and refinement is complete.
-func OversizedSteps(content string) []string {
+// RefinementIssues interprets the plan assessor's findings. An empty list, or
+// a lone "NONE" sentinel, means the plan passed its quality gate.
+func RefinementIssues(content string) []string {
 	items := ParseQuestions(content)
 	if len(items) == 1 && strings.EqualFold(items[0], "NONE") {
 		return nil

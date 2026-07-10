@@ -17,46 +17,6 @@ import (
 	"determined/src/services"
 )
 
-// planPrompt is the instruction handed to the tool each round of the attended
-// planning loop. It drives the QUESTIONS.md / ANSWERS.md protocol the
-// PlanOrchestrator mediates.
-const planPrompt = "You are helping plan a software project before any code is written. " +
-	"Read GOAL.md for the user's goal, and read ANSWERS.md if it exists for clarifying " +
-	"questions you already asked and the user's answers. " +
-	"Treat GOAL.md as authoritative: if it contains requirements, a task list, or implementation " +
-	"instructions, convert those directly into PLAN.md and STEPS.md unless a specific ambiguity blocks planning. " +
-	"If you do NOT yet have enough detail to write a thorough plan, write your clarifying " +
-	"questions to QUESTIONS.md as a markdown numbered list, one question per line, and do " +
-	"nothing else. " +
-	"If you DO have enough detail, write a detailed PLAN.md (overview, goals, constraints, " +
-	"architecture) and a STEPS.md containing an ordered list of discrete, individually " +
-	"completable steps, and do not write QUESTIONS.md. " +
-	"STEPS.md MUST be a markdown checkbox list: each step is a single `- [ ]` item, marked " +
-	"incomplete. Every step MUST end with a line beginning `Done when:` stating a concrete, " +
-	"checkable acceptance condition — a command to run or a behavior to observe. " +
-	"Do not implement anything. Do not create STOP.md."
-
-// assessPrompt asks the tool to judge whether each step in STEPS.md is small
-// enough for an AI coding tool to implement in a single pass, recording the
-// verdict in OVERSIZED.md for the PlanOrchestrator to act on.
-const assessPrompt = "Read STEPS.md. For each step, judge whether a capable AI coding tool could " +
-	"implement it correctly and completely in a single pass — one focused change. " +
-	"Write to OVERSIZED.md a markdown list naming every step that is too large or does too much " +
-	"to be implemented in one pass; quote or summarize each so it can be identified. " +
-	"If every step is already small enough, write exactly the single word NONE to OVERSIZED.md. " +
-	"Do not modify STEPS.md or PLAN.md. Do not implement anything. Do not create STOP.md."
-
-// breakdownPrompt asks the tool to split the steps flagged in OVERSIZED.md into
-// smaller, individually-implementable steps, rewriting STEPS.md in place.
-const breakdownPrompt = "Read STEPS.md and OVERSIZED.md. OVERSIZED.md lists steps that are too large to " +
-	"implement in one pass. Rewrite STEPS.md so each oversized step is broken into smaller, ordered, " +
-	"individually-implementable sub-steps; leave the already-small steps unchanged and preserve the " +
-	"overall order. Every step must be something an AI coding tool can implement correctly in a single " +
-	"focused pass. Keep STEPS.md a markdown checkbox list: each step is a single `- [ ]` item, marked " +
-	"incomplete, and every step MUST end with a line beginning `Done when:` stating a concrete, " +
-	"checkable acceptance condition — a command to run or a behavior to observe. " +
-	"Do not implement anything. Do not create STOP.md."
-
 // version is the semantic version of the binary. It defaults to "dev" for local
 // builds and is overridden at link time via -ldflags="-X main.version=<semver>"
 // by the release build (see Dockerfile.build / Makefile).
@@ -73,8 +33,10 @@ func main() {
 	tool := flag.String("tool", "droid", "AI coding CLI to run (droid|pi|claude)")
 	model := flag.String("model", "", "model ID or alias to pass to droid or claude")
 	plan := flag.String("plan", "", "describe a goal to plan interactively, producing PLAN.md and STEPS.md")
+	mvp := flag.Bool("mvp", false, "create a lean plan for the smallest usable outcome (plan mode only)")
+	prototype := flag.Bool("prototype", false, "create a fast experimental plan with minimal questioning and no refinement (plan mode only)")
 	maxStepPasses := flag.Int("max-step-passes", 5,
-		"max assess/breakdown rounds to shrink oversized steps during planning; 0 disables")
+		"max quality assess/refine rounds during planning; 0 disables")
 	maxStalled := flag.Int("max-stalled-iterations", 3,
 		"stop with exit 3 after this many consecutive iterations check no new step; 0 disables")
 	maxFailures := flag.Int("max-consecutive-failures", 3,
@@ -91,6 +53,11 @@ func main() {
 	if *showVersion {
 		fmt.Printf("determined %s\n", version)
 		os.Exit(0)
+	}
+	planMode, err := selectPlanMode(*plan != "", *mvp, *prototype)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "determined: %v\n", err)
+		os.Exit(2)
 	}
 
 	selected, err := models.SelectTool(
@@ -110,13 +77,36 @@ func main() {
 
 	var outcome models.Outcome
 	if *plan != "" {
-		outcome = runPlan(ctx, selected, planInput(*plan, flag.Args()), *budget, *maxStepPasses, clock, logs)
+		outcome = runPlan(ctx, selected, planInput(*plan, flag.Args()), planMode, *budget, *maxStepPasses, clock, logs)
 	} else {
 		outcome = runLoop(ctx, selected, *budget, *maxStalled, *maxFailures, *maxIterationDuration, *verify, *gitCheckpoint, clock, logs)
 	}
 
 	fmt.Fprintf(os.Stderr, "\ndetermined: %s\n", outcome)
 	os.Exit(outcome.ExitCode())
+}
+
+func selectPlanMode(planning, mvp, prototype bool) (models.PlanMode, error) {
+	if mvp && prototype {
+		return "", fmt.Errorf("-mvp and -prototype cannot be used together")
+	}
+	if !planning && (mvp || prototype) {
+		return "", fmt.Errorf("-mvp and -prototype require -plan")
+	}
+	if mvp {
+		return models.PlanModeMVP, nil
+	}
+	if prototype {
+		return models.PlanModePrototype, nil
+	}
+	return models.PlanModeStandard, nil
+}
+
+func refinePasses(mode models.PlanMode, configured int) int {
+	if mode == models.PlanModePrototype {
+		return 0
+	}
+	return configured
 }
 
 // runLoop runs the unattended execute loop against PLAN.md / STEPS.md.
@@ -190,20 +180,21 @@ func runUpdateCommand() {
 
 // runPlan runs the attended planning loop, relaying the tool's clarifying
 // questions to the user until a plan is produced.
-func runPlan(ctx context.Context, tool models.Tool, goal string, budget time.Duration, maxStepPasses int, clock services.Clock, logs services.LogSink) models.Outcome {
+func runPlan(ctx context.Context, tool models.Tool, goal string, mode models.PlanMode, budget time.Duration, maxStepPasses int, clock services.Clock, logs services.LogSink) models.Outcome {
+	prompts := services.PlanningPrompts(mode)
 	cfg := models.PlanConfig{
-		Goal:                goal,
-		Invocation:          tool.Invocation(planPrompt),
-		Budget:              budget,
-		AssessInvocation:    tool.Invocation(assessPrompt),
-		BreakdownInvocation: tool.Invocation(breakdownPrompt),
-		MaxRefinePasses:     maxStepPasses,
-		GoalFile:            "GOAL.md",
-		QuestionsFile:       "QUESTIONS.md",
-		AnswersFile:         "ANSWERS.md",
-		PlanFile:            "PLAN.md",
-		StepsFile:           "STEPS.md",
-		OversizedFile:       "OVERSIZED.md",
+		Goal:             goal,
+		Invocation:       tool.Invocation(prompts.Plan),
+		Budget:           budget,
+		AssessInvocation: tool.Invocation(prompts.Assess),
+		RefineInvocation: tool.Invocation(prompts.Refine),
+		MaxRefinePasses:  refinePasses(mode, maxStepPasses),
+		GoalFile:         "GOAL.md",
+		QuestionsFile:    "QUESTIONS.md",
+		AnswersFile:      "ANSWERS.md",
+		PlanFile:         "PLAN.md",
+		StepsFile:        "STEPS.md",
+		AssessmentFile:   "REFINEMENTS.md",
 	}
 	orchestrator := services.NewPlanOrchestrator(
 		clients.NewExecCommandRunner(),

@@ -54,7 +54,7 @@ func TestParseQuestionsHandlesListStyles(t *testing.T) {
 	}
 }
 
-func TestOversizedStepsTreatsNoneAsDone(t *testing.T) {
+func TestRefinementIssuesTreatsNoneAsDone(t *testing.T) {
 	cases := []struct {
 		name string
 		in   string
@@ -70,9 +70,9 @@ func TestOversizedStepsTreatsNoneAsDone(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			got := services.OversizedSteps(c.in)
+			got := services.RefinementIssues(c.in)
 			if !reflect.DeepEqual(got, c.want) {
-				t.Fatalf("OversizedSteps(%q) = %#v, want %#v", c.in, got, c.want)
+				t.Fatalf("RefinementIssues(%q) = %#v, want %#v", c.in, got, c.want)
 			}
 		})
 	}

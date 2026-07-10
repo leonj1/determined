@@ -59,18 +59,18 @@ func (p *fakePrompter) Ask(question string) (string, error) {
 
 func planConfig(budget time.Duration) models.PlanConfig {
 	return models.PlanConfig{
-		Goal:                "build a todo CLI",
-		Invocation:          models.Invocation{Binary: "claude", Args: []string{"-p", "plan"}},
-		Budget:              budget,
-		AssessInvocation:    models.Invocation{Binary: "claude", Args: []string{"-p", "assess"}},
-		BreakdownInvocation: models.Invocation{Binary: "claude", Args: []string{"-p", "breakdown"}},
-		MaxRefinePasses:     0, // refinement off by default; refinement tests opt in
-		GoalFile:            "GOAL.md",
-		QuestionsFile:       "QUESTIONS.md",
-		AnswersFile:         "ANSWERS.md",
-		PlanFile:            "PLAN.md",
-		StepsFile:           "STEPS.md",
-		OversizedFile:       "OVERSIZED.md",
+		Goal:             "build a todo CLI",
+		Invocation:       models.Invocation{Binary: "claude", Args: []string{"-p", "plan"}},
+		Budget:           budget,
+		AssessInvocation: models.Invocation{Binary: "claude", Args: []string{"-p", "assess"}},
+		RefineInvocation: models.Invocation{Binary: "claude", Args: []string{"-p", "refine"}},
+		MaxRefinePasses:  0, // refinement off by default; refinement tests opt in
+		GoalFile:         "GOAL.md",
+		QuestionsFile:    "QUESTIONS.md",
+		AnswersFile:      "ANSWERS.md",
+		PlanFile:         "PLAN.md",
+		StepsFile:        "STEPS.md",
+		AssessmentFile:   "REFINEMENTS.md",
 	}
 }
 
@@ -329,11 +329,11 @@ func TestPlanRefinesOversizedSteps(t *testing.T) {
 			fs.Write("PLAN.md", "the plan")
 			fs.Write("STEPS.md", "1. Build the entire app")
 		case 2: // first assessment: the step is too large
-			fs.Write("OVERSIZED.md", "- Build the entire app")
+			fs.Write("REFINEMENTS.md", "- Step is too large: Build the entire app")
 		case 3: // breakdown: rewrite STEPS.md into smaller steps
 			fs.Write("STEPS.md", "1. Add storage\n2. Add CLI\n3. Wire up")
 		case 4: // second assessment: now everything is small enough
-			fs.Write("OVERSIZED.md", "NONE")
+			fs.Write("REFINEMENTS.md", "NONE")
 		}
 		return nil
 	}}
@@ -347,8 +347,8 @@ func TestPlanRefinesOversizedSteps(t *testing.T) {
 	if runner.calls != 4 {
 		t.Fatalf("expected plan + assess + breakdown + assess (4 runs), got %d", runner.calls)
 	}
-	if fs.Exists("OVERSIZED.md") {
-		t.Fatal("expected OVERSIZED.md to be cleared once steps are small enough")
+	if fs.Exists("REFINEMENTS.md") {
+		t.Fatal("expected REFINEMENTS.md to be cleared once the plan passes")
 	}
 	if !strings.Contains(fs.data["STEPS.md"], "Add storage") {
 		t.Fatalf("expected STEPS.md to hold the broken-down steps, got %q", fs.data["STEPS.md"])
@@ -366,7 +366,7 @@ func TestPlanRefinementStopsAtPassCap(t *testing.T) {
 			return nil
 		}
 		// Every assessment keeps flagging a too-large step: it never converges.
-		fs.Write("OVERSIZED.md", "- Still too big")
+		fs.Write("REFINEMENTS.md", "- Still too big")
 		return nil
 	}}
 	o := services.NewPlanOrchestrator(runner, fs, &fakePrompter{}, &fakeClock{now: time.Now()}, &fakeLogSink{}, io.Discard, cfg)

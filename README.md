@@ -43,6 +43,7 @@ loop that asks clarifying questions, then writes the plan files:
 ```bash
 ./determined --plan "build a todo CLI"   # from a one-line goal
 ./determined --plan TODO.md              # or seed from a longer file
+./determined --plan "test a todo UI" -prototype # minimal experimental plan
 ```
 
 **3. Execute** — the *unattended* loop, run in the directory containing the
@@ -68,9 +69,9 @@ approved), `1` failure/budget/interrupt, `2` usage error, `3` stalled (see
    `QUESTIONS.md` or, once it knows enough, a finished `PLAN.md` + `STEPS.md`.
    Questions are asked on your terminal and recorded in `ANSWERS.md`, then the
    tool runs again with your answers.
-3. **Refine step size** — an assess/breakdown loop flags steps too big to
-   implement in one pass (`OVERSIZED.md`) and splits them, up to
-   `--max-step-passes` rounds.
+3. **Quality gate** — an independent assess/refine loop checks completeness,
+   the task-specific template, ordering, step size, and concrete acceptance
+   criteria (`REFINEMENTS.md`), up to `--max-step-passes` rounds.
 4. **Done** — `PLAN.md` + `STEPS.md` are in place (exit `0`); run
    `./determined` to execute them.
 
@@ -132,7 +133,9 @@ ideally a clean git checkout, so every change is reviewable and revertible.
 | `--tool`         | `droid`  | AI coding CLI to run (`droid`/`pi`/`claude`).                   |
 | `--model`        | —        | Optional model ID or alias for `droid` or `claude`; rejected with `pi`. |
 | `--plan`         | —        | Goal text or a file path to plan interactively; produces `PLAN.md` + `STEPS.md` instead of running the execute loop. |
-| `--max-step-passes` | `5`   | Max assess/breakdown rounds to shrink oversized steps during planning. `0` disables refinement. **plan only**. |
+| `--mvp`          | `false`  | Use a reduced quality gate for the smallest usable outcome. Requires `--plan`; incompatible with `--prototype`. |
+| `--prototype`    | `false`  | Ask only blocking questions and skip quality refinement for fast experiments. Requires `--plan`; incompatible with `--mvp`. |
+| `--max-step-passes` | `5`   | Max quality assess/refine rounds during planning. `0` disables refinement. **plan only**. |
 | `--max-duration`, `-t` | `1h` | Wall-clock budget, checked between iterations. `0` = unlimited. |
 | `--max-iteration-duration` | `15m` | Kill a single tool invocation after this long; the timeout counts as a failed invocation. `0` = unlimited. |
 | `--max-consecutive-failures` | `3` | Abort after this many consecutive failed tool invocations; any success resets the count. |

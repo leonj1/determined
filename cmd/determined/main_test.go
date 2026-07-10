@@ -5,6 +5,8 @@ import (
 	"io"
 	"testing"
 	"time"
+
+	"determined/src/models"
 )
 
 func TestUserCanRunUpdateCommand(t *testing.T) {
@@ -16,6 +18,44 @@ func TestUserCanRunUpdateCommand(t *testing.T) {
 func TestNormalRunIsNotUpdateCommand(t *testing.T) {
 	if isUpdateCommand([]string{"determined", "--version"}) {
 		t.Fatal("normal flags should not be treated as update")
+	}
+}
+
+func TestUserCanSelectMVPPlanning(t *testing.T) {
+	mode, err := selectPlanMode(true, true, false)
+	if err != nil || mode != models.PlanModeMVP {
+		t.Fatalf("expected MVP planning, got mode %q and error %v", mode, err)
+	}
+}
+
+func TestUserCanSelectPrototypePlanning(t *testing.T) {
+	mode, err := selectPlanMode(true, false, true)
+	if err != nil || mode != models.PlanModePrototype {
+		t.Fatalf("expected prototype planning, got mode %q and error %v", mode, err)
+	}
+}
+
+func TestUserCannotCombinePlanningModes(t *testing.T) {
+	if _, err := selectPlanMode(true, true, true); err == nil {
+		t.Fatal("expected combined MVP and prototype modes to be rejected")
+	}
+}
+
+func TestUserCannotSelectPlanningModeDuringExecution(t *testing.T) {
+	if _, err := selectPlanMode(false, true, false); err == nil {
+		t.Fatal("expected MVP without -plan to be rejected")
+	}
+}
+
+func TestPrototypeSkipsQualityRefinement(t *testing.T) {
+	if got := refinePasses(models.PlanModePrototype, 5); got != 0 {
+		t.Fatalf("prototype refinement passes = %d, want 0", got)
+	}
+}
+
+func TestMVPStillUsesConfiguredQualityRefinement(t *testing.T) {
+	if got := refinePasses(models.PlanModeMVP, 3); got != 3 {
+		t.Fatalf("MVP refinement passes = %d, want 3", got)
 	}
 }
 
