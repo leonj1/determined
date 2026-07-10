@@ -1,118 +1,129 @@
 # determined
 
-A Go orchestrator that runs an AI coding tool in a loop until the work is done.
-It grew out of hardening this bash loop:
+**Run an AI coding CLI in a loop until the plan is actually done — verified, not taken on its word.**
+
+You give `determined` a plan (`PLAN.md` + a `STEPS.md` checkbox list). Each
+iteration it invokes your AI tool of choice (`droid`, `claude`, or `pi`) with
+exactly the next unchecked step and its acceptance criterion. When the tool
+checks a step off, an independent reviewer invocation verifies the criterion
+actually holds — unchecking it and recording why in `FIXES.md` when it
+doesn't. Every verified step is git-committed. Only a final whole-plan audit
+can end the run successfully.
+
+Don't have a plan yet? `determined --plan "your goal"` interviews you first
+and writes `PLAN.md` / `STEPS.md` for you.
+
+It grew out of hardening this bash loop, which trusts the tool completely:
 
 ```bash
 while [ ! -e STOP.md ]; do
-  droid exec "Read PLAN.md and STEPS.md. Find the first step that has needs to be completed. Implement that step. Mark the step completed when you are done. Only work on one step. When there are no more steps then create STOP.md"
+  droid exec "Read PLAN.md and STEPS.md. Implement the first incomplete step. ..."
 done
 ```
 
-`determined` only **orchestrates** invocations — the AI tool still does all the
-work. Unlike the one-liner, it does not trust the tool's word for progress:
-
-- **Parsed progress** — `STEPS.md` is a markdown checkbox list that the
-  orchestrator parses itself each iteration; a `STOP.md` created while
-  unchecked steps remain is deleted and the loop continues.
-- **Per-step prompts** — each invocation is aimed at exactly the next
-  unchecked step, with its `Done when:` acceptance criterion injected.
-- **Independent verification** — after a step is checked, a fresh reviewer
-  invocation confirms the acceptance criterion actually holds, unchecking the
-  step (and recording why in `FIXES.md`) when it does not.
-- **Final audit** — once every box is checked, one more invocation audits the
-  whole plan; only its approval (`STOP.md`) ends the run successfully.
-- **Stall detection, retries, and timeouts** — no-progress iterations,
-  consecutive failures, and single-invocation duration are all bounded.
-- **Memory and checkpoints** — `NOTES.md` carries knowledge between otherwise
-  independent invocations, and each verified step is git-committed.
-
-It has two modes:
-
-- **execute** (default) — the unattended loop above, against an existing
-  `PLAN.md` / `STEPS.md`.
-- **plan** (`--plan "<goal>"`) — an *attended* loop that produces those files
-  from a one-line goal by interviewing you first (see [PLANNING.md](PLANNING.md)).
+`determined` only **orchestrates** — the AI tool still does all the work. But
+unlike the one-liner, it parses progress itself, verifies every step, bounds
+stalls/failures/wall-clock time, and deletes a premature `STOP.md`.
 
 ## Getting started
 
+**1. Install** — build from source, or grab a
+[release binary](https://github.com/leonj1/determined/releases)
+(Linux amd64/arm64, macOS arm64):
+
 ```bash
-# 1. Build the binary
 go build -o determined ./cmd/determined
-
-# 2a. Update an installed release binary to the latest GitHub Release:
+# later, keep a release binary current with:
 ./determined update
-
-# 2b. Already have PLAN.md / STEPS.md? Run the execute loop in that directory:
-./determined
-
-# 2c. Starting from a one-line goal? Plan it interactively first:
-./determined --plan "build a todo CLI"
-# Or seed planning from a longer file:
-./determined --plan TODO.md
-# ...answer the clarifying questions, then run the execute loop:
-./determined
 ```
 
-Pick a different AI tool with `--tool` (`droid`/`pi`/`claude`), override the
-droid or claude model with `--model`, and bound unattended runs with
-`--max-duration` (or `-t`). For more detail, see
-[BUILD.md](BUILD.md), [PLANNING.md](PLANNING.md), and [EXECUTION.md](EXECUTION.md).
+**2. Plan** (skip if you already have `PLAN.md` / `STEPS.md`) — an *attended*
+loop that asks clarifying questions, then writes the plan files:
+
+```bash
+./determined --plan "build a todo CLI"   # from a one-line goal
+./determined --plan TODO.md              # or seed from a longer file
+```
+
+**3. Execute** — the *unattended* loop, run in the directory containing the
+plan (ideally a clean git checkout, since the tool edits files freely):
+
+```bash
+./determined                        # droid by default, 1h budget
+./determined --tool claude -t 2h    # different tool, bigger budget
+```
+
+**4. Watch it work** — per-iteration logs land in `logs/`, each verified step
+becomes a git commit, and the run ends with an exit code: `0` success (audit
+approved), `1` failure/budget/interrupt, `2` usage error, `3` stalled (see
+[EXECUTION.md](EXECUTION.md)).
+
+## What each mode does
+
+### Plan mode (`--plan`, attended)
+
+1. **Capture the goal** — your goal text (or the file you pointed at) is
+   written to `GOAL.md`.
+2. **Interview** — each round the tool either writes clarifying questions to
+   `QUESTIONS.md` or, once it knows enough, a finished `PLAN.md` + `STEPS.md`.
+   Questions are asked on your terminal and recorded in `ANSWERS.md`, then the
+   tool runs again with your answers.
+3. **Refine step size** — an assess/breakdown loop flags steps too big to
+   implement in one pass (`OVERSIZED.md`) and splits them, up to
+   `--max-step-passes` rounds.
+4. **Done** — `PLAN.md` + `STEPS.md` are in place (exit `0`); run
+   `./determined` to execute them.
+
+See [PLANNING.md](PLANNING.md) for details.
+
+### Execute mode (default, unattended)
+
+Each iteration:
+
+1. **Completion check** — every box checked *and* the audit's `STOP.md`
+   present → exit `0`. A `STOP.md` that appears while steps remain is deleted
+   and the loop continues.
+2. **Budget check** — `--max-duration` / `-t` exhausted → exit `1`.
+3. **Build the prompt** — re-parse `STEPS.md` and aim the tool at exactly the
+   next unchecked step, injecting its `Done when:` criterion and the
+   `NOTES.md` memory instructions.
+4. **Invoke the tool** — output streams live and is teed to `logs/`; a single
+   invocation is killed after `--max-iteration-duration`. Consecutive
+   failures beyond `--max-consecutive-failures` abort the run (exit `1`).
+5. **Verify** — a fresh reviewer invocation confirms each newly checked step's
+   acceptance criterion, unchecking it (and recording why in `FIXES.md`) when
+   it doesn't hold.
+6. **Checkpoint** — each verified step is git-committed.
+7. **Stall detection** — `--max-stalled-iterations` iterations in a row with
+   no newly checked step → exit `3`.
+
+Once every box is checked, a final **whole-plan audit** invocation judges the
+implementation against `PLAN.md`: it either reopens unsatisfied steps (the
+loop resumes) or creates `STOP.md` — the only way a run ends successfully.
+
+See [EXECUTION.md](EXECUTION.md) for details.
 
 ## Supported tools
 
 Pick the AI coding CLI with `--tool`. Each iteration runs the tool's own
-command form with the prompt built for that iteration (see
-[EXECUTION.md](EXECUTION.md)):
+command form with the prompt built for that iteration:
 
-| `--tool`           | Command run each iteration            |
-|--------------------|---------------------------------------|
-| `droid` (default)  | `droid exec "<prompt>" --auto high [--model <model>]` |
-| `pi`               | `pi -p "<prompt>"`                     |
-| `claude`           | `claude -p "<prompt>" --permission-mode acceptEdits [--model <model>]` |
+| `--tool`          | Command run each iteration                                             |
+|-------------------|------------------------------------------------------------------------|
+| `droid` (default) | `droid exec "<prompt>" --auto high [--model <model>]`                  |
+| `pi`              | `pi -p "<prompt>"`                                                     |
+| `claude`          | `claude -p "<prompt>" --permission-mode acceptEdits [--model <model>]` |
 
-`--model <model>` is optional and only applies to `droid` and `claude`. For
-droid, pass a Factory model ID such as `claude-opus-4-7`; for claude, pass a
-Claude model alias such as `opus` or a full model name. `pi` does not support
-model overrides through `determined`, so `--tool pi --model ...` exits as a
-usage error.
+`--model` is optional and only applies to `droid` (Factory model ID, e.g.
+`claude-opus-4-7`) and `claude` (alias like `opus` or a full model name);
+`--tool pi --model ...` exits as a usage error.
 
-### Why `droid` runs with `--auto high`
-
-`droid exec` needs an autonomy level to run unattended — without one it stops
-on a permission prompt and the loop aborts on iteration 1. `determined` always
-passes `--auto high`; the level is not user-configurable.
-
-### Why `claude` runs with `--permission-mode acceptEdits`
-
-`claude -p` (print mode) is non-interactive: if the tool hits a permission
-prompt it cannot ask, so without a permission mode every iteration stalls or
-exits before doing any work. `--permission-mode acceptEdits` auto-approves
-file edits in the working directory, which is exactly what an unattended step
-loop needs.
-
-The trade-off: Claude can create and modify files in the project without a
-human confirming each edit. It does **not** auto-approve arbitrary shell
+Both `droid --auto high` and `claude --permission-mode acceptEdits` exist for
+the same reason: the loop is unattended, so a permission prompt would stall
+iteration 1. `acceptEdits` auto-approves file edits only — not arbitrary shell
 commands (that would be `bypassPermissions`, which we deliberately avoid).
-Run `determined` in a directory you are prepared to have edited — ideally a
-clean git checkout, so every change is reviewable and revertible.
-
-## Build & run
-
-See [BUILD.md](BUILD.md) for build commands, runtime flags in action, and the
-versioned release build. `determined update` fetches the latest GitHub Release
-for the current platform and replaces the running binary when that release is
-newer.
-
-## Planning a goal
-
-See [PLANNING.md](PLANNING.md) for the `--plan` interview loop and
-step-granularity refinement.
-
-## Execution
-
-See [EXECUTION.md](EXECUTION.md) for the per-iteration execute behaviour and exit
-codes.
+Either way, run `determined` in a directory you are prepared to have edited —
+ideally a clean git checkout, so every change is reviewable and revertible.
 
 ## Flags
 
@@ -120,7 +131,7 @@ codes.
 |------------------|----------|----------------------------------------------------------------|
 | `--tool`         | `droid`  | AI coding CLI to run (`droid`/`pi`/`claude`).                   |
 | `--model`        | —        | Optional model ID or alias for `droid` or `claude`; rejected with `pi`. |
-| `--plan`         | —        | Describe a goal to plan interactively; produces `PLAN.md` + `STEPS.md` instead of running the execute loop. |
+| `--plan`         | —        | Goal text or a file path to plan interactively; produces `PLAN.md` + `STEPS.md` instead of running the execute loop. |
 | `--max-step-passes` | `5`   | Max assess/breakdown rounds to shrink oversized steps during planning. `0` disables refinement. **plan only**. |
 | `--max-duration`, `-t` | `1h` | Wall-clock budget, checked between iterations. `0` = unlimited. |
 | `--max-iteration-duration` | `15m` | Kill a single tool invocation after this long; the timeout counts as a failed invocation. `0` = unlimited. |
@@ -133,13 +144,22 @@ codes.
 
 ## Commands
 
-| Command               | Purpose                                                        |
-|-----------------------|----------------------------------------------------------------|
-| `determined update`   | Download the latest supported GitHub Release binary and replace the current executable. |
+| Command             | Purpose                                                        |
+|---------------------|----------------------------------------------------------------|
+| `determined update` | Download the latest supported GitHub Release binary and replace the current executable. |
 
 The protocol filenames (`PLAN.md` / `STEPS.md` / `STOP.md` / `NOTES.md` /
 `FIXES.md`) are hardcoded; the prompt is rebuilt each iteration from the next
 unchecked step in `STEPS.md`.
+
+## Going deeper
+
+- [BUILD.md](BUILD.md) — build commands, runtime flags in action, and the
+  versioned release build behind `determined update`.
+- [PLANNING.md](PLANNING.md) — the `--plan` interview loop and
+  step-granularity refinement.
+- [EXECUTION.md](EXECUTION.md) — per-iteration execute behaviour and exit
+  codes.
 
 ## Layout
 
