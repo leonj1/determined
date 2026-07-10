@@ -55,6 +55,18 @@ type Orchestrator struct {
 	// replansUsed counts replan invocations spent on stalled steps; once it
 	// reaches cfg.MaxReplans, hitting the stall cap ends the run for good.
 	replansUsed int
+	// rejections counts, per step (keyed by stepKey), how many times a checked
+	// box was rejected by the check gate, verifier, or audit. From the second
+	// rejection of the same step onward the failed attempt is stashed so the
+	// retry starts from the last verified checkpoint.
+	rejections map[string]int
+	// stashes records, per step (keyed by stepKey), the immutable stash commit
+	// hashes of its stashed failed attempts, so re-run prompts can point at the
+	// latest one and a step that finally passes can drop them all.
+	stashes map[string][]string
+	// stashingEnabled reports whether failed-attempt stashing is available for
+	// this run; initAttemptStashing decides once at startup.
+	stashingEnabled bool
 }
 
 // NewOrchestrator wires an orchestrator from its dependencies.
@@ -67,12 +79,14 @@ func NewOrchestrator(
 	cfg models.Config,
 ) *Orchestrator {
 	return &Orchestrator{
-		runner:   runner,
-		files:    files,
-		clock:    clock,
-		logs:     logs,
-		terminal: terminal,
-		cfg:      cfg,
+		runner:     runner,
+		files:      files,
+		clock:      clock,
+		logs:       logs,
+		terminal:   terminal,
+		cfg:        cfg,
+		rejections: map[string]int{},
+		stashes:    map[string][]string{},
 	}
 }
 
@@ -81,6 +95,7 @@ func (o *Orchestrator) Run(ctx context.Context) models.Outcome {
 	if !o.protocolFilesPresent() {
 		return models.OutcomeMissingFiles
 	}
+	o.initAttemptStashing(ctx)
 	deadline := o.deadline()
 	for {
 		if outcome, stop := o.preIteration(ctx, deadline); stop {
@@ -99,12 +114,17 @@ func (o *Orchestrator) Run(ctx context.Context) models.Outcome {
 		if rawErr == nil {
 			o.guardStepsFile(intent, rawBefore, before)
 		}
+		// The post-guard snapshot fixes what this iteration's work checked, so
+		// rejection tracking can tell a gate/verifier rejection (checked here,
+		// unchecked below) from a step that was never checked at all.
+		afterWork := o.parsedSteps()
 		if o.checkGatePassed(ctx, before) {
 			if outcome, stop := o.verifyNewSteps(ctx, before); stop {
 				return outcome
 			}
 			o.checkpointNewSteps(ctx, before)
 		}
+		o.recordRejections(ctx, intent, before, afterWork)
 		if o.stalledOut(CompletedStepCount(before)) {
 			outcome, stop, resumed := o.replanStuckStep(ctx)
 			if stop {
@@ -599,7 +619,9 @@ func (o *Orchestrator) checkpointNewSteps(ctx context.Context, before []Step) {
 				"determined: not a git repository; skipping git checkpoint")
 			return
 		}
-		o.gitCommit(ctx, i+1, step)
+		if o.gitCommit(ctx, i+1, step) {
+			o.dropStashes(ctx, i+1, step)
+		}
 	}
 }
 
@@ -608,8 +630,9 @@ func (o *Orchestrator) checkpointNewSteps(ctx context.Context, before []Step) {
 // stall the loop indefinitely.
 const gitCheckpointTimeout = 2 * time.Minute
 
-// gitCommit stages everything and commits it as the checkpoint for one step.
-func (o *Orchestrator) gitCommit(ctx context.Context, n int, step Step) {
+// gitCommit stages everything and commits it as the checkpoint for one step,
+// reporting whether the commit landed.
+func (o *Orchestrator) gitCommit(ctx context.Context, n int, step Step) bool {
 	message := fmt.Sprintf("determined: step %d: %s", n, strings.TrimSpace(step.Text))
 	for _, inv := range []models.Invocation{
 		{Binary: "git", Args: []string{"add", "-A"}},
@@ -620,10 +643,225 @@ func (o *Orchestrator) gitCommit(ctx context.Context, n int, step Step) {
 		cancel()
 		if err != nil {
 			fmt.Fprintf(o.terminal, "determined: git checkpoint for step %d failed: %v\n", n, err)
-			return
+			return false
 		}
 	}
 	fmt.Fprintf(o.terminal, "determined: git checkpoint committed for step %d\n", n)
+	return true
+}
+
+// stashAfterRejections is the per-step rejection count at which a rejected
+// attempt starts being stashed. The first rejection retries in place — the
+// attempt may be one small fix away — but a second rejection of the same step
+// suggests the attempt's foundation is wrong, so later retries start clean
+// from the last verified checkpoint with the failed work preserved as a stash.
+const stashAfterRejections = 2
+
+// stepKey identifies a step across iterations by its text and criterion — the
+// same identity the tamper guard holds fixed — so rejection counts and stashes
+// survive the index shifts a replan of other steps can cause.
+func stepKey(s Step) string { return s.Text + "\x00" + s.DoneWhen }
+
+// git runs one git command bounded by gitCheckpointTimeout, capturing its
+// output instead of streaming it: the stash bookkeeping commands are plumbing
+// whose output the user does not need live.
+func (o *Orchestrator) git(ctx context.Context, args ...string) (string, error) {
+	var out bytes.Buffer
+	runCtx, cancel := context.WithTimeout(ctx, gitCheckpointTimeout)
+	defer cancel()
+	err := o.runner.Run(runCtx, models.Invocation{Binary: "git", Args: args}, &out)
+	return out.String(), err
+}
+
+// protectedPaths lists the files an attempt stash must never touch: STEPS.md
+// and FIXES.md hold the rejection the retry needs to see, NOTES.md is
+// cross-iteration memory, the planning files may sit uncommitted from a
+// --plan session in the same directory, and the log directory holds the run's
+// own iteration logs.
+func (o *Orchestrator) protectedPaths() []string {
+	paths := []string{
+		o.cfg.PlanFile, o.cfg.StepsFile, o.cfg.StopFile,
+		"NOTES.md", "FIXES.md", "GOAL.md", "QUESTIONS.md", "ANSWERS.md", "OVERSIZED.md",
+	}
+	if o.cfg.LogDir != "" {
+		paths = append(paths, o.cfg.LogDir)
+	}
+	return paths
+}
+
+// stashExcludes returns the pathspecs that keep the protected files out of
+// every attempt stash and out of the startup cleanliness check.
+func (o *Orchestrator) stashExcludes() []string {
+	excludes := make([]string, 0, len(o.protectedPaths()))
+	for _, p := range o.protectedPaths() {
+		excludes = append(excludes, ":(exclude)"+p)
+	}
+	return excludes
+}
+
+// initAttemptStashing decides once, at startup, whether rejected attempts may
+// be stashed this run. Stashing assumes every uncommitted change is the run's
+// own work, which holds only when checkpointing commits verified work out of
+// the way, the directory is a git repository, and the tree starts clean apart
+// from the protected files (which stashes never touch). A tree carrying the
+// user's own uncommitted changes disables stashing for the whole run —
+// stashing pre-existing work would be the one destructive failure mode here —
+// and the run degrades to retrying in place exactly as without the feature.
+func (o *Orchestrator) initAttemptStashing(ctx context.Context) {
+	if !o.cfg.StashAttempts || !o.cfg.GitCheckpoint || !o.files.Exists(".git") {
+		return
+	}
+	args := append([]string{"status", "--porcelain", "--untracked-files=all", "--", "."},
+		o.stashExcludes()...)
+	out, err := o.git(ctx, args...)
+	if err != nil {
+		fmt.Fprintf(o.terminal,
+			"determined: could not inspect the working tree (%v); failed-attempt stashing disabled\n", err)
+		return
+	}
+	if strings.TrimSpace(out) != "" {
+		fmt.Fprintln(o.terminal,
+			"determined: working tree has changes that predate this run; failed-attempt stashing disabled so they are never stashed")
+		return
+	}
+	o.stashingEnabled = true
+}
+
+// recordRejections updates the per-step rejection counts once the gate,
+// verifier, and audit have delivered their verdicts, and stashes the failed
+// attempt when the same step reaches stashAfterRejections. A rejection is a
+// step this iteration's work checked that lost the check to the gate or the
+// verifier; steps the audit reopened count toward the same totals (they were
+// finished work that turned out wrong) but trigger no stash, since their work
+// was committed at checkpoint time and the tree holds nothing to stash.
+func (o *Orchestrator) recordRejections(ctx context.Context, intent iterationIntent, before, afterWork []Step) {
+	final := o.parsedSteps()
+	uncheckedNow := func(i int) bool { return i < len(final) && !final[i].Completed }
+	stashTarget := -1
+	for _, i := range newlyCheckedIndices(afterWork, before) {
+		if uncheckedNow(i) {
+			o.rejections[stepKey(afterWork[i])]++
+			if stashTarget == -1 {
+				stashTarget = i
+			}
+		}
+	}
+	if intent.kind == invocationAudit {
+		for i, s := range before {
+			if s.Completed && uncheckedNow(i) {
+				o.rejections[stepKey(s)]++
+			}
+		}
+	}
+	if stashTarget == -1 {
+		return
+	}
+	if step := afterWork[stashTarget]; o.rejections[stepKey(step)] >= stashAfterRejections {
+		o.stashFailedAttempt(ctx, stashTarget+1, step)
+	}
+}
+
+// stashFailedAttempt stashes the working tree's uncommitted changes — the
+// repeatedly rejected attempt at step n — so the retry starts from the last
+// verified checkpoint instead of building on a foundation that keeps failing.
+// The attempt is preserved as evidence, not discarded: FIXES.md gets a
+// mechanical entry recording the stash's immutable hash (stash@{N} positions
+// rot as new stashes push in) and what it changed, and the re-run prompt
+// points the worker at it. The protected files are excluded, so the rejection
+// record itself survives the stash. Every failure here is noted and ignored:
+// stashing is a convenience and must never end the run.
+func (o *Orchestrator) stashFailedAttempt(ctx context.Context, n int, step Step) {
+	if !o.stashingEnabled {
+		return
+	}
+	key := stepKey(step)
+	refBefore, _ := o.git(ctx, "rev-parse", "-q", "--verify", "refs/stash")
+	message := fmt.Sprintf("determined: step %d rejected attempt %d: %s",
+		n, o.rejections[key], strings.TrimSpace(step.Text))
+	args := append([]string{"stash", "push", "--include-untracked", "-m", message, "--", "."},
+		o.stashExcludes()...)
+	if out, err := o.git(ctx, args...); err != nil {
+		fmt.Fprintf(o.terminal,
+			"determined: could not stash the rejected attempt at step %d: %v\n%s", n, err, out)
+		return
+	}
+	refAfter, err := o.git(ctx, "rev-parse", "refs/stash")
+	hash := strings.TrimSpace(refAfter)
+	if err != nil || hash == "" || hash == strings.TrimSpace(refBefore) {
+		return // the rejected attempt left no changes to stash
+	}
+	o.stashes[key] = append(o.stashes[key], hash)
+	stat, _ := o.git(ctx, "stash", "show", "--include-untracked", "--stat", hash)
+	if err := o.files.Append("FIXES.md", stashEntry(n, hash, stat)); err != nil {
+		fmt.Fprintf(o.terminal, "determined: could not record the stash in FIXES.md: %v\n", err)
+	}
+	fmt.Fprintf(o.terminal,
+		"determined: stashed the rejected attempt at step %d as %s; the retry starts from the last verified checkpoint\n",
+		n, hash)
+}
+
+// stashEntry builds the mechanical FIXES.md record for one stashed attempt.
+// It rides under the same `## Step N` heading convention as the gate and
+// verifier entries, which record just above *why* the attempt was rejected.
+func stashEntry(n int, hash, stat string) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "## Step %d\n\nThe rejected attempt above was stashed as `%s` and the "+
+		"working tree reset to the last verified checkpoint. Inspect it with "+
+		"`git stash show -p %s` (its new files, if any, with `git show %s^3`). You may "+
+		"reuse ideas from it, but do not apply it wholesale — it was rejected for the "+
+		"reason recorded above.\n", n, hash, hash, hash)
+	if s := strings.TrimSpace(stat); s != "" {
+		fmt.Fprintf(&b, "\nIt changed:\n\n```\n%s\n```\n", s)
+	}
+	b.WriteString("\n")
+	return b.String()
+}
+
+// stashNote extends a re-run step prompt when earlier attempts at the step
+// were stashed: the worker starts from a clean checkpoint and should treat
+// the stash as evidence, never as a patch to reapply.
+func stashNote(hash string) string {
+	return fmt.Sprintf(" A previous attempt at this step was rejected and stashed as %s; "+
+		"the working tree was reset to the last verified checkpoint, so implement the step "+
+		"fresh. You may inspect the stash with `git stash show -p %s` and reuse ideas from "+
+		"it, but do not apply it wholesale — FIXES.md records why it was rejected.", hash, hash)
+}
+
+// dropStashes deletes the failed-attempt stashes recorded for a step once the
+// step finally passes verification and is checkpointed: from then on they are
+// dead weight in the user's stash stack. The recorded hashes are resolved to
+// their current stash@{i} positions and dropped highest-first so the lower
+// positions stay valid. Best-effort: a failed git command leaves the stashes
+// in place.
+func (o *Orchestrator) dropStashes(ctx context.Context, n int, step Step) {
+	key := stepKey(step)
+	hashes := o.stashes[key]
+	if len(hashes) == 0 {
+		return
+	}
+	out, err := o.git(ctx, "stash", "list", "--format=%H")
+	if err != nil {
+		return
+	}
+	owned := make(map[string]bool, len(hashes))
+	for _, h := range hashes {
+		owned[h] = true
+	}
+	list := strings.Fields(out)
+	dropped := 0
+	for i := len(list) - 1; i >= 0; i-- {
+		if !owned[list[i]] {
+			continue
+		}
+		if _, err := o.git(ctx, "stash", "drop", fmt.Sprintf("stash@{%d}", i)); err == nil {
+			dropped++
+		}
+	}
+	delete(o.stashes, key)
+	if dropped > 0 {
+		fmt.Fprintf(o.terminal,
+			"determined: dropped %d stashed attempt(s) at step %d now that it passed\n", dropped, n)
+	}
 }
 
 // promptPreamble opens every injected prompt. Each invocation starts with a
@@ -687,7 +925,11 @@ func (o *Orchestrator) iterationPrompt() (string, iterationIntent, error) {
 	if !ok {
 		return noParsableStepsPrompt, iterationIntent{kind: invocationRewrite}, nil
 	}
-	return stepPrompt(i+1, step), iterationIntent{kind: invocationStep, target: i}, nil
+	prompt := stepPrompt(i+1, step)
+	if hashes := o.stashes[stepKey(step)]; len(hashes) > 0 {
+		prompt += stashNote(hashes[len(hashes)-1])
+	}
+	return prompt, iterationIntent{kind: invocationStep, target: i}, nil
 }
 
 // stepPrompt builds the execute instruction for a single step: work only that

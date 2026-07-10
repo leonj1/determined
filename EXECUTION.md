@@ -77,13 +77,51 @@ worker was given (see below).
    `determined: step N: <step text>` (`git add -A && git commit`). Outside a
    git repository the checkpoint is skipped with a terminal note; a failed git
    command is noted and ignored.
-10. **Stall detection** — if `--max-stalled-iterations` consecutive iterations
+10. **Failed-attempt stashing** (`--stash-attempts`, default **on**) — the
+    orchestrator counts, per step, how many times the check gate, verifier, or
+    audit rejected a checked box. The first rejection retries in place — the
+    attempt may be one small fix away — but from the second rejection of the
+    same step onward, the failed attempt is `git stash`ed so the retry starts
+    from the last verified checkpoint instead of on top of work that keeps
+    failing (see below).
+11. **Stall detection** — if `--max-stalled-iterations` consecutive iterations
     (default **3**) finish without a newly checked step, the run first tries a
     replan of the stuck step (see below); only when no replan is available or
     the replan is ineffective does it exit **3**. Checking any step resets the
     counter; a tamper-guard revert or a check-gate, verifier, or audit
     rejection counts as no progress, which bounds worker/reviewer ping-pong.
     `0` disables stall detection.
+
+## Stashing a rejected attempt
+
+A rejected attempt normally stays in the working tree, so the retry builds on
+possibly broken changes. Once the same step has been rejected twice, the
+orchestrator concludes the attempt's foundation is suspect and stashes it —
+mechanically, like the check gate, never by asking the tool:
+
+- `git stash push --include-untracked` captures everything the attempt
+  changed since the last checkpoint, **excluding** the protocol files
+  (`PLAN.md`, `STEPS.md`, `STOP.md`, `NOTES.md`, `FIXES.md`, the planning
+  files) and the log directory, so the rejection record the retry needs to
+  read survives the stash.
+- The attempt is preserved as evidence, not discarded: a mechanical
+  `## Step N` entry in `FIXES.md` records the stash's immutable commit hash
+  (`stash@{N}` positions rot as new stashes push in) and a diffstat of what it
+  changed, and the re-run prompt points the worker at the stash — inspect it,
+  reuse ideas from it, but never apply it wholesale.
+- Once the step finally passes verification and is checkpointed, its stashes
+  are dropped: they are dead weight in the repository's stash stack from then
+  on.
+
+Stashing assumes every uncommitted change is the run's own work, so it is
+enabled only when `--git-checkpoint` is on, the directory is a git repository,
+and `git status` finds the tree clean at startup (protocol files aside). A
+tree carrying the user's own uncommitted changes disables stashing for the
+whole run with a warning — pre-existing work is never stashed — and rejected
+steps then retry in place exactly as without the feature. Rejection counts
+are keyed by the step's text and criterion, not its position, so they survive
+a replan reshaping other steps; steps the audit reopens count toward the same
+totals but trigger no stash, since their work was already committed.
 
 ## Replanning a stuck step
 
@@ -133,7 +171,7 @@ Only *all steps checked + `STOP.md` present* ends the run with exit **0**.
 | `STEPS.md` | Checkbox step list with `Done when:` criteria; the loop's source of truth. Required at startup. A work invocation may only check its own step's box — the tamper guard reverts any other edit to the parsed steps. |
 | `STOP.md`  | Created by the whole-plan audit to approve the finished run, holding a short audit report; deleted if it appears early. |
 | `NOTES.md` | Cross-iteration memory (see below); created by the tool on first use. |
-| `FIXES.md` | Why the check gate, verifier, or audit reopened a step; appended by reviewer invocations (and mechanically by a failed `--check-cmd`), read back by the worker when it re-runs a reopened step. |
+| `FIXES.md` | Why the check gate, verifier, or audit reopened a step; appended by reviewer invocations (and mechanically by a failed `--check-cmd` or a stashed attempt), read back by the worker when it re-runs a reopened step. |
 
 ## NOTES.md
 

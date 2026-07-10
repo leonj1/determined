@@ -38,6 +38,10 @@ work. Unlike the one-liner, it does not trust the tool's word for progress:
   resumes.
 - **Memory and checkpoints** — `NOTES.md` carries knowledge between otherwise
   independent invocations, and each verified step is git-committed.
+- **Failed-attempt stashing** — a step rejected a second time has its failed
+  attempt `git stash`ed (hash and diffstat recorded in `FIXES.md`), so the
+  retry starts clean from the last verified checkpoint instead of building on
+  broken work; the stashes are dropped once the step finally passes.
 
 It has two modes:
 
@@ -127,6 +131,7 @@ codes.
 | `--git-checkpoint` | `true` | Git-commit the working tree after each verified step when running in a git repository. |
 | `--check-cmd`    | —        | Shell command (run via `sh -c`) that must succeed after each iteration that checks a step; on failure the step is unchecked and the output tail recorded in `FIXES.md`. Empty disables the gate. |
 | `--max-replans`  | `1`      | When the stall cap is hit, ask the tool to replace the stuck step with smaller steps instead of stopping, at most this many times per run. `0` disables replanning. |
+| `--stash-attempts` | `true` | From a step's second rejection on, `git stash` the failed attempt (recording its hash and diffstat in `FIXES.md`) so retries start from the last verified checkpoint. Needs `--git-checkpoint` and a working tree that starts the run clean; otherwise retries build in place as before. |
 | `--log-dir`      | `logs`   | Directory for per-iteration log files.                          |
 | `--version`      | —        | Print the binary's semantic version and exit.                  |
 

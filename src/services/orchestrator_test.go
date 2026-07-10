@@ -1538,6 +1538,223 @@ func TestAuditPingPongIsNeverReplanned(t *testing.T) {
 	}
 }
 
+// stashConfig returns a config with verification, checkpointing, and
+// failed-attempt stashing all enabled, the wiring main.go produces by default.
+func stashConfig() models.Config {
+	cfg := config(0)
+	cfg.Verify = true
+	cfg.GitCheckpoint = true
+	cfg.StashAttempts = true
+	cfg.LogDir = "logs"
+	return cfg
+}
+
+// stashPushInvocations returns the recorded `git stash push` invocations.
+func (r *fakeRunner) stashPushInvocations() []models.Invocation {
+	var pushes []models.Invocation
+	for _, inv := range r.gitInvocations() {
+		if len(inv.Args) >= 2 && inv.Args[0] == "stash" && inv.Args[1] == "push" {
+			pushes = append(pushes, inv)
+		}
+	}
+	return pushes
+}
+
+func TestSecondRejectionStashesTheAttemptAndTheRetryStartsClean(t *testing.T) {
+	fs := stepsFileStore()
+	fs.Write(".git", "")
+	fixesAtRerun := ""
+	runner := &fakeRunner{}
+	runner.script = func(call int, out io.Writer) error {
+		switch call {
+		case 1: // startup: git status finds the tree clean (no output)
+		case 2: // work: check step 1
+			fs.Write("STEPS.md", twoStepsFirstChecked)
+		case 3: // verifier rejects step 1 (rejection #1: retry in place, no stash)
+			fs.Write("STEPS.md", twoStepsNoneChecked)
+		case 4: // work: check step 1 again
+			fs.Write("STEPS.md", twoStepsFirstChecked)
+		case 5: // verifier rejects step 1 again (rejection #2: stash the attempt)
+			fs.Write("STEPS.md", twoStepsNoneChecked)
+		case 6: // git rev-parse -q --verify refs/stash: no stash exists yet
+			return errors.New("exit status 1")
+		case 7: // git stash push succeeds
+		case 8: // git rev-parse refs/stash yields the new stash's hash
+			fmt.Fprintln(out, "aaa111")
+		case 9: // git stash show --stat
+			fmt.Fprintln(out, " widget.go | 5 +")
+		case 10: // work re-runs step 1 from the clean checkpoint
+			fixesAtRerun, _ = fs.Read("FIXES.md")
+			fs.Write("STEPS.md", twoStepsFirstChecked)
+		case 11: // verifier approves step 1
+		case 12, 13: // git add + git commit checkpoint step 1
+		case 14: // git stash list resolves the stash's position
+			fmt.Fprintln(out, "aaa111")
+		case 15: // git stash drop
+		case 16: // work: check step 2
+			fs.Write("STEPS.md", twoStepsAllChecked)
+		case 17: // verifier approves step 2
+		case 18, 19: // git add + git commit checkpoint step 2
+		case 20: // the whole-plan audit approves
+			fs.Write("STOP.md", "audit: plan satisfied")
+		}
+		return nil
+	}
+	var terminal bytes.Buffer
+	o := services.NewOrchestrator(runner, fs, &fakeClock{now: time.Now()}, &fakeLogSink{}, &terminal, stashConfig())
+
+	outcome := o.Run(context.Background())
+
+	if outcome != models.OutcomeStopped || outcome.ExitCode() != 0 {
+		t.Fatalf("expected a clean completion, got %v (exit %d)", outcome, outcome.ExitCode())
+	}
+	if runner.calls != 20 {
+		t.Fatalf("expected the second rejection to cost one stash round (20 runs), got %d", runner.calls)
+	}
+	pushes := runner.stashPushInvocations()
+	if len(pushes) != 1 {
+		t.Fatalf("expected exactly one stash push (second rejection only), got %d", len(pushes))
+	}
+	push := strings.Join(pushes[0].Args, " ")
+	if !strings.Contains(push, "step 1 rejected attempt 2") {
+		t.Fatalf("expected the stash message to name the step and attempt, got %q", push)
+	}
+	for _, protected := range []string{":(exclude)STEPS.md", ":(exclude)FIXES.md", ":(exclude)NOTES.md", ":(exclude)logs"} {
+		if !strings.Contains(push, protected) {
+			t.Fatalf("expected the stash push to exclude %s, got %q", protected, push)
+		}
+	}
+	for _, want := range []string{"## Step 1", "aaa111", "widget.go | 5 +", "do not apply it wholesale"} {
+		if !strings.Contains(fixesAtRerun, want) {
+			t.Fatalf("expected FIXES.md to record %q for the re-run worker, got:\n%s", want, fixesAtRerun)
+		}
+	}
+	if rerun := runner.prompt(10); !strings.Contains(rerun, "aaa111") || !strings.Contains(rerun, "do not apply it wholesale") {
+		t.Fatalf("expected the re-run prompt to point at the stash as evidence, got:\n%s", rerun)
+	}
+	if drop := strings.Join(runner.invocations[14].Args, " "); drop != "stash drop stash@{0}" {
+		t.Fatalf("expected the passing step to drop its stash, got %q", drop)
+	}
+	if !strings.Contains(terminal.String(), "stashed the rejected attempt at step 1") {
+		t.Fatalf("expected a terminal note about the stash, got:\n%s", terminal.String())
+	}
+}
+
+func TestFirstRejectionRetriesInPlaceWithoutStashing(t *testing.T) {
+	fs := stepsFileStore()
+	fs.Write(".git", "")
+	runner := &fakeRunner{}
+	runner.script = func(call int, _ io.Writer) error {
+		switch call {
+		case 1: // startup: git status finds the tree clean
+		case 2: // work: check step 1
+			fs.Write("STEPS.md", twoStepsFirstChecked)
+		case 3: // verifier rejects step 1 (rejection #1)
+			fs.Write("STEPS.md", twoStepsNoneChecked)
+		case 4: // work re-runs step 1 on top of the failed attempt
+			fs.Write("STEPS.md", twoStepsFirstChecked)
+		case 5: // verifier approves (6, 7: git add + commit)
+		case 8: // work: check step 2
+			fs.Write("STEPS.md", twoStepsAllChecked)
+		case 9: // verifier approves (10, 11: git add + commit)
+		case 12: // the whole-plan audit approves
+			fs.Write("STOP.md", "audit: plan satisfied")
+		}
+		return nil
+	}
+	o := services.NewOrchestrator(runner, fs, &fakeClock{now: time.Now()}, &fakeLogSink{}, io.Discard, stashConfig())
+
+	outcome := o.Run(context.Background())
+
+	if outcome != models.OutcomeStopped || outcome.ExitCode() != 0 {
+		t.Fatalf("expected a clean completion, got %v (exit %d)", outcome, outcome.ExitCode())
+	}
+	if got := runner.stashPushInvocations(); len(got) != 0 {
+		t.Fatalf("expected no stash on a first rejection, got %d stash pushes", len(got))
+	}
+	if strings.Contains(runner.prompt(4), "git stash") {
+		t.Fatalf("expected the first retry's prompt to carry no stash note, got:\n%s", runner.prompt(4))
+	}
+}
+
+func TestDirtyTreeAtStartupDisablesStashing(t *testing.T) {
+	fs := stepsFileStore()
+	fs.Write(".git", "")
+	runner := &fakeRunner{}
+	runner.script = func(call int, out io.Writer) error {
+		switch call {
+		case 1: // startup: git status reports the user's own uncommitted change
+			fmt.Fprintln(out, " M main.go")
+		case 2: // work: check step 1
+			fs.Write("STEPS.md", twoStepsFirstChecked)
+		case 3: // verifier rejects step 1 (rejection #1)
+			fs.Write("STEPS.md", twoStepsNoneChecked)
+		case 4: // work: check step 1 again
+			fs.Write("STEPS.md", twoStepsFirstChecked)
+		case 5: // verifier rejects again (rejection #2: would stash, but disabled)
+			fs.Write("STEPS.md", twoStepsNoneChecked)
+		case 6: // work: check step 1 once more
+			fs.Write("STEPS.md", twoStepsFirstChecked)
+		case 7: // verifier approves (8, 9: git add + commit)
+		case 10: // work: check step 2
+			fs.Write("STEPS.md", twoStepsAllChecked)
+		case 11: // verifier approves (12, 13: git add + commit)
+		case 14: // the whole-plan audit approves
+			fs.Write("STOP.md", "audit: plan satisfied")
+		}
+		return nil
+	}
+	var terminal bytes.Buffer
+	o := services.NewOrchestrator(runner, fs, &fakeClock{now: time.Now()}, &fakeLogSink{}, &terminal, stashConfig())
+
+	outcome := o.Run(context.Background())
+
+	if outcome != models.OutcomeStopped || outcome.ExitCode() != 0 {
+		t.Fatalf("expected the run to complete without stashing, got %v (exit %d)", outcome, outcome.ExitCode())
+	}
+	if got := runner.stashPushInvocations(); len(got) != 0 {
+		t.Fatalf("expected pre-existing changes to disable stashing for the run, got %d stash pushes", len(got))
+	}
+	if !strings.Contains(terminal.String(), "changes that predate this run") {
+		t.Fatalf("expected a warning that stashing is disabled, got:\n%s", terminal.String())
+	}
+}
+
+func TestStashingRequiresGitCheckpointing(t *testing.T) {
+	cfg := stashConfig()
+	cfg.GitCheckpoint = false
+	fs := stepsFileStore()
+	fs.Write(".git", "")
+	runner := &fakeRunner{}
+	runner.script = func(call int, _ io.Writer) error {
+		switch call {
+		case 1: // work: check step 1 (no startup git status without checkpointing)
+			fs.Write("STEPS.md", twoStepsFirstChecked)
+		case 2, 4: // verifier rejects step 1 twice
+			fs.Write("STEPS.md", twoStepsNoneChecked)
+		case 3, 5: // work re-checks step 1
+			fs.Write("STEPS.md", twoStepsFirstChecked)
+		case 6: // verifier approves step 1
+		case 7: // work: check step 2
+			fs.Write("STEPS.md", twoStepsAllChecked)
+		case 8: // verifier approves step 2
+		case 9: // the whole-plan audit approves
+			fs.Write("STOP.md", "audit: plan satisfied")
+		}
+		return nil
+	}
+	o := services.NewOrchestrator(runner, fs, &fakeClock{now: time.Now()}, &fakeLogSink{}, io.Discard, cfg)
+
+	outcome := o.Run(context.Background())
+
+	if outcome != models.OutcomeStopped || outcome.ExitCode() != 0 {
+		t.Fatalf("expected a clean completion, got %v (exit %d)", outcome, outcome.ExitCode())
+	}
+	if got := runner.gitInvocations(); len(got) != 0 {
+		t.Fatalf("expected no git commands at all with checkpointing off, got %d", len(got))
+	}
+}
+
 func TestRunAbortsWhenStepsFileVanishesMidRun(t *testing.T) {
 	fs := stepsFileStore()
 	runner := &fakeRunner{script: func(int, io.Writer) error {

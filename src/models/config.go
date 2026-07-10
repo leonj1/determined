@@ -47,4 +47,16 @@ type Config struct {
 	// replan that changes nothing cannot be retried forever. 0 disables
 	// replanning; the run then stalls exactly as without it.
 	MaxReplans int
+	// StashAttempts git-stashes the working tree's rejected attempt once the
+	// same step has been rejected a second time (by the check gate, verifier,
+	// or audit), so the retry starts from the last verified checkpoint instead
+	// of on top of repeatedly failed work. The stash's immutable hash and
+	// diffstat are recorded in FIXES.md and the re-run prompt, and a step's
+	// stashes are dropped once it finally passes. Needs GitCheckpoint, a git
+	// repository, and a working tree that starts the run clean apart from the
+	// protocol files; otherwise the run degrades to retrying in place.
+	StashAttempts bool
+	// LogDir is the per-iteration log directory; attempt stashes and the
+	// startup cleanliness check exclude it alongside the protocol files.
+	LogDir string
 }

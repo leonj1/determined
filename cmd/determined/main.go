@@ -79,6 +79,8 @@ func main() {
 		"shell command (run via `sh -c`) that must succeed after each iteration that checks a step; on failure the step is unchecked and the output tail recorded in FIXES.md; empty disables the gate")
 	maxReplans := flag.Int("max-replans", 1,
 		"when the stall cap is hit, ask the tool to replace the stuck step with smaller steps instead of stopping, at most this many times per run; 0 disables replanning")
+	stashAttempts := flag.Bool("stash-attempts", true,
+		"git-stash a step's failed attempt from its second rejection on (recording the stash hash in FIXES.md) so retries start from the last verified checkpoint; needs --git-checkpoint and a working tree that starts clean")
 	showVersion := flag.Bool("version", false, "print the version and exit")
 	flag.Parse()
 
@@ -103,7 +105,7 @@ func main() {
 	if *plan != "" {
 		outcome = runPlan(ctx, selected, *plan, *budget, *maxStepPasses, clock, logs)
 	} else {
-		outcome = runLoop(ctx, selected, *budget, *maxStalled, *maxFailures, *maxIterationDuration, *verify, *gitCheckpoint, *checkCmd, *maxReplans, clock, logs)
+		outcome = runLoop(ctx, selected, *budget, *maxStalled, *maxFailures, *maxIterationDuration, *verify, *gitCheckpoint, *checkCmd, *maxReplans, *stashAttempts, *logDir, clock, logs)
 	}
 
 	fmt.Fprintf(os.Stderr, "\ndetermined: %s\n", outcome)
@@ -111,7 +113,7 @@ func main() {
 }
 
 // runLoop runs the unattended execute loop against PLAN.md / STEPS.md.
-func runLoop(ctx context.Context, tool models.Tool, budget time.Duration, maxStalled, maxFailures int, maxIterationDuration time.Duration, verify, gitCheckpoint bool, checkCmd string, maxReplans int, clock services.Clock, logs services.LogSink) models.Outcome {
+func runLoop(ctx context.Context, tool models.Tool, budget time.Duration, maxStalled, maxFailures int, maxIterationDuration time.Duration, verify, gitCheckpoint bool, checkCmd string, maxReplans int, stashAttempts bool, logDir string, clock services.Clock, logs services.LogSink) models.Outcome {
 	cfg := models.Config{
 		StopFile:               "STOP.md",
 		PlanFile:               "PLAN.md",
@@ -125,6 +127,8 @@ func runLoop(ctx context.Context, tool models.Tool, budget time.Duration, maxSta
 		GitCheckpoint:          gitCheckpoint,
 		CheckCmd:               checkCmd,
 		MaxReplans:             maxReplans,
+		StashAttempts:          stashAttempts,
+		LogDir:                 logDir,
 	}
 	orchestrator := services.NewOrchestrator(
 		clients.NewExecCommandRunner(),
