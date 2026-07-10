@@ -441,10 +441,13 @@ func TestEachIterationTargetsTheNextIncompleteStep(t *testing.T) {
 	}
 	first := runner.prompt(1)
 	for _, want := range []string{
+		"You are one invocation of an orchestrated loop",
 		"Read NOTES.md if it exists before starting.",
-		"Work on exactly this step and no other: 2. Wire the parser into the loop.",
+		"If FIXES.md exists, read it too",
+		"Work on exactly step 2 and no other: 2. Wire the parser into the loop.",
 		"Its acceptance criterion: go test ./... passes.",
-		"Mark it `[x]` in STEPS.md when done.",
+		"mark step 2 `[x]` in STEPS.md only once it passes",
+		"do not create STOP.md",
 		"append to NOTES.md any decisions, conventions, or gotchas later steps need to know",
 	} {
 		if !strings.Contains(first, want) {
@@ -545,8 +548,11 @@ func TestVerifierApprovalLetsTheLoopAdvance(t *testing.T) {
 	for _, want := range []string{
 		"Step 1 claims complete: 1. Add the widget.",
 		"Acceptance criterion: widget tests pass.",
-		"Verify by reading the code and running the stated check.",
-		"FIXES.md",
+		"Assume the step is incomplete until you have run the check and seen it pass",
+		"verify by reading the code and running the stated check",
+		"append an entry to FIXES.md under a `## Step 1` heading",
+		"Do not fix anything yourself, do not modify code",
+		"uncheck any step other than step 1",
 	} {
 		if !strings.Contains(verify, want) {
 			t.Fatalf("expected the verifier prompt to contain %q, got:\n%s", want, verify)
@@ -684,8 +690,10 @@ func TestAuditApprovalEndsTheRunSuccessfully(t *testing.T) {
 	for _, want := range []string{
 		"Read PLAN.md and STEPS.md.",
 		"Audit whether the implementation genuinely satisfies the plan.",
+		"Run the project's build and test suite",
 		"append the reason to FIXES.md",
-		"create STOP.md",
+		"do not fix anything yourself",
+		"create STOP.md containing a short report",
 	} {
 		if !strings.Contains(audit, want) {
 			t.Fatalf("expected the audit prompt to contain %q, got:\n%s", want, audit)

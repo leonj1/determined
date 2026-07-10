@@ -23,11 +23,17 @@ itself every iteration; it never trusts the tool's own claim of completion.
    budget is checked *between* iterations, so an in-flight tool run always
    finishes first.
 3. **Prompt construction** — the orchestrator re-reads `STEPS.md` and aims the
-   tool at exactly the next unchecked step, injecting the step text and its
-   `Done when:` criterion, plus the `NOTES.md` read/append instructions (see
-   below). When every box is checked, the iteration is the whole-plan audit
-   instead. If `STEPS.md` contains no parseable checkboxes, the tool is asked
-   to restore a checkbox-format step list or confirm completion.
+   tool at exactly the next unchecked step, injecting the step number and
+   text, its `Done when:` criterion, and the `NOTES.md` read/append
+   instructions (see below). Every prompt opens with a short protocol
+   preamble (fresh context, file roles). The worker is told to read
+   `FIXES.md` first in case the step was reopened, to consult `PLAN.md` when
+   the step is unclear, to check the box only after running the acceptance
+   check itself, and never to touch other boxes or create `STOP.md`. When
+   every box is checked, the iteration is the whole-plan audit instead. If
+   `STEPS.md` contains no parseable checkboxes, the tool is asked to re-read
+   `PLAN.md` and either restore a checkbox-format step list or confirm
+   completion.
 4. **Invocation** — the tool's command runs, streaming its output live **and**
    teeing it to `logs/iter-NNNN-<timestamp>.log`. Each invocation is bounded
    by `--max-iteration-duration` (default **15m**, `0` = unlimited); a timed
@@ -38,9 +44,12 @@ itself every iteration; it never trusts the tool's own claim of completion.
    with exit **1**. `SIGINT` / `SIGTERM` stop immediately with exit **1**.
 6. **Verification pass** (`--verify`, default **on**) — for every step this
    iteration newly checked, a fresh reviewer invocation confirms the
-   acceptance criterion actually holds. If it does not, the reviewer unchecks
-   the step in `STEPS.md` and appends what is wrong to `FIXES.md`, so the loop
-   re-runs it.
+   acceptance criterion actually holds. The reviewer is prompted skeptically
+   (assume incomplete until the check is seen to pass) and is forbidden from
+   fixing anything itself or touching other steps. If the criterion does not
+   hold, the reviewer unchecks the step in `STEPS.md` and appends a
+   `## Step N` entry to `FIXES.md` naming the failing check, so the loop
+   re-runs the step with that feedback.
 7. **Git checkpoint** (`--git-checkpoint`, default **on**) — each newly
    checked step that survived verification is committed as
    `determined: step N: <step text>` (`git add -A && git commit`). Outside a
@@ -56,11 +65,16 @@ itself every iteration; it never trusts the tool's own claim of completion.
 
 Checked boxes alone are not success. Once every step is checked, one more
 invocation reads `PLAN.md` and `STEPS.md` and audits whether the
-implementation genuinely satisfies the plan:
+implementation genuinely satisfies the plan. The audit must run the project's
+build and test suite — not just read — and judge the steps as a whole, since
+it is the only invocation positioned to catch integration failures between
+individually verified steps:
 
 - If a step is not actually satisfied, the audit unchecks it and appends the
-  reason to `FIXES.md` — the loop resumes on that step.
-- If everything is satisfied, the audit creates `STOP.md`.
+  reason to `FIXES.md` — the loop resumes on that step. It never fixes
+  anything itself.
+- If everything is satisfied, the audit creates `STOP.md` containing a short
+  report: what was built, what checks ran, and their results.
 
 Only *all steps checked + `STOP.md` present* ends the run with exit **0**.
 
@@ -70,9 +84,9 @@ Only *all steps checked + `STOP.md` present* ends the run with exit **0**.
 |------------|-------------------------------------------------------------------|
 | `PLAN.md`  | The plan the steps implement; read by the audit. Required at startup. |
 | `STEPS.md` | Checkbox step list with `Done when:` criteria; the loop's source of truth. Required at startup. |
-| `STOP.md`  | Created by the whole-plan audit to approve the finished run; deleted if it appears early. |
+| `STOP.md`  | Created by the whole-plan audit to approve the finished run, holding a short audit report; deleted if it appears early. |
 | `NOTES.md` | Cross-iteration memory (see below); created by the tool on first use. |
-| `FIXES.md` | Why the verifier or audit reopened a step; appended by reviewer invocations. |
+| `FIXES.md` | Why the verifier or audit reopened a step; appended by reviewer invocations, read back by the worker when it re-runs a reopened step. |
 
 ## NOTES.md
 

@@ -99,6 +99,7 @@ func TestNextIncompleteStep(t *testing.T) {
 	cases := []struct {
 		name     string
 		steps    []services.Step
+		wantIdx  int
 		want     services.Step
 		wantFind bool
 	}{
@@ -109,26 +110,29 @@ func TestNextIncompleteStep(t *testing.T) {
 				{Text: "two", DoneWhen: "tests pass"},
 				{Text: "three"},
 			},
+			wantIdx:  1,
 			want:     services.Step{Text: "two", DoneWhen: "tests pass"},
 			wantFind: true,
 		},
 		{
 			name:     "all complete finds nothing",
 			steps:    []services.Step{{Text: "one", Completed: true}},
+			wantIdx:  -1,
 			wantFind: false,
 		},
 		{
 			name:     "empty list finds nothing",
 			steps:    nil,
+			wantIdx:  -1,
 			wantFind: false,
 		},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			got, ok := services.NextIncompleteStep(c.steps)
-			if ok != c.wantFind || !reflect.DeepEqual(got, c.want) {
-				t.Fatalf("NextIncompleteStep(%#v) = %#v, %v; want %#v, %v",
-					c.steps, got, ok, c.want, c.wantFind)
+			idx, got, ok := services.NextIncompleteStep(c.steps)
+			if idx != c.wantIdx || ok != c.wantFind || !reflect.DeepEqual(got, c.want) {
+				t.Fatalf("NextIncompleteStep(%#v) = %d, %#v, %v; want %d, %#v, %v",
+					c.steps, idx, got, ok, c.wantIdx, c.want, c.wantFind)
 			}
 		})
 	}

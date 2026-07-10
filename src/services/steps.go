@@ -50,14 +50,16 @@ func ParseSteps(content string) []Step {
 	return steps
 }
 
-// NextIncompleteStep returns the first unchecked step and whether one exists.
-func NextIncompleteStep(steps []Step) (Step, bool) {
-	for _, s := range steps {
+// NextIncompleteStep returns the first unchecked step, its zero-based index,
+// and whether one exists. The index lets prompts name the step by number, so
+// the tool edits the right checkbox even when step texts look alike.
+func NextIncompleteStep(steps []Step) (int, Step, bool) {
+	for i, s := range steps {
 		if !s.Completed {
-			return s, true
+			return i, s, true
 		}
 	}
-	return Step{}, false
+	return -1, Step{}, false
 }
 
 // AllStepsComplete reports whether the list is non-empty and every step is

@@ -268,17 +268,28 @@ func (o *Orchestrator) verifyNewSteps(ctx context.Context, before []Step) (model
 
 // verifyPrompt builds the reviewer instruction for one newly checked step:
 // confirm the acceptance criterion actually holds, and reopen the step with an
-// explanation in FIXES.md when it does not.
+// explanation in FIXES.md when it does not. The stance is deliberately
+// skeptical (the verifier is the same model that did the work), the FIXES.md
+// entry is structured so the re-run worker can find and act on it, and fixing
+// is forbidden: a verifier that repairs code produces an unverified fix and
+// skips the FIXES.md record.
 func verifyPrompt(n int, step Step) string {
 	var b strings.Builder
+	b.WriteString(promptPreamble)
 	fmt.Fprintf(&b, "Step %d claims complete: %s", n, sentence(step.Text))
 	if step.DoneWhen != "" {
 		b.WriteString(" Acceptance criterion: ")
 		b.WriteString(sentence(step.DoneWhen))
 	}
-	b.WriteString(" Verify by reading the code and running the stated check. " +
-		"If not genuinely done, change the step's `[x]` back to `[ ]` in STEPS.md " +
-		"and append what is wrong to FIXES.md; if done, do nothing.")
+	fmt.Fprintf(&b, " You are the reviewer, not the worker. Assume the step is "+
+		"incomplete until you have run the check and seen it pass: verify by reading "+
+		"the code and running the stated check. Read NOTES.md if it exists for the "+
+		"conventions earlier steps recorded. "+
+		"If not genuinely done, change the step's `[x]` back to `[ ]` in STEPS.md "+
+		"and append an entry to FIXES.md under a `## Step %d` heading stating the "+
+		"specific failing check and what would make it pass; if done, do nothing. "+
+		"Do not fix anything yourself, do not modify code, and do not check or "+
+		"uncheck any step other than step %d.", n, n)
 	return b.String()
 }
 
@@ -329,11 +340,23 @@ func (o *Orchestrator) gitCommit(ctx context.Context, n int, step Step) {
 	fmt.Fprintf(o.terminal, "determined: git checkpoint committed for step %d\n", n)
 }
 
+// promptPreamble opens every injected prompt. Each invocation starts with a
+// fresh context that knows nothing of the loop's protocol, so the file roles
+// must be restated every time for the cost of a couple of sentences.
+const promptPreamble = "You are one invocation of an orchestrated loop that runs an AI " +
+	"coding tool once per step; you start with no memory of earlier invocations. " +
+	"STEPS.md is the loop's source of truth, NOTES.md is cross-iteration memory, and " +
+	"FIXES.md records why previously rejected work was reopened. "
+
 // noParsableStepsPrompt is used when STEPS.md contains no checkbox-format
 // steps, so the orchestrator cannot judge progress itself: the tool either
 // restores a parseable step list or confirms the work is done with STOP.md.
-const noParsableStepsPrompt = "Read STEPS.md. It contains no checkbox-format steps " +
-	"(`- [ ]` items), so progress cannot be tracked. If work remains, rewrite STEPS.md " +
+// PLAN.md is the reference for what remains, since the corrupt steps file
+// alone cannot answer that.
+const noParsableStepsPrompt = promptPreamble +
+	"Read STEPS.md. It contains no checkbox-format steps " +
+	"(`- [ ]` items), so progress cannot be tracked. Read PLAN.md to determine what " +
+	"work remains. If work remains, rewrite STEPS.md " +
 	"as a markdown checkbox list, one `- [ ]` item per remaining step, each ending with " +
 	"a `Done when:` line stating a checkable acceptance condition. " +
 	"If the work is genuinely finished, create STOP.md. Do not start new work."
@@ -342,10 +365,19 @@ const noParsableStepsPrompt = "Read STEPS.md. It contains no checkbox-format ste
 // The audit either confirms the implementation satisfies the plan by creating
 // STOP.md — the only thing that lets an all-checked run end successfully — or
 // reopens the steps that fall short, sending the loop back to step execution.
-const auditPrompt = "All steps in STEPS.md are checked complete. Read PLAN.md and STEPS.md. " +
+// It must actually build and test rather than read: it is the only invocation
+// positioned to catch integration failures between individually verified
+// steps. STOP.md carries a short evidence report so approval cannot be an
+// empty rubber stamp.
+const auditPrompt = promptPreamble +
+	"All steps in STEPS.md are checked complete. Read PLAN.md and STEPS.md. " +
 	"Audit whether the implementation genuinely satisfies the plan. " +
+	"Run the project's build and test suite as part of the audit, and check that the " +
+	"steps work together as a whole, not just individually. " +
 	"If a step is not actually satisfied, change its `[x]` back to `[ ]` in STEPS.md " +
-	"and append the reason to FIXES.md. If everything is satisfied, create STOP.md. " +
+	"and append the reason to FIXES.md; do not fix anything yourself. " +
+	"If everything is satisfied, create STOP.md containing a short report: what was " +
+	"built, what checks you ran, and their results. " +
 	"Do not start work beyond this audit."
 
 // iterationPrompt reads the steps file and builds this iteration's instruction:
@@ -363,29 +395,43 @@ func (o *Orchestrator) iterationPrompt() (string, error) {
 			"determined: all steps checked; auditing the whole plan before declaring success")
 		return auditPrompt, nil
 	}
-	step, ok := NextIncompleteStep(steps)
+	i, step, ok := NextIncompleteStep(steps)
 	if !ok {
 		return noParsableStepsPrompt, nil
 	}
-	return stepPrompt(step), nil
+	return stepPrompt(i+1, step), nil
 }
 
 // stepPrompt builds the execute instruction for a single step: work only that
 // step, meet its acceptance criterion, and check its box when done. NOTES.md
 // carries knowledge between otherwise-independent invocations: each iteration
 // reads what earlier steps recorded and appends what later steps need to know.
-func stepPrompt(step Step) string {
+// The step is named by number so the tool edits the right checkbox even when
+// step texts look alike. FIXES.md is offered first because a reopened step's
+// worker would otherwise repeat the exact mistake the reviewer rejected. The
+// box may only be checked after the acceptance check passes — self-correction
+// here is cheaper than a verifier rejection, which costs a full extra
+// invocation plus stall-counter pressure. Creating STOP.md and touching other
+// boxes are forbidden outright: the orchestrator can clean both up, but
+// prevention is cheaper than deletion, and a wrongly ticked box silently
+// skips work until the audit.
+func stepPrompt(n int, step Step) string {
 	var b strings.Builder
+	b.WriteString(promptPreamble)
 	b.WriteString("Read NOTES.md if it exists before starting. ")
-	b.WriteString("Work on exactly this step and no other: ")
+	b.WriteString("If FIXES.md exists, read it too: this step may have been reopened, " +
+		"and it explains what was wrong last time. ")
+	fmt.Fprintf(&b, "Work on exactly step %d and no other: ", n)
 	b.WriteString(sentence(step.Text))
 	if step.DoneWhen != "" {
 		b.WriteString(" Its acceptance criterion: ")
 		b.WriteString(sentence(step.DoneWhen))
 	}
-	b.WriteString(" Mark it `[x]` in STEPS.md when done. " +
-		"Before finishing, append to NOTES.md any decisions, conventions, or " +
-		"gotchas later steps need to know.")
+	fmt.Fprintf(&b, " Read PLAN.md for overall context if the step is unclear. "+
+		"Run the acceptance check yourself and mark step %d `[x]` in STEPS.md only "+
+		"once it passes. Do not check or uncheck any other step, and do not create "+
+		"STOP.md. Before finishing, append to NOTES.md any decisions, conventions, or "+
+		"gotchas later steps need to know.", n)
 	return b.String()
 }
 
