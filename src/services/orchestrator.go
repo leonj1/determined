@@ -26,15 +26,11 @@ type LogSink interface {
 	OpenIteration(iteration int) (io.WriteCloser, error)
 }
 
-// Orchestrator runs the AI coding tool in a loop until every step in the
-// steps file is checked complete and a final whole-plan audit approves, too
-// many invocations fail in a row, the time budget is exhausted, progress
-// stalls, or a signal interrupts it. Each iteration it re-reads the steps
-// file and aims the tool at exactly the next unchecked step; once every box
-// is checked, the next iteration is an audit of the whole plan instead. The
-// run ends successfully only when all steps are checked AND the audit has
-// created STOP.md: a STOP.md created while unchecked steps remain is deleted
-// and the loop continues.
+// Orchestrator runs the AI coding tool until every step and enabled review
+// gate passes, too many invocations fail, the budget expires, progress stalls,
+// or a signal interrupts it. Each iteration targets the next unchecked step.
+// Once every box is checked, specialist reviews precede the whole-plan audit.
+// Only that final sequence can create an accepted STOP.md.
 type Orchestrator struct {
 	runner   CommandRunner
 	files    FileStore
@@ -51,6 +47,14 @@ type Orchestrator struct {
 	// cfg.MaxConsecutiveFailures ends the run with OutcomeDroidFailed. Any
 	// successful invocation resets it.
 	failures int
+}
+
+// invocationResult distinguishes a successful tool run from a retryable
+// failure, which lets a review sequence stop before later gates run.
+type invocationResult struct {
+	outcome   models.Outcome
+	stop      bool
+	succeeded bool
 }
 
 // NewOrchestrator wires an orchestrator from its dependencies.
@@ -134,9 +138,9 @@ func (o *Orchestrator) preIteration(ctx context.Context, deadline time.Time) (mo
 // checkCompletion decides whether the run is finished by parsing the steps
 // file. Checked boxes alone are not success: the run ends cleanly only when
 // every step is checked AND the whole-plan audit has recorded its approval as
-// STOP.md. All boxes checked without STOP.md means the audit still has to run
-// (the next iteration is the audit), and a STOP.md that appears while
-// unchecked steps remain is deleted so the loop keeps going.
+// STOP.md. With specialist gates enabled, an existing sentinel is discarded
+// so the current run performs those reviews before auditing. A STOP.md that
+// appears while unchecked steps remain is also deleted.
 func (o *Orchestrator) checkCompletion() (models.Outcome, bool) {
 	content, err := o.files.Read(o.cfg.StepsFile)
 	if err != nil {
@@ -146,6 +150,10 @@ func (o *Orchestrator) checkCompletion() (models.Outcome, bool) {
 	switch {
 	case AllStepsComplete(steps):
 		if o.files.Exists(o.cfg.StopFile) {
+			if o.cfg.SpecializedReviews {
+				o.deleteUnreviewedStop()
+				return models.OutcomeStopped, false
+			}
 			return models.OutcomeStopped, true
 		}
 	case len(steps) > 0:
@@ -156,6 +164,18 @@ func (o *Orchestrator) checkCompletion() (models.Outcome, bool) {
 		return models.OutcomeStopped, true
 	}
 	return models.OutcomeStopped, false
+}
+
+// deleteUnreviewedStop prevents a sentinel left by a worker or an earlier run
+// from bypassing the enabled specialist gates in the current run.
+func (o *Orchestrator) deleteUnreviewedStop() {
+	if err := o.files.Remove(o.cfg.StopFile); err != nil {
+		fmt.Fprintf(o.terminal, "determined: could not delete unreviewed %s: %v\n", o.cfg.StopFile, err)
+		return
+	}
+	fmt.Fprintf(o.terminal,
+		"determined: warning: removed existing %s so specialist reviews can run\n",
+		o.cfg.StopFile)
 }
 
 // deletePrematureStop removes a STOP.md created while unchecked steps remain,
@@ -213,32 +233,37 @@ func (o *Orchestrator) runComplete(steps []Step) bool {
 // runOnce runs a single work invocation aimed at the next unchecked step. It
 // reports whether the loop should stop.
 func (o *Orchestrator) runOnce(ctx context.Context) (models.Outcome, bool) {
+	if AllStepsComplete(o.parsedSteps()) {
+		return o.runCompletionReviews(ctx)
+	}
 	prompt, err := o.iterationPrompt()
 	if err != nil {
 		fmt.Fprintf(o.terminal, "determined: could not read %s: %v\n", o.cfg.StepsFile, err)
 		return models.OutcomeDroidFailed, true
 	}
-	return o.invoke(ctx, prompt)
+	result := o.invoke(ctx, prompt)
+	return result.outcome, result.stop
 }
 
 // invoke runs one tool invocation with the given prompt, teeing its output to
 // the terminal and a fresh per-iteration log. It reports whether the loop
 // should stop.
-func (o *Orchestrator) invoke(ctx context.Context, prompt string) (models.Outcome, bool) {
+func (o *Orchestrator) invoke(ctx context.Context, prompt string) invocationResult {
 	o.iteration++
 	log, err := o.logs.OpenIteration(o.iteration)
 	if err != nil {
-		return models.OutcomeDroidFailed, true
+		return invocationResult{outcome: models.OutcomeDroidFailed, stop: true}
 	}
 	defer log.Close()
 	out := io.MultiWriter(o.terminal, log)
 	runCtx, cancel := o.iterationContext(ctx)
 	defer cancel()
 	if err := o.runner.Run(runCtx, o.cfg.Tool.Invocation(prompt), out); err != nil {
-		return o.recordFailure(ctx, err)
+		outcome, stop := o.recordFailure(ctx, err)
+		return invocationResult{outcome: outcome, stop: stop}
 	}
 	o.failures = 0
-	return models.OutcomeStopped, false // outcome ignored when stop is false
+	return invocationResult{outcome: models.OutcomeStopped, succeeded: true}
 }
 
 // verifyNewSteps runs an independent reviewer invocation over every step the
@@ -259,11 +284,69 @@ func (o *Orchestrator) verifyNewSteps(ctx context.Context, before []Step) (model
 			continue
 		}
 		fmt.Fprintf(o.terminal, "determined: verifying step %d\n", i+1)
-		if outcome, stop := o.invoke(ctx, verifyPrompt(i+1, step)); stop {
-			return outcome, true
+		result := o.invoke(ctx, verifyPrompt(i+1, step))
+		if result.stop {
+			return result.outcome, true
+		}
+		if !result.succeeded {
+			return models.OutcomeStopped, false
 		}
 	}
 	return models.OutcomeStopped, false // outcome ignored when stop is false
+}
+
+// specializedReview describes one independent whole-codebase review gate.
+type specializedReview struct {
+	name  string
+	focus string
+}
+
+// runCompletionReviews runs every enabled specialist before the general
+// whole-plan audit. A failure or a reviewer-created remediation step prevents
+// later gates from running until the next outer iteration.
+func (o *Orchestrator) runCompletionReviews(ctx context.Context) (models.Outcome, bool) {
+	if o.cfg.SpecializedReviews {
+		result := o.runSpecializedReviews(ctx)
+		if result.stop {
+			return result.outcome, true
+		}
+		if !result.succeeded {
+			return models.OutcomeStopped, false
+		}
+	}
+	fmt.Fprintln(o.terminal,
+		"determined: all steps checked; auditing the whole plan before declaring success")
+	result := o.invoke(ctx, auditPrompt)
+	if result.succeeded && o.runComplete(o.parsedSteps()) {
+		return models.OutcomeStopped, true
+	}
+	return result.outcome, result.stop
+}
+
+func (o *Orchestrator) runSpecializedReviews(ctx context.Context) invocationResult {
+	for _, review := range specializedReviewSequence() {
+		fmt.Fprintf(o.terminal, "determined: running %s review\n", review.name)
+		result := o.invoke(ctx, specializedReviewPrompt(review))
+		if result.stop {
+			return result
+		}
+		if !result.succeeded || !AllStepsComplete(o.parsedSteps()) {
+			return invocationResult{outcome: models.OutcomeStopped}
+		}
+	}
+	return invocationResult{outcome: models.OutcomeStopped, succeeded: true}
+}
+
+func specializedReviewSequence() []specializedReview {
+	return []specializedReview{
+		{name: "security", focus: "authentication and authorization, trust boundaries, injection, input validation, secrets, cryptography, dependency risk, and sensitive-data exposure"},
+		{name: "performance", focus: "algorithmic complexity, repeated or unbounded work, database/network/file I/O, allocations, concurrency, resource leaks, and evidence from relevant benchmarks or profiling"},
+		{name: "reliability and maintainability", focus: "error handling, race conditions, lifecycle cleanup, edge cases, test gaps, API compatibility, readability, coupling, and consistency with project conventions"},
+	}
+}
+
+func specializedReviewPrompt(review specializedReview) string {
+	return fmt.Sprintf("Act as the independent %s specialist. Read PLAN.md, STEPS.md, and the implementation. Review the completed work specifically for %s. Run relevant checks when practical and report only concrete, actionable findings caused or exposed by this work. If you find a material issue, append the finding and evidence to FIXES.md, then reopen the most relevant step in STEPS.md; if no existing step fits, append a new unchecked remediation step with a `Done when:` criterion. If no material issue remains, do nothing. Do not implement fixes during this review.", review.name, review.focus)
 }
 
 // verifyPrompt builds the reviewer instruction for one newly checked step:
@@ -359,8 +442,6 @@ func (o *Orchestrator) iterationPrompt() (string, error) {
 	}
 	steps := ParseSteps(content)
 	if AllStepsComplete(steps) {
-		fmt.Fprintln(o.terminal,
-			"determined: all steps checked; auditing the whole plan before declaring success")
 		return auditPrompt, nil
 	}
 	step, ok := NextIncompleteStep(steps)

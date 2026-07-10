@@ -8,7 +8,8 @@ exactly the next unchecked step and its acceptance criterion. When the tool
 checks a step off, an independent reviewer invocation verifies the criterion
 actually holds — unchecking it and recording why in `FIXES.md` when it
 doesn't. Every verified step is git-committed. Only a final whole-plan audit
-can end the run successfully.
+can end the run successfully, and it is preceded by independent security,
+performance, and reliability/maintainability reviews.
 
 Don't have a plan yet? `determined --plan "your goal"` interviews you first
 and writes `PLAN.md` / `STEPS.md` for you.
@@ -98,9 +99,13 @@ Each iteration:
 7. **Stall detection** — `--max-stalled-iterations` iterations in a row with
    no newly checked step → exit `3`.
 
-Once every box is checked, a final **whole-plan audit** invocation judges the
-implementation against `PLAN.md`: it either reopens unsatisfied steps (the
-loop resumes) or creates `STOP.md` — the only way a run ends successfully.
+Once every box is checked, independent **security**, **performance**, and
+**reliability/maintainability** reviewers run before the final whole-plan
+audit. A specialist records concrete findings in `FIXES.md` and reopens the
+relevant step (or adds a remediation step), so the loop fixes the issue and
+reruns all specialist gates. The final audit then judges the implementation
+against `PLAN.md`: it either reopens unsatisfied steps or creates `STOP.md` —
+the only way a run ends successfully.
 
 See [EXECUTION.md](EXECUTION.md) for details.
 
@@ -141,6 +146,7 @@ ideally a clean git checkout, so every change is reviewable and revertible.
 | `--max-consecutive-failures` | `3` | Abort after this many consecutive failed tool invocations; any success resets the count. |
 | `--max-stalled-iterations` | `3` | Stop (exit `3`) after this many consecutive iterations check no new step. `0` disables stall detection. |
 | `--verify`       | `true`   | After each newly checked step, run an independent verifier invocation that unchecks it (recording why in `FIXES.md`) if its acceptance criterion is not met. |
+| `--specialized-reviews` | `true` | Before the final audit, run independent security, performance, and reliability/maintainability review gates. |
 | `--git-checkpoint` | `true` | Git-commit the working tree after each verified step when running in a git repository. |
 | `--log-dir`      | `logs`   | Directory for per-iteration log files.                          |
 | `--version`      | —        | Print the binary's semantic version and exit.                  |

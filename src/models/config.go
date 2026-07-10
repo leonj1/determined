@@ -31,6 +31,10 @@ type Config struct {
 	// step, which unchecks the step (and records why in FIXES.md) when its
 	// acceptance criterion is not genuinely met.
 	Verify bool
+	// SpecializedReviews runs independent security, performance, and
+	// reliability/maintainability reviews before the final whole-plan audit.
+	// A reviewer can reopen or add a remediation step in STEPS.md.
+	SpecializedReviews bool
 	// GitCheckpoint commits the working tree after each step survives
 	// verification, when the working directory is a git repository. Runs that
 	// go wrong can then be rewound step by step.

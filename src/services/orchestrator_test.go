@@ -656,6 +656,152 @@ func TestVerificationDisabledRunsNoVerifier(t *testing.T) {
 	}
 }
 
+func TestSpecializedReviewsRunBeforeTheWholePlanAudit(t *testing.T) {
+	cfg := config(0)
+	cfg.SpecializedReviews = true
+	fs := plannedFileStore(twoStepsAllChecked)
+	var terminal bytes.Buffer
+	runner := &fakeRunner{script: func(call int, _ io.Writer) error {
+		if call == 4 {
+			fs.Write("STOP.md", "audit: plan satisfied")
+		}
+		return nil
+	}}
+	o := services.NewOrchestrator(runner, fs, &fakeClock{now: time.Now()}, &fakeLogSink{}, &terminal, cfg)
+
+	outcome := o.Run(context.Background())
+
+	if outcome != models.OutcomeStopped || outcome.ExitCode() != 0 {
+		t.Fatalf("expected specialist-approved work to reach a successful audit, got %v", outcome)
+	}
+	if runner.calls != 4 {
+		t.Fatalf("expected three specialist reviews followed by the audit, got %d runs", runner.calls)
+	}
+	wants := []string{
+		"independent security specialist",
+		"independent performance specialist",
+		"independent reliability and maintainability specialist",
+		"Audit whether the implementation genuinely satisfies the plan",
+	}
+	for call, want := range wants {
+		if !strings.Contains(runner.prompt(call+1), want) {
+			t.Fatalf("review %d should contain %q, got:\n%s", call+1, want, runner.prompt(call+1))
+		}
+	}
+	for _, want := range []string{"reopen the most relevant step", "new unchecked remediation step", "Do not implement fixes"} {
+		if !strings.Contains(runner.prompt(1), want) {
+			t.Fatalf("specialist prompt should contain %q, got:\n%s", want, runner.prompt(1))
+		}
+	}
+	if !strings.Contains(terminal.String(), "running security review") {
+		t.Fatalf("expected the specialist sequence to be announced, got:\n%s", terminal.String())
+	}
+}
+
+func TestSpecialistFindingBlocksAuditUntilRemediated(t *testing.T) {
+	cfg := config(0)
+	cfg.SpecializedReviews = true
+	fs := plannedFileStore(twoStepsAllChecked)
+	runner := &fakeRunner{script: func(call int, _ io.Writer) error {
+		switch call {
+		case 1: // security review finds an issue and reopens its step
+			fs.Write("STEPS.md", twoStepsFirstChecked)
+			fs.Write("FIXES.md", "security: documentation example exposes a secret\n")
+		case 2: // worker remediates the reopened step
+			fs.Write("STEPS.md", twoStepsAllChecked)
+		case 6: // all three rerun specialists approve, then the audit approves
+			fs.Write("STOP.md", "audit: plan satisfied")
+		}
+		return nil
+	}}
+	o := services.NewOrchestrator(runner, fs, &fakeClock{now: time.Now()}, &fakeLogSink{}, io.Discard, cfg)
+
+	outcome := o.Run(context.Background())
+
+	if outcome != models.OutcomeStopped {
+		t.Fatalf("expected remediation to return through reviews and complete, got %v", outcome)
+	}
+	if runner.calls != 6 {
+		t.Fatalf("expected finding + remediation + three clean reviews + audit, got %d runs", runner.calls)
+	}
+	if !strings.Contains(runner.prompt(2), "2. Document the widget") {
+		t.Fatalf("expected the finding to resume the reopened step, got:\n%s", runner.prompt(2))
+	}
+	if strings.Contains(runner.prompt(2), "performance specialist") {
+		t.Fatal("expected the first finding to block later specialist reviews and the audit")
+	}
+}
+
+func TestSpecializedReviewsCanBeDisabled(t *testing.T) {
+	cfg := config(0)
+	cfg.SpecializedReviews = false
+	fs := plannedFileStore(twoStepsAllChecked)
+	runner := &fakeRunner{script: func(int, io.Writer) error {
+		fs.Write("STOP.md", "audit: plan satisfied")
+		return nil
+	}}
+	o := services.NewOrchestrator(runner, fs, &fakeClock{now: time.Now()}, &fakeLogSink{}, io.Discard, cfg)
+
+	outcome := o.Run(context.Background())
+
+	if outcome != models.OutcomeStopped || runner.calls != 1 {
+		t.Fatalf("expected only the general audit when specialist reviews are off, got %v and %d runs", outcome, runner.calls)
+	}
+	if strings.Contains(runner.prompt(1), "specialist") {
+		t.Fatalf("expected no specialist prompt when disabled, got:\n%s", runner.prompt(1))
+	}
+}
+
+func TestExistingStopCannotBypassEnabledSpecializedReviews(t *testing.T) {
+	cfg := config(0)
+	cfg.SpecializedReviews = true
+	fs := plannedFileStore(twoStepsAllChecked)
+	fs.Write("STOP.md", "left by an earlier run")
+	runner := &fakeRunner{script: func(call int, _ io.Writer) error {
+		if call == 4 {
+			fs.Write("STOP.md", "audit: plan satisfied")
+		}
+		return nil
+	}}
+	o := services.NewOrchestrator(runner, fs, &fakeClock{now: time.Now()}, &fakeLogSink{}, io.Discard, cfg)
+
+	outcome := o.Run(context.Background())
+
+	if outcome != models.OutcomeStopped || runner.calls != 4 {
+		t.Fatalf("expected existing STOP.md to be replaced after all review gates, got %v and %d runs", outcome, runner.calls)
+	}
+	if !strings.Contains(runner.prompt(1), "security specialist") {
+		t.Fatalf("expected the security review to run first, got:\n%s", runner.prompt(1))
+	}
+}
+
+func TestRetryableSpecialistFailureCannotReachTheAudit(t *testing.T) {
+	cfg := config(0)
+	cfg.SpecializedReviews = true
+	cfg.MaxConsecutiveFailures = 3
+	fs := plannedFileStore(twoStepsAllChecked)
+	runner := &fakeRunner{script: func(call int, _ io.Writer) error {
+		if call == 1 {
+			return errors.New("review tool unavailable")
+		}
+		if call == 5 {
+			fs.Write("STOP.md", "audit: plan satisfied")
+		}
+		return nil
+	}}
+	o := services.NewOrchestrator(runner, fs, &fakeClock{now: time.Now()}, &fakeLogSink{}, io.Discard, cfg)
+
+	outcome := o.Run(context.Background())
+
+	if outcome != models.OutcomeStopped || runner.calls != 5 {
+		t.Fatalf("expected a fresh specialist sequence after retryable failure, got %v and %d runs", outcome, runner.calls)
+	}
+	if !strings.Contains(runner.prompt(1), "security specialist") ||
+		!strings.Contains(runner.prompt(2), "security specialist") {
+		t.Fatal("expected the security gate to retry before performance or audit")
+	}
+}
+
 func TestAuditApprovalEndsTheRunSuccessfully(t *testing.T) {
 	fs := stepsFileStore()
 	var terminal bytes.Buffer

@@ -45,6 +45,8 @@ func main() {
 		"kill a single tool invocation after this long, counting it as a failed invocation; 0 means unlimited")
 	verify := flag.Bool("verify", true,
 		"after each newly checked step, run an independent verifier invocation that unchecks it (recording why in FIXES.md) if its acceptance criterion is not met")
+	specializedReviews := flag.Bool("specialized-reviews", true,
+		"before the final audit, run independent security, performance, and reliability/maintainability reviews")
 	gitCheckpoint := flag.Bool("git-checkpoint", true,
 		"git-commit the working tree after each verified step when running in a git repository")
 	showVersion := flag.Bool("version", false, "print the version and exit")
@@ -79,7 +81,7 @@ func main() {
 	if *plan != "" {
 		outcome = runPlan(ctx, selected, planInput(*plan, flag.Args()), planMode, *budget, *maxStepPasses, clock, logs)
 	} else {
-		outcome = runLoop(ctx, selected, *budget, *maxStalled, *maxFailures, *maxIterationDuration, *verify, *gitCheckpoint, clock, logs)
+		outcome = runLoop(ctx, selected, *budget, *maxStalled, *maxFailures, *maxIterationDuration, *verify, *specializedReviews, *gitCheckpoint, clock, logs)
 	}
 
 	fmt.Fprintf(os.Stderr, "\ndetermined: %s\n", outcome)
@@ -110,7 +112,7 @@ func refinePasses(mode models.PlanMode, configured int) int {
 }
 
 // runLoop runs the unattended execute loop against PLAN.md / STEPS.md.
-func runLoop(ctx context.Context, tool models.Tool, budget time.Duration, maxStalled, maxFailures int, maxIterationDuration time.Duration, verify, gitCheckpoint bool, clock services.Clock, logs services.LogSink) models.Outcome {
+func runLoop(ctx context.Context, tool models.Tool, budget time.Duration, maxStalled, maxFailures int, maxIterationDuration time.Duration, verify, specializedReviews, gitCheckpoint bool, clock services.Clock, logs services.LogSink) models.Outcome {
 	cfg := models.Config{
 		StopFile:               "STOP.md",
 		PlanFile:               "PLAN.md",
@@ -121,6 +123,7 @@ func runLoop(ctx context.Context, tool models.Tool, budget time.Duration, maxSta
 		MaxConsecutiveFailures: maxFailures,
 		MaxIterationDuration:   maxIterationDuration,
 		Verify:                 verify,
+		SpecializedReviews:     specializedReviews,
 		GitCheckpoint:          gitCheckpoint,
 	}
 	orchestrator := services.NewOrchestrator(
