@@ -15,9 +15,10 @@ worker was given (see below).
   directory.
 - A stale `STOP.md` sitting alongside unchecked steps is deleted with a
   warning instead of instantly ending the run as success.
-- A `run-report.json` left by a previous run is removed, so a fresh run never
-  sits alongside a report describing an older one; every termination — even
-  the missing-files exit above — writes a fresh one (see below).
+- A `run-report.json` or `STALLED.md` left by a previous run is removed, so a
+  fresh run never sits alongside reports describing an older one; every
+  termination — even the missing-files exit above — writes a fresh
+  `run-report.json` (see below), and only a stalled one writes `STALLED.md`.
 
 ## Each iteration
 
@@ -90,7 +91,8 @@ worker was given (see below).
 11. **Stall detection** — if `--max-stalled-iterations` consecutive iterations
     (default **3**) finish without a newly checked step, the run first tries a
     replan of the stuck step (see below); only when no replan is available or
-    the replan is ineffective does it exit **3**. Checking any step resets the
+    the replan is ineffective does it exit **3**, writing the `STALLED.md`
+    handoff report (see below) on the way out. Checking any step resets the
     counter; a tamper-guard revert or a check-gate, verifier, or audit
     rejection counts as no progress, which bounds worker/reviewer ping-pong.
     `0` disables stall detection.
@@ -149,6 +151,44 @@ attempt consumes one regardless of outcome. Replanning never applies when
 every box is already checked (audit ping-pong) — there is no single stuck
 step to split.
 
+## The stall handoff (STALLED.md)
+
+A stalled exit hands the run to a human, so alongside the machine-readable
+`run-report.json` a stalled run writes `STALLED.md` — a human-readable handoff
+report built mechanically from data the orchestrator already tracks, with no
+extra AI invocation:
+
+```markdown
+# Run stalled at step 4
+
+step: "Add retry logic to the fetcher."
+done when: TestFetchRetry passes.
+rejections: 3 (full entries in FIXES.md)
+  1. verifier rejected
+  2. check command failed: go test ./...
+  3. verifier rejected
+stashed attempts:
+  a1b2c3d  4 files changed, 120 insertions(+), 30 deletions(-)
+iterations: 9
+wall time: 42m of 1h budget
+replans used: 1 of 1
+```
+
+The stuck step is the first unchecked one, quoted with its `Done when:`
+criterion. Each rejection line is the short reason recorded when the check
+gate, verifier, or audit rejected the step (`FIXES.md` keeps the full
+entries); the stashed attempts list the immutable stash hashes and diffstat
+summaries the stash-attempts feature recorded, ready for `git stash show -p`.
+When the stall is audit ping-pong (every box checked, the audit never
+decides) or `STEPS.md` holds nothing parseable, the heading says so instead
+of naming a step. The replans line appears only when replanning is enabled.
+
+`STALLED.md` is written only on the stalled outcome: a stale one is removed
+at startup, any one left mid-run is removed on a non-stall exit, and attempt
+stashes exclude it like the other protocol files. Like the run report, it is
+an observer — a write failure is warned and ignored, never changing the
+outcome.
+
 ## The whole-plan audit
 
 Checked boxes alone are not success. Once every step is checked, one more
@@ -182,6 +222,7 @@ happen before the loop runs) write no report.
   "steps": {"total": 8, "checked": 3},
   "stuck_step": 4,
   "rejections": {"4": 3},
+  "report": "STALLED.md",
   "replans_used": 1,
   "iterations": 9,
   "wall_seconds": 2520,
@@ -196,6 +237,7 @@ happen before the loop runs) write no report.
 | `steps` | How many steps the final `STEPS.md` holds (`total`) and how many are checked (`checked`); omitted when nothing parses. |
 | `stuck_step` | The 1-based step a stalled run could not get past; present only when stalled. |
 | `rejections` | Per-step counts of check-gate, verifier, and audit rejections, keyed by the step's current number (or by its text, when a replan removed the step from the file); omitted when nothing was rejected. |
+| `report` | Names the human-readable `STALLED.md` handoff (see above); present only when the run stalled and the handoff was actually written. |
 | `replans_used` | Replan invocations spent on stuck steps; omitted when zero. |
 | `iterations` | Total tool invocations of the run: work, verify, audit, and replan alike. |
 | `wall_seconds` | The run's wall-clock duration. |
@@ -215,6 +257,7 @@ to the terminal and ignored.
 | `NOTES.md` | Cross-iteration memory (see below); created by the tool on first use. |
 | `FIXES.md` | Why the check gate, verifier, or audit reopened a step; appended by reviewer invocations (and mechanically by a failed `--check-cmd` or a stashed attempt), read back by the worker when it re-runs a reopened step. |
 | `run-report.json` | Machine-readable summary written by the orchestrator on every termination of the execute loop (see above); a stale one is removed at startup. |
+| `STALLED.md` | Human-readable stall handoff written by the orchestrator only on a stalled exit (see above): the stuck step, its rejection reasons, stashed attempts, and the run's counters. A stale one is removed at startup; a non-stall exit leaves none behind. |
 
 ## NOTES.md
 

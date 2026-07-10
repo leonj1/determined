@@ -46,6 +46,11 @@ work. Unlike the one-liner, it does not trust the tool's word for progress:
   failure, interruption), writes a machine-readable `run-report.json`
   summarizing the outcome, exit code, step tally, per-step rejections, and
   iteration/wall-clock totals (see [EXECUTION.md](EXECUTION.md)).
+- **Stall handoff report** — a run that exits stalled (exit `3`) also writes a
+  human-readable `STALLED.md` naming the stuck step, why each attempt at it
+  was rejected, and the stashed attempts to inspect — built mechanically from
+  data the orchestrator already tracks, with no extra AI invocation (see
+  [EXECUTION.md](EXECUTION.md)).
 
 It has two modes:
 
@@ -140,9 +145,9 @@ codes.
 | `--version`      | —        | Print the binary's semantic version and exit.                  |
 
 The protocol filenames (`PLAN.md` / `STEPS.md` / `STOP.md` / `NOTES.md` /
-`FIXES.md`) are hardcoded, as is the `run-report.json` summary every execute
-run writes on exit; the prompt is rebuilt each iteration from the next
-unchecked step in `STEPS.md`.
+`FIXES.md`) are hardcoded, as are the `run-report.json` summary every execute
+run writes on exit and the `STALLED.md` handoff a stalled run writes; the
+prompt is rebuilt each iteration from the next unchecked step in `STEPS.md`.
 
 ## Layout
 

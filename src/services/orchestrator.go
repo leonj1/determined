@@ -57,15 +57,17 @@ type Orchestrator struct {
 	// replansUsed counts replan invocations spent on stalled steps; once it
 	// reaches cfg.MaxReplans, hitting the stall cap ends the run for good.
 	replansUsed int
-	// rejections counts, per step (keyed by stepKey), how many times a checked
-	// box was rejected by the check gate, verifier, or audit. From the second
+	// rejections records, per step (keyed by stepKey), one short reason string
+	// per rejection of a checked box by the check gate, verifier, or audit, in
+	// order — a step's rejection count is its slice's length. From the second
 	// rejection of the same step onward the failed attempt is stashed so the
-	// retry starts from the last verified checkpoint.
-	rejections map[string]int
-	// stashes records, per step (keyed by stepKey), the immutable stash commit
-	// hashes of its stashed failed attempts, so re-run prompts can point at the
-	// latest one and a step that finally passes can drop them all.
-	stashes map[string][]string
+	// retry starts from the last verified checkpoint; the reasons feed the
+	// STALLED.md handoff, while FIXES.md keeps the full entries.
+	rejections map[string][]string
+	// stashes records, per step (keyed by stepKey), its stashed failed
+	// attempts, so re-run prompts can point at the latest one, a step that
+	// finally passes can drop them all, and a stalled run can list them.
+	stashes map[string][]stashRecord
 	// stashingEnabled reports whether failed-attempt stashing is available for
 	// this run; initAttemptStashing decides once at startup.
 	stashingEnabled bool
@@ -87,21 +89,26 @@ func NewOrchestrator(
 		logs:       logs,
 		terminal:   terminal,
 		cfg:        cfg,
-		rejections: map[string]int{},
-		stashes:    map[string][]string{},
+		rejections: map[string][]string{},
+		stashes:    map[string][]stashRecord{},
 	}
 }
 
 // Run executes the loop and returns the terminal outcome. Every termination —
 // success, stall, tool-failure abort, exhausted budget, interruption, even
 // missing protocol files — also writes the machine-readable run-report.json
-// summary, built from state the loop already tracks; reporting is an observer
-// and never changes the outcome.
+// summary, built from state the loop already tracks; a stalled termination
+// additionally writes the human-readable STALLED.md handoff from the same
+// state. Reporting is an observer and never changes the outcome.
 func (o *Orchestrator) Run(ctx context.Context) models.Outcome {
 	start := o.clock.Now()
-	o.removeStaleReport()
+	o.removeStaleReports()
 	outcome := o.run(ctx)
-	o.writeRunReport(outcome, start)
+	report := ""
+	if o.writeStalledReport(outcome, start) {
+		report = stalledReportFile
+	}
+	o.writeRunReport(outcome, start, report)
 	return outcome
 }
 
@@ -133,13 +140,14 @@ func (o *Orchestrator) run(ctx context.Context) models.Outcome {
 		// rejection tracking can tell a gate/verifier rejection (checked here,
 		// unchecked below) from a step that was never checked at all.
 		afterWork := o.parsedSteps()
-		if o.checkGatePassed(ctx, before) {
+		gatePassed := o.checkGatePassed(ctx, before)
+		if gatePassed {
 			if outcome, stop := o.verifyNewSteps(ctx, before); stop {
 				return outcome
 			}
 			o.checkpointNewSteps(ctx, before)
 		}
-		o.recordRejections(ctx, intent, before, afterWork)
+		o.recordRejections(ctx, intent, before, afterWork, gatePassed)
 		if o.stalledOut(CompletedStepCount(before)) {
 			outcome, stop, resumed := o.replanStuckStep(ctx)
 			if stop {
@@ -677,6 +685,14 @@ const stashAfterRejections = 2
 // survive the index shifts a replan of other steps can cause.
 func stepKey(s Step) string { return s.Text + "\x00" + s.DoneWhen }
 
+// stashRecord is one stashed failed attempt: the immutable stash commit hash
+// the re-run prompt and drop bookkeeping key off, plus the one-line diffstat
+// summary the STALLED.md handoff shows per attempt.
+type stashRecord struct {
+	hash string
+	stat string
+}
+
 // git runs one git command bounded by gitCheckpointTimeout, capturing its
 // output instead of streaming it: the stash bookkeeping commands are plumbing
 // whose output the user does not need live.
@@ -691,13 +707,14 @@ func (o *Orchestrator) git(ctx context.Context, args ...string) (string, error) 
 // protectedPaths lists the files an attempt stash must never touch: STEPS.md
 // and FIXES.md hold the rejection the retry needs to see, NOTES.md is
 // cross-iteration memory, the planning files may sit uncommitted from a
-// --plan session in the same directory, the run report is the orchestrator's
-// own output, and the log directory holds the run's own iteration logs.
+// --plan session in the same directory, the run report and stall handoff are
+// the orchestrator's own output, and the log directory holds the run's own
+// iteration logs.
 func (o *Orchestrator) protectedPaths() []string {
 	paths := []string{
 		o.cfg.PlanFile, o.cfg.StepsFile, o.cfg.StopFile,
 		"NOTES.md", "FIXES.md", "GOAL.md", "QUESTIONS.md", "ANSWERS.md", "OVERSIZED.md",
-		runReportFile,
+		runReportFile, stalledReportFile,
 	}
 	if o.cfg.LogDir != "" {
 		paths = append(paths, o.cfg.LogDir)
@@ -743,20 +760,27 @@ func (o *Orchestrator) initAttemptStashing(ctx context.Context) {
 	o.stashingEnabled = true
 }
 
-// recordRejections updates the per-step rejection counts once the gate,
+// recordRejections updates the per-step rejection records once the gate,
 // verifier, and audit have delivered their verdicts, and stashes the failed
 // attempt when the same step reaches stashAfterRejections. A rejection is a
 // step this iteration's work checked that lost the check to the gate or the
-// verifier; steps the audit reopened count toward the same totals (they were
-// finished work that turned out wrong) but trigger no stash, since their work
-// was committed at checkpoint time and the tree holds nothing to stash.
-func (o *Orchestrator) recordRejections(ctx context.Context, intent iterationIntent, before, afterWork []Step) {
+// verifier — a failed gate skips the verifier, so which of the two rejected
+// is known here and recorded as the reason; steps the audit reopened count
+// toward the same totals (they were finished work that turned out wrong) but
+// trigger no stash, since their work was committed at checkpoint time and the
+// tree holds nothing to stash.
+func (o *Orchestrator) recordRejections(ctx context.Context, intent iterationIntent, before, afterWork []Step, gatePassed bool) {
 	final := o.parsedSteps()
 	uncheckedNow := func(i int) bool { return i < len(final) && !final[i].Completed }
+	reason := "verifier rejected"
+	if !gatePassed {
+		reason = "check command failed: " + o.cfg.CheckCmd
+	}
 	stashTarget := -1
 	for _, i := range newlyCheckedIndices(afterWork, before) {
 		if uncheckedNow(i) {
-			o.rejections[stepKey(afterWork[i])]++
+			key := stepKey(afterWork[i])
+			o.rejections[key] = append(o.rejections[key], reason)
 			if stashTarget == -1 {
 				stashTarget = i
 			}
@@ -765,14 +789,15 @@ func (o *Orchestrator) recordRejections(ctx context.Context, intent iterationInt
 	if intent.kind == invocationAudit {
 		for i, s := range before {
 			if s.Completed && uncheckedNow(i) {
-				o.rejections[stepKey(s)]++
+				key := stepKey(s)
+				o.rejections[key] = append(o.rejections[key], "audit reopened")
 			}
 		}
 	}
 	if stashTarget == -1 {
 		return
 	}
-	if step := afterWork[stashTarget]; o.rejections[stepKey(step)] >= stashAfterRejections {
+	if step := afterWork[stashTarget]; len(o.rejections[stepKey(step)]) >= stashAfterRejections {
 		o.stashFailedAttempt(ctx, stashTarget+1, step)
 	}
 }
@@ -793,7 +818,7 @@ func (o *Orchestrator) stashFailedAttempt(ctx context.Context, n int, step Step)
 	key := stepKey(step)
 	refBefore, _ := o.git(ctx, "rev-parse", "-q", "--verify", "refs/stash")
 	message := fmt.Sprintf("determined: step %d rejected attempt %d: %s",
-		n, o.rejections[key], strings.TrimSpace(step.Text))
+		n, len(o.rejections[key]), strings.TrimSpace(step.Text))
 	args := append([]string{"stash", "push", "--include-untracked", "-m", message, "--", "."},
 		o.stashExcludes()...)
 	if out, err := o.git(ctx, args...); err != nil {
@@ -806,8 +831,8 @@ func (o *Orchestrator) stashFailedAttempt(ctx context.Context, n int, step Step)
 	if err != nil || hash == "" || hash == strings.TrimSpace(refBefore) {
 		return // the rejected attempt left no changes to stash
 	}
-	o.stashes[key] = append(o.stashes[key], hash)
 	stat, _ := o.git(ctx, "stash", "show", "--include-untracked", "--stat", hash)
+	o.stashes[key] = append(o.stashes[key], stashRecord{hash: hash, stat: statSummary(stat)})
 	if err := o.files.Append("FIXES.md", stashEntry(n, hash, stat)); err != nil {
 		fmt.Fprintf(o.terminal, "determined: could not record the stash in FIXES.md: %v\n", err)
 	}
@@ -833,6 +858,14 @@ func stashEntry(n int, hash, stat string) string {
 	return b.String()
 }
 
+// statSummary reduces `git stash show --stat` output to its trailing summary
+// line ("4 files changed, 120 insertions(+), 30 deletions(-)"), the one-liner
+// the STALLED.md handoff shows per stashed attempt.
+func statSummary(stat string) string {
+	lines := strings.Split(strings.TrimSpace(stat), "\n")
+	return strings.TrimSpace(lines[len(lines)-1])
+}
+
 // stashNote extends a re-run step prompt when earlier attempts at the step
 // were stashed: the worker starts from a clean checkpoint and should treat
 // the stash as evidence, never as a patch to reapply.
@@ -851,17 +884,17 @@ func stashNote(hash string) string {
 // in place.
 func (o *Orchestrator) dropStashes(ctx context.Context, n int, step Step) {
 	key := stepKey(step)
-	hashes := o.stashes[key]
-	if len(hashes) == 0 {
+	records := o.stashes[key]
+	if len(records) == 0 {
 		return
 	}
 	out, err := o.git(ctx, "stash", "list", "--format=%H")
 	if err != nil {
 		return
 	}
-	owned := make(map[string]bool, len(hashes))
-	for _, h := range hashes {
-		owned[h] = true
+	owned := make(map[string]bool, len(records))
+	for _, r := range records {
+		owned[r.hash] = true
 	}
 	list := strings.Fields(out)
 	dropped := 0
@@ -942,8 +975,8 @@ func (o *Orchestrator) iterationPrompt() (string, iterationIntent, error) {
 		return noParsableStepsPrompt, iterationIntent{kind: invocationRewrite}, nil
 	}
 	prompt := stepPrompt(i+1, step)
-	if hashes := o.stashes[stepKey(step)]; len(hashes) > 0 {
-		prompt += stashNote(hashes[len(hashes)-1])
+	if records := o.stashes[stepKey(step)]; len(records) > 0 {
+		prompt += stashNote(records[len(records)-1].hash)
 	}
 	return prompt, iterationIntent{kind: invocationStep, target: i}, nil
 }
@@ -1068,6 +1101,10 @@ func (o *Orchestrator) budgetExceeded(deadline time.Time) bool {
 // summary, alongside the protocol files in the working directory.
 const runReportFile = "run-report.json"
 
+// stalledReportFile is where a stalled run writes its human-readable handoff
+// report — run-report.json's sibling for the person who inherits the stall.
+const stalledReportFile = "STALLED.md"
+
 // runReport is the summary written to runReportFile on every termination of
 // the execute loop, so success and failure report symmetrically instead of
 // success getting STOP.md and everything else just an exit code. Fields that
@@ -1086,6 +1123,9 @@ type runReport struct {
 	// or audit rejected a checked box, keyed by the step's current number (or
 	// by its text, when a replan removed the step from the file).
 	Rejections map[string]int `json:"rejections,omitempty"`
+	// Report names the human-readable stall handoff written alongside this
+	// report; present only when the run stalled and STALLED.md was written.
+	Report string `json:"report,omitempty"`
 	// ReplansUsed is how many replan invocations the run spent on stuck steps.
 	ReplansUsed int `json:"replans_used,omitempty"`
 	// Iterations is the run's total tool invocations: work, verify, audit,
@@ -1120,30 +1160,34 @@ func reportOutcome(outcome models.Outcome) string {
 	}
 }
 
-// removeStaleReport deletes a run-report.json left by a previous run, so a
-// fresh run never sits alongside a report describing an older one. Runs
-// before anything else, so even a run that ends at the missing-files check
-// replaces the stale report with its own.
-func (o *Orchestrator) removeStaleReport() {
-	if !o.files.Exists(runReportFile) {
-		return
-	}
-	if err := o.files.Remove(runReportFile); err != nil {
-		fmt.Fprintf(o.terminal, "determined: warning: could not remove stale %s: %v\n",
-			runReportFile, err)
+// removeStaleReports deletes the run-report.json and STALLED.md a previous
+// run may have left, so a fresh run never sits alongside reports describing
+// an older one. Runs before anything else, so even a run that ends at the
+// missing-files check replaces the stale reports with its own.
+func (o *Orchestrator) removeStaleReports() {
+	for _, f := range []string{runReportFile, stalledReportFile} {
+		if !o.files.Exists(f) {
+			continue
+		}
+		if err := o.files.Remove(f); err != nil {
+			fmt.Fprintf(o.terminal, "determined: warning: could not remove stale %s: %v\n",
+				f, err)
+		}
 	}
 }
 
 // writeRunReport writes the machine-readable run summary, built entirely from
-// state the loop already tracks. Reporting is an observer, never a
-// participant: a write failure is warned to the terminal and ignored, so it
-// can never change the run's outcome.
-func (o *Orchestrator) writeRunReport(outcome models.Outcome, start time.Time) {
+// state the loop already tracks; report names the STALLED.md handoff when one
+// was written, "" otherwise. Reporting is an observer, never a participant: a
+// write failure is warned to the terminal and ignored, so it can never change
+// the run's outcome.
+func (o *Orchestrator) writeRunReport(outcome models.Outcome, start time.Time, stalledReport string) {
 	steps := o.parsedSteps()
 	report := runReport{
 		Outcome:     reportOutcome(outcome),
 		Exit:        outcome.ExitCode(),
 		Rejections:  o.reportRejections(steps),
+		Report:      stalledReport,
 		ReplansUsed: o.replansUsed,
 		Iterations:  o.iteration,
 		WallSeconds: int(o.clock.Now().Sub(start) / time.Second),
@@ -1179,12 +1223,101 @@ func (o *Orchestrator) reportRejections(steps []Step) map[string]int {
 		numbers[stepKey(s)] = strconv.Itoa(i + 1)
 	}
 	rejections := make(map[string]int, len(o.rejections))
-	for key, count := range o.rejections {
+	for key, reasons := range o.rejections {
 		label, ok := numbers[key]
 		if !ok {
 			label = strings.SplitN(key, "\x00", 2)[0]
 		}
-		rejections[label] += count
+		rejections[label] += len(reasons)
 	}
 	return rejections
+}
+
+// writeStalledReport writes the STALLED.md handoff on a stalled termination
+// and removes any STALLED.md on every other one (a tool invocation could have
+// created its own), so the file's presence always means "this run stalled".
+// It reports whether the file was written. The handoff is purely mechanical —
+// built from state the loop already tracks, no extra AI invocation — and,
+// like the run report, an observer: a write failure is warned and ignored.
+func (o *Orchestrator) writeStalledReport(outcome models.Outcome, start time.Time) bool {
+	if outcome != models.OutcomeStalled {
+		if o.files.Exists(stalledReportFile) {
+			if err := o.files.Remove(stalledReportFile); err != nil {
+				fmt.Fprintf(o.terminal, "determined: warning: could not remove %s: %v\n",
+					stalledReportFile, err)
+			}
+		}
+		return false
+	}
+	if err := o.files.Write(stalledReportFile, o.stalledReport(start)); err != nil {
+		fmt.Fprintf(o.terminal, "determined: warning: could not write %s: %v\n",
+			stalledReportFile, err)
+		return false
+	}
+	fmt.Fprintf(o.terminal, "determined: wrote the stall handoff report to %s\n", stalledReportFile)
+	return true
+}
+
+// stalledReport renders the handoff markdown: the stuck step (the first
+// unchecked one) with its criterion, one line per recorded rejection reason,
+// the stashed attempts to inspect, and the run's counters. FIXES.md keeps the
+// full rejection entries; this file is the map to them.
+func (o *Orchestrator) stalledReport(start time.Time) string {
+	var b strings.Builder
+	steps := o.parsedSteps()
+	switch i, step, ok := NextIncompleteStep(steps); {
+	case ok:
+		fmt.Fprintf(&b, "# Run stalled at step %d\n\n", i+1)
+		fmt.Fprintf(&b, "step: %q\n", step.Text)
+		if step.DoneWhen != "" {
+			fmt.Fprintf(&b, "done when: %s\n", step.DoneWhen)
+		}
+		key := stepKey(step)
+		if reasons := o.rejections[key]; len(reasons) > 0 {
+			fmt.Fprintf(&b, "rejections: %d (full entries in FIXES.md)\n", len(reasons))
+			for n, reason := range reasons {
+				fmt.Fprintf(&b, "  %d. %s\n", n+1, reason)
+			}
+		} else {
+			b.WriteString("rejections: none recorded (the step was never checked)\n")
+		}
+		if records := o.stashes[key]; len(records) > 0 {
+			b.WriteString("stashed attempts:\n")
+			for _, r := range records {
+				fmt.Fprintf(&b, "  %s  %s\n", r.hash, r.stat)
+			}
+		}
+	case len(steps) > 0:
+		// Audit ping-pong: every box is checked but the whole-plan audit
+		// neither approved nor reopened anything, so no single step is stuck.
+		b.WriteString("# Run stalled at the whole-plan audit\n\n")
+		fmt.Fprintf(&b, "Every step is checked, but the audit neither approved (no %s) "+
+			"nor reopened a step.\n", o.cfg.StopFile)
+	default:
+		b.WriteString("# Run stalled\n\n")
+		fmt.Fprintf(&b, "%s holds no parseable checkbox steps, so no stuck step can be named.\n",
+			o.cfg.StepsFile)
+	}
+	fmt.Fprintf(&b, "iterations: %d\n", o.iteration)
+	wall := formatDuration(o.clock.Now().Sub(start))
+	if o.cfg.Budget > 0 {
+		fmt.Fprintf(&b, "wall time: %s of %s budget\n", wall, formatDuration(o.cfg.Budget))
+	} else {
+		fmt.Fprintf(&b, "wall time: %s (no budget)\n", wall)
+	}
+	if o.cfg.MaxReplans > 0 {
+		fmt.Fprintf(&b, "replans used: %d of %d\n", o.replansUsed, o.cfg.MaxReplans)
+	}
+	return b.String()
+}
+
+// formatDuration renders a duration compactly for the handoff ("42m",
+// "1h30m", "45s"), dropping the zero trailing units Duration.String prints.
+func formatDuration(d time.Duration) string {
+	s := d.Round(time.Second).String()
+	if s != "0s" {
+		s = strings.TrimSuffix(s, "0s")
+		s = strings.TrimSuffix(s, "0m")
+	}
+	return s
 }

@@ -1620,7 +1620,7 @@ func TestSecondRejectionStashesTheAttemptAndTheRetryStartsClean(t *testing.T) {
 	if !strings.Contains(push, "step 1 rejected attempt 2") {
 		t.Fatalf("expected the stash message to name the step and attempt, got %q", push)
 	}
-	for _, protected := range []string{":(exclude)STEPS.md", ":(exclude)FIXES.md", ":(exclude)NOTES.md", ":(exclude)logs"} {
+	for _, protected := range []string{":(exclude)STEPS.md", ":(exclude)FIXES.md", ":(exclude)NOTES.md", ":(exclude)STALLED.md", ":(exclude)logs"} {
 		if !strings.Contains(push, protected) {
 			t.Fatalf("expected the stash push to exclude %s, got %q", protected, push)
 		}
@@ -2010,6 +2010,213 @@ func TestRunReportWriteFailureDoesNotChangeTheOutcome(t *testing.T) {
 	}
 	if fs.Exists("run-report.json") {
 		t.Fatal("expected no run-report.json after the failed write")
+	}
+}
+
+func TestStalledRunWritesTheStallHandoffReport(t *testing.T) {
+	cfg := config(time.Hour)
+	cfg.Verify = true
+	cfg.MaxStalledIterations = 2
+	cfg.MaxReplans = 1
+	fs := stepsFileStore()
+	clock := &fakeClock{now: time.Now()}
+	runner := &fakeRunner{script: func(call int, _ io.Writer) error {
+		clock.advance(3 * time.Minute)
+		switch call {
+		case 1, 3: // work claims step 1, twice
+			fs.Write("STEPS.md", twoStepsFirstChecked)
+		case 2, 4: // verifier rejects it both times
+			fs.Write("STEPS.md", twoStepsNoneChecked)
+		case 5: // the replan changes nothing, so the run stalls out
+		}
+		return nil
+	}}
+	o := services.NewOrchestrator(runner, fs, clock, &fakeLogSink{}, io.Discard, cfg)
+
+	outcome := o.Run(context.Background())
+
+	if outcome != models.OutcomeStalled || outcome.ExitCode() != 3 {
+		t.Fatalf("expected a stalled stop, got %v (exit %d)", outcome, outcome.ExitCode())
+	}
+	want := "# Run stalled at step 1\n\n" +
+		"step: \"1. Add the widget.\"\n" +
+		"done when: widget tests pass.\n" +
+		"rejections: 2 (full entries in FIXES.md)\n" +
+		"  1. verifier rejected\n" +
+		"  2. verifier rejected\n" +
+		"iterations: 5\n" +
+		"wall time: 15m of 1h budget\n" +
+		"replans used: 1 of 1\n"
+	if got, err := fs.Read("STALLED.md"); err != nil || got != want {
+		t.Fatalf("expected the stall handoff report (%v):\n%s\ngot:\n%s", err, want, got)
+	}
+	report := readRunReport(t, fs)
+	assertReportFields(t, report, map[string]any{
+		"outcome":    "stalled",
+		"report":     "STALLED.md",
+		"stuck_step": float64(1),
+	})
+}
+
+func TestStallHandoffNamesCheckCommandRejections(t *testing.T) {
+	cfg := config(0)
+	cfg.CheckCmd = "go test ./..."
+	cfg.MaxStalledIterations = 1
+	fs := stepsFileStore()
+	runner := &fakeRunner{script: func(call int, _ io.Writer) error {
+		switch call {
+		case 1: // work: check step 1
+			fs.Write("STEPS.md", twoStepsFirstChecked)
+		case 2: // the check command fails; the gate rejects the step
+			return errors.New("exit status 1")
+		}
+		return nil
+	}}
+	o := services.NewOrchestrator(runner, fs, &fakeClock{now: time.Now()}, &fakeLogSink{}, io.Discard, cfg)
+
+	outcome := o.Run(context.Background())
+
+	if outcome != models.OutcomeStalled {
+		t.Fatalf("expected a stalled stop, got %v", outcome)
+	}
+	handoff, err := fs.Read("STALLED.md")
+	if err != nil {
+		t.Fatalf("expected STALLED.md to be written: %v", err)
+	}
+	for _, want := range []string{
+		"# Run stalled at step 1",
+		"  1. check command failed: go test ./...",
+		"wall time: 0s (no budget)",
+	} {
+		if !strings.Contains(handoff, want) {
+			t.Fatalf("expected the handoff to contain %q, got:\n%s", want, handoff)
+		}
+	}
+	if strings.Contains(handoff, "replans used") {
+		t.Fatalf("expected no replan line with replanning disabled, got:\n%s", handoff)
+	}
+}
+
+func TestStallHandoffListsStashedAttempts(t *testing.T) {
+	cfg := stashConfig()
+	cfg.MaxStalledIterations = 2
+	fs := stepsFileStore()
+	fs.Write(".git", "")
+	runner := &fakeRunner{}
+	runner.script = func(call int, out io.Writer) error {
+		switch call {
+		case 1: // startup: git status finds the tree clean
+		case 2, 4: // work claims step 1, twice
+			fs.Write("STEPS.md", twoStepsFirstChecked)
+		case 3, 5: // verifier rejects it both times; the second rejection stashes
+			fs.Write("STEPS.md", twoStepsNoneChecked)
+		case 6: // git rev-parse -q --verify refs/stash: no stash exists yet
+			return errors.New("exit status 1")
+		case 7: // git stash push succeeds
+		case 8: // git rev-parse refs/stash yields the new stash's hash
+			fmt.Fprintln(out, "aaa111")
+		case 9: // git stash show --stat
+			fmt.Fprintln(out, " widget.go | 5 +\n 1 file changed, 5 insertions(+)")
+		}
+		return nil
+	}
+	o := services.NewOrchestrator(runner, fs, &fakeClock{now: time.Now()}, &fakeLogSink{}, io.Discard, cfg)
+
+	outcome := o.Run(context.Background())
+
+	if outcome != models.OutcomeStalled {
+		t.Fatalf("expected the stashed round to end as a stall, got %v", outcome)
+	}
+	handoff, err := fs.Read("STALLED.md")
+	if err != nil {
+		t.Fatalf("expected STALLED.md to be written: %v", err)
+	}
+	if !strings.Contains(handoff, "stashed attempts:\n  aaa111  1 file changed, 5 insertions(+)\n") {
+		t.Fatalf("expected the handoff to list the stash hash and diffstat, got:\n%s", handoff)
+	}
+}
+
+func TestStallHandoffAbsentOnSuccessAndStaleOneRemovedAtStartup(t *testing.T) {
+	fs := stepsFileStore()
+	fs.Write("STALLED.md", "# stale handoff from a previous run\n")
+	staleAtFirstIteration := false
+	runner := &fakeRunner{script: func(call int, _ io.Writer) error {
+		switch call {
+		case 1:
+			staleAtFirstIteration = fs.Exists("STALLED.md")
+			fs.Write("STEPS.md", twoStepsFirstChecked)
+		case 2:
+			fs.Write("STEPS.md", twoStepsAllChecked)
+		case 3: // the whole-plan audit approves
+			fs.Write("STOP.md", "audit: plan satisfied")
+		}
+		return nil
+	}}
+	o := services.NewOrchestrator(runner, fs, &fakeClock{now: time.Now()}, &fakeLogSink{}, io.Discard, config(0))
+
+	outcome := o.Run(context.Background())
+
+	if outcome != models.OutcomeStopped || outcome.ExitCode() != 0 {
+		t.Fatalf("expected a clean completion, got %v (exit %d)", outcome, outcome.ExitCode())
+	}
+	if staleAtFirstIteration {
+		t.Fatal("expected the stale STALLED.md removed at startup")
+	}
+	if fs.Exists("STALLED.md") {
+		t.Fatal("expected no STALLED.md after a successful run")
+	}
+	report := readRunReport(t, fs)
+	if _, ok := report["report"]; ok {
+		t.Fatalf("expected the report field omitted from a clean run, got %v", report["report"])
+	}
+}
+
+func TestStallHandoffLeftMidRunIsRemovedOnNonStallExit(t *testing.T) {
+	fs := stepsFileStore()
+	runner := &fakeRunner{script: func(call int, _ io.Writer) error {
+		switch call {
+		case 1: // a misbehaving tool invocation creates its own STALLED.md
+			fs.Write("STALLED.md", "# not the orchestrator's\n")
+		case 2: // the run aborts on a tool failure
+			return errors.New("droid: rate limited")
+		}
+		return nil
+	}}
+	o := services.NewOrchestrator(runner, fs, &fakeClock{now: time.Now()}, &fakeLogSink{}, io.Discard, config(0))
+
+	outcome := o.Run(context.Background())
+
+	if outcome != models.OutcomeDroidFailed {
+		t.Fatalf("expected a tool-failure abort, got %v", outcome)
+	}
+	if fs.Exists("STALLED.md") {
+		t.Fatal("expected the mid-run STALLED.md removed on a non-stall exit")
+	}
+	report := readRunReport(t, fs)
+	if _, ok := report["report"]; ok {
+		t.Fatalf("expected the report field omitted from a failed run, got %v", report["report"])
+	}
+}
+
+func TestStallHandoffWriteFailureDoesNotChangeTheOutcome(t *testing.T) {
+	cfg := config(0)
+	cfg.MaxStalledIterations = 1
+	fs := &failingWriteStore{fakeFileStore: stepsFileStore(), failPath: "STALLED.md"}
+	var terminal bytes.Buffer
+	runner := &fakeRunner{} // never checks a step
+	o := services.NewOrchestrator(runner, fs, &fakeClock{now: time.Now()}, &fakeLogSink{}, &terminal, cfg)
+
+	outcome := o.Run(context.Background())
+
+	if outcome != models.OutcomeStalled || outcome.ExitCode() != 3 {
+		t.Fatalf("expected the failed handoff write to leave the outcome alone, got %v (exit %d)", outcome, outcome.ExitCode())
+	}
+	if !strings.Contains(terminal.String(), "could not write STALLED.md") {
+		t.Fatalf("expected a terminal warning about the failed handoff write, got:\n%s", terminal.String())
+	}
+	report := readRunReport(t, fs)
+	if _, ok := report["report"]; ok {
+		t.Fatalf("expected no report field when STALLED.md was not written, got %v", report["report"])
 	}
 }
 
