@@ -26,6 +26,25 @@ func TestStandardAssessmentFindsVagueAcceptanceCriteria(t *testing.T) {
 	}
 }
 
+func TestStandardAssessmentRejectsStepsThatRequireImplementerAssumptions(t *testing.T) {
+	prompt := services.PlanningPrompts(models.PlanModeStandard).Assess
+	expectedInstructions := []string{
+		"no unstated context",
+		"Do not fill in missing details yourself",
+		"one bounded change",
+		"without inventing requirements",
+		"explicit prerequisites",
+		"consequential design choices",
+		"step-specific `Done when:`",
+		"reviewed independently",
+	}
+	for _, expected := range expectedInstructions {
+		if !strings.Contains(prompt, expected) {
+			t.Fatalf("expected assessment prompt to contain %q", expected)
+		}
+	}
+}
+
 func TestMVPPlanUsesReducedQualityGate(t *testing.T) {
 	prompt := services.PlanningPrompts(models.PlanModeMVP).Plan
 	for _, expected := range []string{"MVP mode", "must-have", "smallest usable version"} {

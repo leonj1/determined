@@ -50,8 +50,13 @@ func assessmentPrompt(mode models.PlanMode) string {
 	if mode == models.PlanModeMVP {
 		criteria = "Review PLAN.md and STEPS.md against the reduced MVP quality gate and only essential task-template concerns. "
 	}
-	return criteria + "Also flag steps that are too large, depend on unstated work, are out of order, or have vague `Done when:` " +
-		"criteria such as `works correctly`, `is implemented`, `looks good`, or unqualified `tests pass`. " +
+	return criteria + "Evaluate each step as a capable implementer with repository access but no unstated context, prior " +
+		"conversation, or permission to make consequential design decisions. Do not fill in missing details yourself. Flag any " +
+		"step that requires guessing about scope, location, behavior, dependencies, interfaces, or validation. A step passes only " +
+		"when it identifies one bounded change, can begin without inventing requirements, has completed or explicit prerequisites, " +
+		"settles or deliberately delegates consequential design choices, has a step-specific `Done when:`, and can be completed " +
+		"and reviewed independently. Also flag steps that are out of order or have vague `Done when:` criteria such as `works " +
+		"correctly`, `is implemented`, `looks good`, or unqualified `tests pass`. " +
 		"Write each specific, actionable finding as a markdown list item in REFINEMENTS.md. " +
 		"If there are no findings, write exactly NONE. Do not modify the plan or implement anything."
 }
