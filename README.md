@@ -62,50 +62,55 @@ approved), `1` failure/budget/interrupt, `2` usage error, `3` stalled (see
 
 ## What each mode does
 
-### Plan mode (`--plan`, attended)
+### Planning mode (`--plan`, attended)
 
-1. **Capture the goal** — your goal text (or the file you pointed at) is
-   written to `GOAL.md`.
-2. **Interview** — each round the tool either writes clarifying questions to
-   `QUESTIONS.md` or, once it knows enough, a finished `PLAN.md` + `STEPS.md`.
-   Questions are asked on your terminal and recorded in `ANSWERS.md`, then the
-   tool runs again with your answers.
-3. **Quality gate** — an independent assess/refine loop checks completeness,
-   the task-specific template, ordering, step size, and concrete acceptance
-   criteria (`REFINEMENTS.md`), up to `--max-step-passes` rounds.
-4. **Done** — `PLAN.md` + `STEPS.md` are in place (exit `0`); run
-   `./determined` to execute them.
+1. **Capture the goal** — write the supplied goal text (or the contents of the
+   supplied file) to `GOAL.md`.
+2. **Invoke the planner** — ask the selected AI tool to read the goal and
+   either create clarifying questions or produce the plan files.
+3. **Run the interview** — if the tool writes `QUESTIONS.md`, ask each question
+   on the terminal, append the responses to `ANSWERS.md`, clear the questions,
+   and invoke the planner again. Repeat until it has enough information.
+4. **Create the plan** — the planner writes `PLAN.md` and a machine-checkable
+   `STEPS.md` whose checkbox steps each have a concrete `Done when:` criterion.
+5. **Apply the quality gate** — independently assess completeness, the
+   task-specific template, ordering, step size, and acceptance criteria. Write
+   issues to `REFINEMENTS.md`, refine the plan, and reassess for up to
+   `--max-step-passes` rounds (skipped in prototype mode).
+6. **Finish planning** — leave `PLAN.md` and `STEPS.md` in place and exit `0`,
+   ready for `./determined` to execute them.
 
 See [PLANNING.md](PLANNING.md) for details.
 
-### Execute mode (default, unattended)
+### Execution mode (default, unattended)
 
-Each iteration:
-
-1. **Completion check** — every box checked *and* the audit's `STOP.md`
-   present → exit `0`. A `STOP.md` that appears while steps remain is deleted
-   and the loop continues.
-2. **Budget check** — `--max-duration` / `-t` exhausted → exit `1`.
-3. **Build the prompt** — re-parse `STEPS.md` and aim the tool at exactly the
-   next unchecked step, injecting its `Done when:` criterion and the
-   `NOTES.md` memory instructions.
-4. **Invoke the tool** — output streams live and is teed to `logs/`; a single
-   invocation is killed after `--max-iteration-duration`. Consecutive
-   failures beyond `--max-consecutive-failures` abort the run (exit `1`).
-5. **Verify** — a fresh reviewer invocation confirms each newly checked step's
-   acceptance criterion, unchecking it (and recording why in `FIXES.md`) when
-   it doesn't hold.
-6. **Checkpoint** — each verified step is git-committed.
-7. **Stall detection** — `--max-stalled-iterations` iterations in a row with
-   no newly checked step → exit `3`.
-
-Once every box is checked, independent **security**, **performance**, and
-**reliability/maintainability** reviewers run before the final whole-plan
-audit. A specialist records concrete findings in `FIXES.md` and reopens the
-relevant step (or adds a remediation step), so the loop fixes the issue and
-reruns all specialist gates. The final audit then judges the implementation
-against `PLAN.md`: it either reopens unsatisfied steps or creates `STOP.md` —
-the only way a run ends successfully.
+1. **Validate the inputs** — require `PLAN.md` and `STEPS.md`; delete a stale
+   `STOP.md` when it cannot prove that the current run is complete.
+2. **Check completion and budget** — exit `0` only when every step is checked
+   and the final audit created `STOP.md`; exit `1` if `--max-duration` / `-t`
+   is exhausted.
+3. **Select the next step** — re-parse `STEPS.md`, choose exactly the next
+   unchecked checkbox, and build a prompt containing its `Done when:`
+   criterion plus the `NOTES.md` memory instructions.
+4. **Invoke the tool** — stream output live and tee it to `logs/`. Kill an
+   invocation after `--max-iteration-duration`, retry failures, and exit `1`
+   after `--max-consecutive-failures` consecutive failures.
+5. **Verify completed work** — for every newly checked step, use a fresh
+   reviewer invocation to test its acceptance criterion. A failed verification
+   unchecks the step and records the reason in `FIXES.md`.
+6. **Checkpoint verified work** — git-commit each newly checked step that
+   survives verification.
+7. **Detect stalls** — exit `3` after `--max-stalled-iterations` consecutive
+   iterations without a newly checked step; otherwise return to step 2.
+8. **Run specialist reviews** — once all boxes are checked, independently
+   review security, performance, and reliability/maintainability. A concrete
+   finding is written to `FIXES.md` and reopens a relevant step (or adds a
+   remediation step), returning execution to step 2.
+9. **Audit the whole plan** — after the specialist gates pass, compare the
+   implementation with `PLAN.md`. Reopen unsatisfied steps and record why in
+   `FIXES.md`, or create `STOP.md` when the entire plan is satisfied.
+10. **Finish execution** — return to the completion check, which exits `0`
+    only when all boxes remain checked and `STOP.md` is present.
 
 See [EXECUTION.md](EXECUTION.md) for details.
 
