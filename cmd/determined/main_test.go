@@ -21,6 +21,18 @@ func TestNormalRunIsNotUpdateCommand(t *testing.T) {
 	}
 }
 
+func TestUserCanRunInitCommand(t *testing.T) {
+	if !isInitCommand([]string{"determined", "init"}) {
+		t.Fatal("init subcommand should be recognized")
+	}
+}
+
+func TestNormalRunIsNotInitCommand(t *testing.T) {
+	if isInitCommand([]string{"determined", "--version"}) {
+		t.Fatal("normal flags should not be treated as init")
+	}
+}
+
 func TestUserCanSelectMVPPlanning(t *testing.T) {
 	mode, err := selectPlanMode(true, false, true, false)
 	if err != nil || mode != models.PlanModeMVP {
