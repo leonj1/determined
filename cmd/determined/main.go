@@ -28,6 +28,10 @@ func main() {
 		runUpdateCommand()
 		return
 	}
+	if isInitCommand(os.Args) {
+		runInitCommand()
+		return
+	}
 
 	budget := registerBudgetFlags(flag.CommandLine)
 	initialize := registerInitFlag(flag.CommandLine)
@@ -184,6 +188,10 @@ func runLoop(ctx context.Context, tool models.Tool, budget time.Duration, maxSta
 
 func isUpdateCommand(args []string) bool {
 	return len(args) > 1 && args[1] == "update"
+}
+
+func isInitCommand(args []string) bool {
+	return len(args) > 1 && args[1] == "init"
 }
 
 func registerBudgetFlags(flags *flag.FlagSet) *time.Duration {
