@@ -97,6 +97,39 @@ func TestUserCanSetMaxDurationWithLongFlag(t *testing.T) {
 	}
 }
 
+func TestUserCanSelectInitialization(t *testing.T) {
+	flags := flag.NewFlagSet("determined", flag.ContinueOnError)
+	flags.SetOutput(io.Discard)
+	initialize := registerInitFlag(flags)
+
+	if err := flags.Parse([]string{"-init"}); err != nil {
+		t.Fatalf("init flag should parse: %v", err)
+	}
+	if !*initialize {
+		t.Fatal("-init should select initialization")
+	}
+}
+
+func TestInitializationUsesPersonalKnowledgeDestinations(t *testing.T) {
+	cfg := initializationConfig("/home/jose")
+
+	if len(cfg.Documents) != 2 {
+		t.Fatalf("initialization document count = %d, want 2", len(cfg.Documents))
+	}
+	if cfg.Documents[0].Destination != "/home/jose/.claude/CLAUDE.md" {
+		t.Fatalf("unexpected Claude destination %q", cfg.Documents[0].Destination)
+	}
+	if cfg.Documents[1].Destination != "/home/jose/AGENTS.md" {
+		t.Fatalf("unexpected Agents destination %q", cfg.Documents[1].Destination)
+	}
+	if cfg.Documents[0].Source != "https://raw.githubusercontent.com/leonj1/open-doc-format/master/personal-knowledge/CLAUDE.md" {
+		t.Fatalf("unexpected Claude source %q", cfg.Documents[0].Source)
+	}
+	if cfg.Documents[1].Source != "https://raw.githubusercontent.com/leonj1/open-doc-format/master/personal-knowledge/AGENTS.md" {
+		t.Fatalf("unexpected Agents source %q", cfg.Documents[1].Source)
+	}
+}
+
 func TestPlanInputPreservesTrailingWordsSplitByShell(t *testing.T) {
 	got := planInput("#", []string{"Goal", "Build", "the", "TODO", "CLI"})
 	want := "# Goal Build the TODO CLI"

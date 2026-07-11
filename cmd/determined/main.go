@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"syscall"
@@ -29,6 +30,7 @@ func main() {
 	}
 
 	budget := registerBudgetFlags(flag.CommandLine)
+	initialize := registerInitFlag(flag.CommandLine)
 	logDir := flag.String("log-dir", "logs", "directory for per-iteration log files")
 	tool := flag.String("tool", "droid", "AI coding CLI to run (droid|pi|claude)")
 	model := flag.String("model", "", "model ID or alias to pass to droid or claude")
@@ -53,6 +55,10 @@ func main() {
 	showVersion := flag.Bool("version", false, "print the version and exit")
 	flag.Parse()
 
+	if *initialize {
+		runInitCommand()
+		return
+	}
 	if *showVersion {
 		fmt.Printf("determined %s\n", version)
 		os.Exit(0)
@@ -89,6 +95,39 @@ func main() {
 
 	fmt.Fprintf(os.Stderr, "\ndetermined: %s\n", outcome)
 	os.Exit(outcome.ExitCode())
+}
+
+func registerInitFlag(flags *flag.FlagSet) *bool {
+	return flags.Bool("init", false, "install personal CLAUDE.md and AGENTS.md files")
+}
+
+func runInitCommand() {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "determined: init failed: find home directory: %v\n", err)
+		os.Exit(1)
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+	cfg := initializationConfig(home)
+	service := services.NewInitializationService(
+		clients.NewHttpDocumentSource(http.DefaultClient),
+		clients.NewOsDocumentStore(),
+		cfg,
+	)
+	if err := service.Run(ctx); err != nil {
+		fmt.Fprintf(os.Stderr, "determined: init failed: %v\n", err)
+		os.Exit(1)
+	}
+	fmt.Fprintln(os.Stdout, "installed ~/.claude/CLAUDE.md and ~/AGENTS.md")
+}
+
+func initializationConfig(home string) models.InitializationConfig {
+	base := "https://raw.githubusercontent.com/leonj1/open-doc-format/master/personal-knowledge"
+	return models.InitializationConfig{Documents: []models.InitializationDocument{
+		{Source: models.DocumentURL(base + "/CLAUDE.md"), Destination: models.DestinationPath(filepath.Join(home, ".claude", "CLAUDE.md"))},
+		{Source: models.DocumentURL(base + "/AGENTS.md"), Destination: models.DestinationPath(filepath.Join(home, "AGENTS.md"))},
+	}}
 }
 
 func selectPlanMode(planning, reviewing, mvp, prototype bool) (models.PlanMode, error) {

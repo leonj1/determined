@@ -38,6 +38,13 @@ go build -o determined ./cmd/determined
 ./determined update
 ```
 
+Optionally install the personal Claude and agent conventions (existing files
+are overwritten):
+
+```bash
+./determined -init
+```
+
 **2. Plan** (skip if you already have `PLAN.md` / `STEPS.md`) — an *attended*
 loop that asks clarifying questions, then writes the plan files:
 
@@ -156,6 +163,7 @@ ideally a clean git checkout, so every change is reviewable and revertible.
 | `--git-checkpoint` | `true` | Git-commit the working tree after each verified step when running in a git repository. |
 | `--log-dir`      | `logs`   | Directory for per-iteration log files.                          |
 | `--version`      | —        | Print the binary's semantic version and exit.                  |
+| `-init`          | `false`  | Download the personal knowledge `CLAUDE.md` to `~/.claude/CLAUDE.md` and `AGENTS.md` to `~/AGENTS.md`, overwriting existing files. |
 
 ## Commands
 
