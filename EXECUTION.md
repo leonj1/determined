@@ -36,6 +36,8 @@ itself every iteration; it never trusts the tool's own claim of completion.
    teeing it to `logs/iter-NNNN-<timestamp>.log`. Each invocation is bounded
    by `--max-iteration-duration` (default **15m**, `0` = unlimited); a timed
    out invocation counts as a failed invocation, not an interruption.
+   Each stage starts with a brief timestamped status such as
+   `==> [2026-07-11 09:30:00] executing step 2`.
 5. **Failure handling** — a non-zero tool exit retries the same iteration
    until `--max-consecutive-failures` (default **3**) failures occur in a row;
    any success resets the count. Only when the cap is hit does the run abort

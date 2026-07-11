@@ -236,19 +236,23 @@ func (o *Orchestrator) runOnce(ctx context.Context) (models.Outcome, bool) {
 	if AllStepsComplete(o.parsedSteps()) {
 		return o.runCompletionReviews(ctx)
 	}
-	prompt, err := o.iterationPrompt()
+	prompt, progress, err := o.iterationPrompt()
 	if err != nil {
 		fmt.Fprintf(o.terminal, "determined: could not read %s: %v\n", o.cfg.StepsFile, err)
 		return models.OutcomeDroidFailed, true
 	}
-	result := o.invoke(ctx, prompt)
+	result := o.invoke(ctx, prompt, progress)
 	return result.outcome, result.stop
 }
 
 // invoke runs one tool invocation with the given prompt, teeing its output to
 // the terminal and a fresh per-iteration log. It reports whether the loop
 // should stop.
-func (o *Orchestrator) invoke(ctx context.Context, prompt string) invocationResult {
+func (o *Orchestrator) invoke(
+	ctx context.Context,
+	prompt string,
+	progress progressMessage,
+) invocationResult {
 	o.iteration++
 	log, err := o.logs.OpenIteration(o.iteration)
 	if err != nil {
@@ -256,6 +260,7 @@ func (o *Orchestrator) invoke(ctx context.Context, prompt string) invocationResu
 	}
 	defer log.Close()
 	out := io.MultiWriter(o.terminal, log)
+	writeProgress(out, o.clock, progress)
 	runCtx, cancel := o.iterationContext(ctx)
 	defer cancel()
 	if err := o.runner.Run(runCtx, o.cfg.Tool.Invocation(prompt), out); err != nil {
@@ -283,8 +288,8 @@ func (o *Orchestrator) verifyNewSteps(ctx context.Context, before []Step) (model
 		if !step.Completed || (i < len(before) && before[i].Completed) {
 			continue
 		}
-		fmt.Fprintf(o.terminal, "determined: verifying step %d\n", i+1)
-		result := o.invoke(ctx, verifyPrompt(i+1, step))
+		progress := progressMessage(fmt.Sprintf("verifying step %d", i+1))
+		result := o.invoke(ctx, verifyPrompt(i+1, step), progress)
 		if result.stop {
 			return result.outcome, true
 		}
@@ -314,9 +319,7 @@ func (o *Orchestrator) runCompletionReviews(ctx context.Context) (models.Outcome
 			return models.OutcomeStopped, false
 		}
 	}
-	fmt.Fprintln(o.terminal,
-		"determined: all steps checked; auditing the whole plan before declaring success")
-	result := o.invoke(ctx, auditPrompt)
+	result := o.invoke(ctx, auditPrompt, "auditing the whole plan")
 	if result.succeeded && o.runComplete(o.parsedSteps()) {
 		return models.OutcomeStopped, true
 	}
@@ -325,8 +328,8 @@ func (o *Orchestrator) runCompletionReviews(ctx context.Context) (models.Outcome
 
 func (o *Orchestrator) runSpecializedReviews(ctx context.Context) invocationResult {
 	for _, review := range specializedReviewSequence() {
-		fmt.Fprintf(o.terminal, "determined: running %s review\n", review.name)
-		result := o.invoke(ctx, specializedReviewPrompt(review))
+		progress := progressMessage(fmt.Sprintf("running %s review", review.name))
+		result := o.invoke(ctx, specializedReviewPrompt(review), progress)
 		if result.stop {
 			return result
 		}
@@ -396,6 +399,8 @@ const gitCheckpointTimeout = 2 * time.Minute
 
 // gitCommit stages everything and commits it as the checkpoint for one step.
 func (o *Orchestrator) gitCommit(ctx context.Context, n int, step Step) {
+	writeProgress(o.terminal, o.clock,
+		progressMessage(fmt.Sprintf("checkpointing step %d", n)))
 	message := fmt.Sprintf("determined: step %d: %s", n, strings.TrimSpace(step.Text))
 	for _, inv := range []models.Invocation{
 		{Binary: "git", Args: []string{"add", "-A"}},
@@ -435,20 +440,35 @@ const auditPrompt = "All steps in STEPS.md are checked complete. Read PLAN.md an
 // the whole-plan audit when every box is checked (checkCompletion only ends
 // the run once the audit's STOP.md exists), otherwise the next unchecked
 // step. A missing next step then means the file had no parseable steps.
-func (o *Orchestrator) iterationPrompt() (string, error) {
+func (o *Orchestrator) iterationPrompt() (string, progressMessage, error) {
 	content, err := o.files.Read(o.cfg.StepsFile)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	steps := ParseSteps(content)
 	if AllStepsComplete(steps) {
-		return auditPrompt, nil
+		return auditPrompt, "auditing the whole plan", nil
 	}
-	step, ok := NextIncompleteStep(steps)
-	if !ok {
-		return noParsableStepsPrompt, nil
+	for i, step := range steps {
+		if !step.Completed {
+			progress := executionProgress(i+1, step)
+			return stepPrompt(step), progress, nil
+		}
 	}
-	return stepPrompt(step), nil
+	return noParsableStepsPrompt, "repairing step list", nil
+}
+
+// executionProgress identifies the step and caps the status below ten words.
+func executionProgress(n int, step Step) progressMessage {
+	words := strings.Fields(step.Text)
+	if len(words) > 6 {
+		words = words[:6]
+	}
+	if len(words) == 0 {
+		return progressMessage(fmt.Sprintf("executing step %d", n))
+	}
+	return progressMessage(fmt.Sprintf(
+		"executing step %d: %s", n, strings.Join(words, " ")))
 }
 
 // stepPrompt builds the execute instruction for a single step: work only that
