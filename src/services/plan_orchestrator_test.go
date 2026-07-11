@@ -128,6 +128,47 @@ func TestPlanAsksQuestionsThenCompletes(t *testing.T) {
 	}
 }
 
+func TestUserCanSeeTimestampedPlanningStages(t *testing.T) {
+	fs := newFakeFileStore()
+	cfg := planConfig(0)
+	cfg.MaxRefinePasses = 2
+	clock := &fakeClock{now: time.Date(2026, 7, 11, 9, 30, 0, 0, time.UTC)}
+	prompter := &fakePrompter{answers: []string{"SQLite"}}
+	var terminal strings.Builder
+	runner := &fakeRunner{script: func(call int, _ io.Writer) error {
+		switch call {
+		case 1:
+			fs.Write("QUESTIONS.md", "1. Which database?\n")
+		case 2:
+			fs.Write("PLAN.md", "the plan")
+			fs.Write("STEPS.md", "the steps")
+		case 3:
+			fs.Write("REFINEMENTS.md", "- Add validation")
+		case 5:
+			fs.Write("REFINEMENTS.md", "NONE")
+		}
+		return nil
+	}}
+	o := services.NewPlanOrchestrator(
+		runner, fs, prompter, clock, &fakeLogSink{}, &terminal, cfg,
+	)
+
+	outcome := o.Run(context.Background())
+
+	if outcome != models.OutcomePlanReady {
+		t.Fatalf("expected timestamped planning to complete, got %v", outcome)
+	}
+	prefix := "==> [2026-07-11 09:30:00] "
+	for _, stage := range []string{
+		"writing planning goal", "planning project", "answering planning questions",
+		"assessing plan", "refining plan",
+	} {
+		if !strings.Contains(terminal.String(), prefix+stage) {
+			t.Fatalf("expected visible stage %q, got:\n%s", stage, terminal.String())
+		}
+	}
+}
+
 func TestPlanUsesExistingGoalWhenConfirmed(t *testing.T) {
 	fs := newFakeFileStore()
 	fs.Write("GOAL.md", "existing goal\n")

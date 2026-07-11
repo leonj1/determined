@@ -65,6 +65,10 @@ In the current working directory:
 5. When refinement settles, planning is done (exit **0**). Run `./determined`
    (no `--plan`) to execute the steps.
 
+Each stage is announced with a brief timestamped status, for example
+`==> [2026-07-11 09:30:00] assessing plan`. Invocation statuses are also
+recorded in their iteration log.
+
 ## Plan quality gate and refinement
 
 A normal plan must identify its outcome, target user/use case, scope boundaries,

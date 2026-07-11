@@ -92,7 +92,7 @@ func (o *PlanOrchestrator) create(ctx context.Context, deadline time.Time) model
 			return outcome
 		}
 
-		if outcome, stop := o.runInvocation(ctx, o.cfg.Invocation); stop {
+		if outcome, stop := o.runInvocation(ctx, o.cfg.Invocation, "planning project"); stop {
 			return outcome
 		}
 
@@ -167,6 +167,7 @@ func (o *PlanOrchestrator) resolveExistingGoal() (bool, models.Outcome, bool) {
 }
 
 func (o *PlanOrchestrator) writeGoal() (models.Outcome, bool) {
+	writeProgress(o.terminal, o.clock, "writing planning goal")
 	goal, err := o.goalContent()
 	if err != nil {
 		fmt.Fprintf(o.terminal, "determined: %v\n", err)
@@ -250,7 +251,8 @@ func (o *PlanOrchestrator) refine(ctx context.Context, deadline time.Time) model
 			return models.OutcomeBudgetExceeded
 		}
 
-		if outcome, stop := o.runInvocation(ctx, o.cfg.AssessInvocation); stop {
+		if outcome, stop := o.runInvocation(
+			ctx, o.cfg.AssessInvocation, o.assessmentProgress()); stop {
 			return outcome
 		}
 		content, err := o.files.Read(o.cfg.AssessmentFile)
@@ -276,7 +278,8 @@ func (o *PlanOrchestrator) refine(ctx context.Context, deadline time.Time) model
 			return models.OutcomePlanReady
 		}
 
-		if outcome, stop := o.runInvocation(ctx, o.cfg.RefineInvocation); stop {
+		if outcome, stop := o.runInvocation(
+			ctx, o.cfg.RefineInvocation, "refining plan"); stop {
 			return outcome
 		}
 		o.files.Remove(o.cfg.AssessmentFile)
@@ -285,7 +288,11 @@ func (o *PlanOrchestrator) refine(ctx context.Context, deadline time.Time) model
 
 // runInvocation runs a single tool invocation, teeing its output to the terminal
 // and a per-iteration log. It reports whether the loop should stop.
-func (o *PlanOrchestrator) runInvocation(ctx context.Context, inv models.Invocation) (models.Outcome, bool) {
+func (o *PlanOrchestrator) runInvocation(
+	ctx context.Context,
+	inv models.Invocation,
+	progress progressMessage,
+) (models.Outcome, bool) {
 	o.iteration++
 	log, err := o.logs.OpenIteration(o.iteration)
 	if err != nil {
@@ -293,6 +300,7 @@ func (o *PlanOrchestrator) runInvocation(ctx context.Context, inv models.Invocat
 	}
 	defer log.Close()
 	out := io.MultiWriter(o.terminal, log)
+	writeProgress(out, o.clock, progress)
 	if err := o.runner.Run(ctx, inv, out); err != nil {
 		if ctx.Err() != nil {
 			return models.OutcomeInterrupted, true
@@ -316,6 +324,7 @@ func (o *PlanOrchestrator) relayQuestions() (models.Outcome, bool) {
 		fmt.Fprintf(o.terminal, "determined: %s had no parseable questions\n", o.cfg.QuestionsFile)
 		return models.OutcomePlanStalled, true
 	}
+	writeProgress(o.terminal, o.clock, o.questionProgress())
 
 	var round strings.Builder
 	fmt.Fprintf(&round, "## Round %d\n\n", o.iteration)
@@ -337,6 +346,20 @@ func (o *PlanOrchestrator) relayQuestions() (models.Outcome, bool) {
 		return models.OutcomeDroidFailed, true
 	}
 	return models.OutcomePlanReady, false // outcome ignored when stop is false
+}
+
+func (o *PlanOrchestrator) assessmentProgress() progressMessage {
+	if o.cfg.Operation == models.PlanOperationReview {
+		return "reviewing plan"
+	}
+	return "assessing plan"
+}
+
+func (o *PlanOrchestrator) questionProgress() progressMessage {
+	if o.cfg.Operation == models.PlanOperationReview {
+		return "answering review questions"
+	}
+	return "answering planning questions"
 }
 
 // planComplete reports whether both finished-plan files now exist.

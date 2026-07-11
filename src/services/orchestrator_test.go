@@ -139,6 +139,49 @@ func TestRunEndsWhenAllBoxesAreChecked(t *testing.T) {
 	}
 }
 
+func TestUserCanSeeTimestampedExecutionStages(t *testing.T) {
+	step := "Ship widget with automated integration tests today"
+	fs := plannedFileStore("- [ ] " + step + "\n  Done when: tests pass.\n")
+	cfg := config(0)
+	cfg.Verify = true
+	clock := &fakeClock{now: time.Date(2026, 7, 11, 9, 30, 0, 0, time.UTC)}
+	logs := &fakeLogSink{}
+	var terminal strings.Builder
+	runner := &fakeRunner{script: func(call int, _ io.Writer) error {
+		if call == 1 {
+			fs.Write("STEPS.md", "- [x] "+step+"\n  Done when: tests pass.\n")
+		}
+		if call == 3 {
+			fs.Write("STOP.md", "approved")
+		}
+		return nil
+	}}
+	o := services.NewOrchestrator(runner, fs, clock, logs, &terminal, cfg)
+
+	outcome := o.Run(context.Background())
+
+	if outcome != models.OutcomeStopped {
+		t.Fatalf("expected timestamped run to complete, got %v", outcome)
+	}
+	prefix := "==> [2026-07-11 09:30:00] "
+	for _, stage := range []string{
+		"executing step 1: Ship widget with automated integration tests",
+		"verifying step 1", "auditing the whole plan",
+	} {
+		if !strings.Contains(terminal.String(), prefix+stage) {
+			t.Fatalf("expected visible stage %q, got:\n%s", stage, terminal.String())
+		}
+	}
+	if strings.Contains(terminal.String(), "executing step 1: "+step) {
+		t.Fatalf("expected execution status below ten words, got:\n%s", terminal.String())
+	}
+	for i, log := range logs.opened {
+		if !strings.Contains(log.buf.String(), prefix) {
+			t.Fatalf("expected timestamp in iteration log %d, got %q", i+1, log.buf.String())
+		}
+	}
+}
+
 func TestPrematureStopFileIsDeletedAndLoopContinues(t *testing.T) {
 	fs := stepsFileStore()
 	fs.Write("STOP.md", "premature")
