@@ -39,6 +39,7 @@ func main() {
 	tool := flag.String("tool", "droid", "AI coding CLI to run (droid|pi|claude)")
 	model := flag.String("model", "", "model ID or alias to pass to droid or claude")
 	plan := flag.String("plan", "", "describe a goal to plan interactively, producing PLAN.md and STEPS.md")
+	exec := flag.Bool("exec", false, "run the execute loop against PLAN.md / STEPS.md; with -plan, execution follows successful planning")
 	reviewPlan := flag.Bool("review-plan", false, "critique and interactively revise existing PLAN.md and STEPS.md")
 	mvp := flag.Bool("mvp", false, "create a lean plan for the smallest usable outcome (plan mode only)")
 	prototype := flag.Bool("prototype", false, "create a fast experimental plan with minimal questioning and no refinement (plan mode only)")
@@ -72,6 +73,14 @@ func main() {
 		fmt.Fprintf(os.Stderr, "determined: %v\n", err)
 		os.Exit(2)
 	}
+	if err := validateExecFlag(*reviewPlan, *exec); err != nil {
+		fmt.Fprintf(os.Stderr, "determined: %v\n", err)
+		os.Exit(2)
+	}
+	if !operationRequested(*plan != "", *reviewPlan, *exec) {
+		flag.Usage()
+		os.Exit(2)
+	}
 
 	selected, err := models.SelectTool(
 		models.ToolName(*tool),
@@ -93,6 +102,9 @@ func main() {
 		outcome = runReviewPlan(ctx, selected, *budget, *maxStepPasses, clock, logs)
 	} else if *plan != "" {
 		outcome = runPlan(ctx, selected, planInput(*plan, flag.Args()), planMode, *budget, *maxStepPasses, clock, logs)
+		if shouldExecuteAfterPlan(*exec, outcome) {
+			outcome = runLoop(ctx, selected, *budget, *maxStalled, *maxFailures, *maxIterationDuration, *verify, *specializedReviews, *gitCheckpoint, clock, logs)
+		}
 	} else {
 		outcome = runLoop(ctx, selected, *budget, *maxStalled, *maxFailures, *maxIterationDuration, *verify, *specializedReviews, *gitCheckpoint, clock, logs)
 	}
@@ -151,6 +163,28 @@ func selectPlanMode(planning, reviewing, mvp, prototype bool) (models.PlanMode, 
 		return models.PlanModePrototype, nil
 	}
 	return models.PlanModeStandard, nil
+}
+
+// validateExecFlag rejects -exec alongside -review-plan: review mode critiques
+// an existing plan and never enters the execute loop.
+func validateExecFlag(reviewing, executing bool) error {
+	if reviewing && executing {
+		return fmt.Errorf("-exec and -review-plan cannot be used together")
+	}
+	return nil
+}
+
+// operationRequested reports whether the flags select any run operation. When
+// none is selected, main shows the usage screen instead of defaulting to a
+// mode.
+func operationRequested(planning, reviewing, executing bool) bool {
+	return planning || reviewing || executing
+}
+
+// shouldExecuteAfterPlan reports whether a -plan -exec run should continue
+// into the execute loop: only when planning left a usable plan behind.
+func shouldExecuteAfterPlan(executing bool, outcome models.Outcome) bool {
+	return executing && outcome == models.OutcomePlanReady
 }
 
 func refinePasses(mode models.PlanMode, configured int) int {

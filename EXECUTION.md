@@ -1,7 +1,9 @@
 # Execution behaviour
 
-Execute mode runs against a `PLAN.md` / `STEPS.md` pair in the current working
-directory. `STEPS.md` must be a markdown checkbox list — one `- [ ]` item per
+Execute mode (`./determined -exec`) runs against a `PLAN.md` / `STEPS.md` pair
+in the current working directory. Combined with `--plan`, it starts as soon as
+planning succeeds; invoking `determined` with neither flag prints the usage
+screen instead. `STEPS.md` must be a markdown checkbox list — one `- [ ]` item per
 step, each ending with a `Done when:` line stating a checkable acceptance
 condition (the format `--plan` produces). The orchestrator parses this file
 itself every iteration; it never trusts the tool's own claim of completion.

@@ -2,18 +2,20 @@
 
 ```bash
 go build -o determined ./cmd/determined
-./determined                       # droid in a directory containing PLAN.md / STEPS.md
-./determined --tool pi             # use the pi CLI instead
-./determined --tool claude         # use the claude CLI instead
-./determined --model claude-opus-4-7   # use a specific droid model
-./determined --tool claude --model opus # use a specific claude model alias
-./determined -t 2h                 # raise the time budget
-./determined --max-duration 0      # no time budget (stall/failure caps still apply)
+./determined -exec                 # droid in a directory containing PLAN.md / STEPS.md
+./determined -exec --tool pi       # use the pi CLI instead
+./determined -exec --tool claude   # use the claude CLI instead
+./determined -exec --model claude-opus-4-7   # use a specific droid model
+./determined -exec --tool claude --model opus # use a specific claude model alias
+./determined -exec -t 2h           # raise the time budget
+./determined -exec --max-duration 0 # no time budget (stall/failure caps still apply)
 ./determined --version             # print the semantic version and exit
 ./determined update                # update this binary from the latest GitHub Release
 ./determined --plan "build a todo CLI"   # interview, then write PLAN.md / STEPS.md
+./determined --plan "build a todo CLI" -exec # plan, then execute in one run
 ./determined --plan "try a todo UI" -prototype # fast experiment, minimal detail
 ./determined --review-plan              # interview, critique, and revise an existing plan
+./determined                       # neither -plan nor -exec: print the usage screen
 ```
 
 ## Versioned release build

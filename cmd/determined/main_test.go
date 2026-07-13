@@ -71,6 +71,60 @@ func TestUserCannotApplyCreationModesToReview(t *testing.T) {
 	}
 }
 
+func TestUserMustRequestPlanReviewOrExecution(t *testing.T) {
+	if operationRequested(false, false, false) {
+		t.Fatal("no flags should leave no operation requested, showing usage instead")
+	}
+}
+
+func TestUserCanRequestExecutionAlone(t *testing.T) {
+	if !operationRequested(false, false, true) {
+		t.Fatal("-exec alone should request the execute loop")
+	}
+}
+
+func TestUserCanRequestPlanningAlone(t *testing.T) {
+	if !operationRequested(true, false, false) {
+		t.Fatal("-plan alone should request planning")
+	}
+}
+
+func TestUserCanRequestReviewAlone(t *testing.T) {
+	if !operationRequested(false, true, false) {
+		t.Fatal("-review-plan alone should request a plan review")
+	}
+}
+
+func TestUserCannotExecuteDuringReview(t *testing.T) {
+	if err := validateExecFlag(true, true); err == nil {
+		t.Fatal("expected -exec with -review-plan to be rejected")
+	}
+}
+
+func TestUserCanCombinePlanningWithExecution(t *testing.T) {
+	if err := validateExecFlag(false, true); err != nil {
+		t.Fatalf("-exec without -review-plan should be accepted: %v", err)
+	}
+}
+
+func TestSuccessfulPlanningContinuesIntoExecution(t *testing.T) {
+	if !shouldExecuteAfterPlan(true, models.OutcomePlanReady) {
+		t.Fatal("-plan -exec should execute once the plan is ready")
+	}
+}
+
+func TestFailedPlanningSkipsExecution(t *testing.T) {
+	if shouldExecuteAfterPlan(true, models.OutcomePlanStalled) {
+		t.Fatal("a stalled plan run should not continue into execution")
+	}
+}
+
+func TestPlanningWithoutExecFlagStopsAfterPlanning(t *testing.T) {
+	if shouldExecuteAfterPlan(false, models.OutcomePlanReady) {
+		t.Fatal("without -exec, planning should not continue into execution")
+	}
+}
+
 func TestPrototypeSkipsQualityRefinement(t *testing.T) {
 	if got := refinePasses(models.PlanModePrototype, 5); got != 0 {
 		t.Fatalf("prototype refinement passes = %d, want 0", got)
