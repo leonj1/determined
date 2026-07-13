@@ -54,13 +54,17 @@ loop that asks clarifying questions, then writes the plan files:
 ./determined --plan "test a todo UI" -prototype # minimal experimental plan
 ```
 
-**3. Execute** — the *unattended* loop, run in the directory containing the
-plan (ideally a clean git checkout, since the tool edits files freely):
+**3. Execute** (`-exec`) — the *unattended* loop, run in the directory
+containing the plan (ideally a clean git checkout, since the tool edits files
+freely):
 
 ```bash
-./determined                        # droid by default, 1h budget
-./determined --tool claude -t 2h    # different tool, bigger budget
+./determined -exec                        # droid by default, 1h budget
+./determined -exec --tool claude -t 2h    # different tool, bigger budget
+./determined --plan "build a todo CLI" -exec  # plan, then execute in one run
 ```
+
+Running `determined` with neither `--plan` nor `-exec` prints the usage screen.
 
 **4. Watch it work** — per-iteration logs land in `logs/`, each verified step
 becomes a git commit, and the run ends with an exit code: `0` success (audit
@@ -85,11 +89,12 @@ approved), `1` failure/budget/interrupt, `2` usage error, `3` stalled (see
    issues to `REFINEMENTS.md`, refine the plan, and reassess for up to
    `--max-step-passes` rounds (skipped in prototype mode).
 6. **Finish planning** — leave `PLAN.md` and `STEPS.md` in place and exit `0`,
-   ready for `./determined` to execute them.
+   ready for `./determined -exec` to execute them. With `-exec` on the same
+   command line, execution starts immediately after planning succeeds.
 
 See [PLANNING.md](PLANNING.md) for details.
 
-### Execution mode (default, unattended)
+### Execution mode (`-exec`, unattended)
 
 1. **Validate the inputs** — require `PLAN.md` and `STEPS.md`; delete a stale
    `STOP.md` when it cannot prove that the current run is complete.
@@ -149,7 +154,8 @@ ideally a clean git checkout, so every change is reviewable and revertible.
 |------------------|----------|----------------------------------------------------------------|
 | `--tool`         | `droid`  | AI coding CLI to run (`droid`/`pi`/`claude`).                   |
 | `--model`        | —        | Optional model ID or alias for `droid` or `claude`; rejected with `pi`. |
-| `--plan`         | —        | Goal text or a file path to plan interactively; produces `PLAN.md` + `STEPS.md` instead of running the execute loop. |
+| `--plan`         | —        | Goal text or a file path to plan interactively; produces `PLAN.md` + `STEPS.md`. Add `-exec` to continue into execution once the plan is ready. |
+| `--exec`         | `false`  | Run the unattended execute loop against `PLAN.md` + `STEPS.md`. With `--plan`, execution follows successful planning; incompatible with `--review-plan`. Without `--plan` or `--exec`, `determined` prints the usage screen. |
 | `--review-plan`  | `false`  | Critique existing `PLAN.md` + `STEPS.md`, interview the user about consequential choices, and revise without executing. |
 | `--mvp`          | `false`  | Use a reduced quality gate for the smallest usable outcome. Requires `--plan`; incompatible with `--prototype`. |
 | `--prototype`    | `false`  | Ask only blocking questions and skip quality refinement for fast experiments. Requires `--plan`; incompatible with `--mvp`. |

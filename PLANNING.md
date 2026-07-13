@@ -62,8 +62,9 @@ In the current working directory:
    again — now with your answers in hand.
 4. Once `PLAN.md` and `STEPS.md` both exist, `determined` runs the plan quality
    gate (except in prototype mode; see below).
-5. When refinement settles, planning is done (exit **0**). Run `./determined`
-   (no `--plan`) to execute the steps.
+5. When refinement settles, planning is done (exit **0**). Run
+   `./determined -exec` to execute the steps — or pass `-exec` alongside
+   `--plan` and execution starts automatically once planning succeeds.
 
 Each stage is announced with a brief timestamped status, for example
 `==> [2026-07-11 09:30:00] assessing plan`. Invocation statuses are also
@@ -112,5 +113,6 @@ authoritative input while revising `PLAN.md` and `STEPS.md`. The result is
 assessed again until it passes or reaches `--max-step-passes`.
 
 Review mode requires both plan files, never creates a new plan, and never enters
-the execute loop. `--plan` and `--review-plan` are mutually exclusive; `--mvp`
-and `--prototype` apply only to `--plan`.
+the execute loop (`-exec` is rejected alongside `--review-plan`). `--plan` and
+`--review-plan` are mutually exclusive; `--mvp` and `--prototype` apply only to
+`--plan`.
