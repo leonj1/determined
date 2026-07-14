@@ -94,6 +94,28 @@ approved), `1` failure/budget/interrupt, `2` usage error, `3` stalled (see
 
 See [PLANNING.md](PLANNING.md) for details.
 
+### Criteria mode (`--criteria`, attended)
+
+An optional interview that captures user-approved BDD journey tests *before*
+planning or execution, so the plan and the final audit have criteria you wrote
+rather than criteria the planner invented:
+
+1. **Describe a journey** — you describe a user journey on the terminal
+   (pressing Enter instead finishes the session).
+2. **Propose a test** — the description goes to `CRITERIA_REQUEST.md` and the
+   tool drafts one Gherkin feature into `CRITERIA_DRAFT.md`.
+3. **Give a verdict** — **accept** records the test in `CRITERIA.md` and asks
+   for another journey; **modify** takes a revision note and redrafts; **skip**
+   forgets the draft and asks for another journey; **end** keeps this test plus
+   all prior acceptances and finishes; **cancel** discards every test from the
+   session, restoring `CRITERIA.md` to its pre-session state.
+
+When `CRITERIA.md` exists, planning must include steps that implement each test
+as an automated test, and the execute loop's final audit will not create
+`STOP.md` while any of the tests is missing or failing. `--criteria` combines
+with `--plan` and `-exec` (the session runs first); see
+[PLANNING.md](PLANNING.md) for details.
+
 ### Execution mode (`-exec`, unattended)
 
 1. **Validate the inputs** — require `PLAN.md` and `STEPS.md`; delete a stale
@@ -157,6 +179,7 @@ ideally a clean git checkout, so every change is reviewable and revertible.
 | `--plan`         | —        | Goal text or a file path to plan interactively; produces `PLAN.md` + `STEPS.md`. Add `-exec` to continue into execution once the plan is ready. |
 | `--exec`         | `false`  | Run the unattended execute loop against `PLAN.md` + `STEPS.md`. With `--plan`, execution follows successful planning; incompatible with `--review-plan`. Without `--plan` or `--exec`, `determined` prints the usage screen. |
 | `--review-plan`  | `false`  | Critique existing `PLAN.md` + `STEPS.md`, interview the user about consequential choices, and revise without executing. |
+| `--criteria`     | `false`  | Interactively capture BDD journey tests into `CRITERIA.md` (accept / modify / skip / end / cancel per proposal). Runs before `--plan` / `-exec` when combined; incompatible with `--review-plan`. |
 | `--mvp`          | `false`  | Use a reduced quality gate for the smallest usable outcome. Requires `--plan`; incompatible with `--prototype`. |
 | `--prototype`    | `false`  | Ask only blocking questions and skip quality refinement for fast experiments. Requires `--plan`; incompatible with `--mvp`. |
 | `--max-step-passes` | `5`   | Max quality assess/refine rounds during planning or review. `0` disables refinement. |

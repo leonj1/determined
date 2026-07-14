@@ -116,3 +116,40 @@ Review mode requires both plan files, never creates a new plan, and never enters
 the execute loop (`-exec` is rejected alongside `--review-plan`). `--plan` and
 `--review-plan` are mutually exclusive; `--mvp` and `--prototype` apply only to
 `--plan`.
+
+## Capturing acceptance criteria (`--criteria`)
+
+Use criteria mode to pin down user-approved BDD journey tests before planning
+or execution:
+
+```bash
+./determined --criteria                          # capture tests, then stop
+./determined --criteria --plan "build a todo CLI" -exec  # criteria → plan → execute
+```
+
+The session is attended and file-mediated, like planning. Each round:
+
+1. **Describe** — you describe a user journey on the terminal (pressing Enter
+   instead finishes the session, keeping everything accepted so far).
+2. **Propose** — the description is written to `CRITERIA_REQUEST.md` and the
+   tool drafts one Gherkin feature into `CRITERIA_DRAFT.md`.
+3. **Review** — the draft is shown and you choose a verdict:
+   - **accept** — record the test in `CRITERIA.md` and describe another journey.
+   - **modify** — say how the test should change; the note is appended to
+     `CRITERIA_REQUEST.md` as a `## Revision` and the tool redrafts.
+   - **skip** — forget this draft and describe another journey.
+   - **end** — record this test plus all prior acceptances and finish.
+   - **cancel** — discard every test from this session, restoring `CRITERIA.md`
+     to its pre-session state, and finish.
+
+Accepted tests are appended to `CRITERIA.md` immediately, so an interrupt never
+loses approved work; only an explicit cancel rolls the file back. When
+`CRITERIA.md` exists, the planning prompt must include steps that implement each
+test as an automated test (with `Done when:` conditions requiring them to pass),
+and the execute loop's final whole-plan audit refuses to create `STOP.md` while
+any of the tests is missing or failing.
+
+`--criteria` combines with `--plan` and `-exec` (the session always runs first)
+but is rejected alongside `--review-plan`. A cancelled session discards its
+tests but still continues into a requested plan or execution; any abort
+(interrupt, budget, tool failure) stops the whole run.
