@@ -41,6 +41,7 @@ func main() {
 	plan := flag.String("plan", "", "describe a goal to plan interactively, producing PLAN.md and STEPS.md")
 	exec := flag.Bool("exec", false, "run the execute loop against PLAN.md / STEPS.md; with -plan, execution follows successful planning")
 	reviewPlan := flag.Bool("review-plan", false, "critique and interactively revise existing PLAN.md and STEPS.md")
+	criteria := flag.Bool("criteria", false, "interactively capture BDD journey tests into CRITERIA.md; with -plan or -exec, the session runs first and the tests become required acceptance criteria")
 	mvp := flag.Bool("mvp", false, "create a lean plan for the smallest usable outcome (plan mode only)")
 	prototype := flag.Bool("prototype", false, "create a fast experimental plan with minimal questioning and no refinement (plan mode only)")
 	maxStepPasses := flag.Int("max-step-passes", 5,
@@ -77,7 +78,11 @@ func main() {
 		fmt.Fprintf(os.Stderr, "determined: %v\n", err)
 		os.Exit(2)
 	}
-	if !operationRequested(*plan != "", *reviewPlan, *exec) {
+	if err := validateCriteriaFlag(*criteria, *reviewPlan); err != nil {
+		fmt.Fprintf(os.Stderr, "determined: %v\n", err)
+		os.Exit(2)
+	}
+	if !operationRequested(*plan != "", *reviewPlan, *exec, *criteria) {
 		flag.Usage()
 		os.Exit(2)
 	}
@@ -98,15 +103,23 @@ func main() {
 	logs := clients.NewFileLogSink(*logDir, clock)
 
 	var outcome models.Outcome
-	if *reviewPlan {
-		outcome = runReviewPlan(ctx, selected, *budget, *maxStepPasses, clock, logs)
-	} else if *plan != "" {
-		outcome = runPlan(ctx, selected, planInput(*plan, flag.Args()), planMode, *budget, *maxStepPasses, clock, logs)
-		if shouldExecuteAfterPlan(*exec, outcome) {
+	proceed := true
+	if *criteria {
+		outcome = runCriteria(ctx, selected, *budget, clock, logs)
+		proceed = criteriaAllowsContinuation(outcome) &&
+			operationRequested(*plan != "", *reviewPlan, *exec, false)
+	}
+	if proceed {
+		if *reviewPlan {
+			outcome = runReviewPlan(ctx, selected, *budget, *maxStepPasses, clock, logs)
+		} else if *plan != "" {
+			outcome = runPlan(ctx, selected, planInput(*plan, flag.Args()), planMode, *budget, *maxStepPasses, clock, logs)
+			if shouldExecuteAfterPlan(*exec, outcome) {
+				outcome = runLoop(ctx, selected, *budget, *maxStalled, *maxFailures, *maxIterationDuration, *verify, *specializedReviews, *gitCheckpoint, clock, logs)
+			}
+		} else {
 			outcome = runLoop(ctx, selected, *budget, *maxStalled, *maxFailures, *maxIterationDuration, *verify, *specializedReviews, *gitCheckpoint, clock, logs)
 		}
-	} else {
-		outcome = runLoop(ctx, selected, *budget, *maxStalled, *maxFailures, *maxIterationDuration, *verify, *specializedReviews, *gitCheckpoint, clock, logs)
 	}
 
 	fmt.Fprintf(os.Stderr, "\ndetermined: %s\n", outcome)
@@ -177,8 +190,25 @@ func validateExecFlag(reviewing, executing bool) error {
 // operationRequested reports whether the flags select any run operation. When
 // none is selected, main shows the usage screen instead of defaulting to a
 // mode.
-func operationRequested(planning, reviewing, executing bool) bool {
-	return planning || reviewing || executing
+func operationRequested(planning, reviewing, executing, criteria bool) bool {
+	return planning || reviewing || executing || criteria
+}
+
+// validateCriteriaFlag rejects -criteria alongside -review-plan: the review
+// flow critiques an existing plan and never reads the criteria file.
+func validateCriteriaFlag(criteria, reviewing bool) error {
+	if criteria && reviewing {
+		return fmt.Errorf("-criteria and -review-plan cannot be used together")
+	}
+	return nil
+}
+
+// criteriaAllowsContinuation reports whether a -criteria session left the run
+// able to continue into planning or execution: a finished session does, and
+// so does a cancelled one (cancel discards the session's tests, not the run).
+// Aborts — interrupt, budget, tool failure, stall — stop the whole run.
+func criteriaAllowsContinuation(outcome models.Outcome) bool {
+	return outcome == models.OutcomeCriteriaReady || outcome == models.OutcomeCriteriaCancelled
 }
 
 // shouldExecuteAfterPlan reports whether a -plan -exec run should continue
@@ -288,6 +318,28 @@ func runPlan(ctx context.Context, tool models.Tool, goal string, mode models.Pla
 		AssessmentFile:   "REFINEMENTS.md",
 	}
 	orchestrator := services.NewPlanOrchestrator(
+		clients.NewExecCommandRunner(),
+		clients.NewOsFileStore(),
+		clients.NewStdinPrompter(os.Stdout, os.Stdin),
+		clock,
+		logs,
+		os.Stdout,
+		cfg,
+	)
+	return orchestrator.Run(ctx)
+}
+
+// runCriteria runs the attended criteria session, capturing user-approved BDD
+// journey tests in CRITERIA.md for planning and the final audit to enforce.
+func runCriteria(ctx context.Context, tool models.Tool, budget time.Duration, clock services.Clock, logs services.LogSink) models.Outcome {
+	cfg := models.CriteriaConfig{
+		Invocation:   tool.Invocation(services.CriteriaPrompt()),
+		Budget:       budget,
+		CriteriaFile: "CRITERIA.md",
+		RequestFile:  "CRITERIA_REQUEST.md",
+		DraftFile:    "CRITERIA_DRAFT.md",
+	}
+	orchestrator := services.NewCriteriaOrchestrator(
 		clients.NewExecCommandRunner(),
 		clients.NewOsFileStore(),
 		clients.NewStdinPrompter(os.Stdout, os.Stdin),

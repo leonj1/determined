@@ -72,26 +72,69 @@ func TestUserCannotApplyCreationModesToReview(t *testing.T) {
 }
 
 func TestUserMustRequestPlanReviewOrExecution(t *testing.T) {
-	if operationRequested(false, false, false) {
+	if operationRequested(false, false, false, false) {
 		t.Fatal("no flags should leave no operation requested, showing usage instead")
 	}
 }
 
 func TestUserCanRequestExecutionAlone(t *testing.T) {
-	if !operationRequested(false, false, true) {
+	if !operationRequested(false, false, true, false) {
 		t.Fatal("-exec alone should request the execute loop")
 	}
 }
 
 func TestUserCanRequestPlanningAlone(t *testing.T) {
-	if !operationRequested(true, false, false) {
+	if !operationRequested(true, false, false, false) {
 		t.Fatal("-plan alone should request planning")
 	}
 }
 
 func TestUserCanRequestReviewAlone(t *testing.T) {
-	if !operationRequested(false, true, false) {
+	if !operationRequested(false, true, false, false) {
 		t.Fatal("-review-plan alone should request a plan review")
+	}
+}
+
+func TestUserCanRequestCriteriaAlone(t *testing.T) {
+	if !operationRequested(false, false, false, true) {
+		t.Fatal("-criteria alone should request a criteria session")
+	}
+}
+
+func TestUserCannotCombineCriteriaWithReview(t *testing.T) {
+	if err := validateCriteriaFlag(true, true); err == nil {
+		t.Fatal("expected -criteria with -review-plan to be rejected")
+	}
+}
+
+func TestUserCanCombineCriteriaWithPlanning(t *testing.T) {
+	if err := validateCriteriaFlag(true, false); err != nil {
+		t.Fatalf("-criteria without -review-plan should be accepted: %v", err)
+	}
+}
+
+func TestFinishedCriteriaSessionContinuesIntoPlanning(t *testing.T) {
+	if !criteriaAllowsContinuation(models.OutcomeCriteriaReady) {
+		t.Fatal("a finished criteria session should allow planning to run")
+	}
+}
+
+func TestCancelledCriteriaSessionStillContinues(t *testing.T) {
+	if !criteriaAllowsContinuation(models.OutcomeCriteriaCancelled) {
+		t.Fatal("cancel discards the session's tests, not the requested run")
+	}
+}
+
+func TestAbortedCriteriaSessionStopsTheRun(t *testing.T) {
+	for _, outcome := range []models.Outcome{
+		models.OutcomeInterrupted,
+		models.OutcomeBudgetExceeded,
+		models.OutcomeDroidFailed,
+		models.OutcomeCriteriaStalled,
+	} {
+		if criteriaAllowsContinuation(outcome) {
+			t.Fatalf("outcome %v should stop the run before planning or execution", outcome)
+		}
 	}
 }
 

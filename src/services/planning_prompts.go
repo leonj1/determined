@@ -13,6 +13,8 @@ const planProtocol = "Read GOAL.md and ANSWERS.md if it exists. Treat GOAL.md as
 	"or integration (boundaries and failure handling). Use multiple templates when appropriate. " +
 	"STEPS.md must be an ordered markdown checkbox list with one `- [ ]` item per focused step. " +
 	"Every step must end with `Done when:` and a concrete acceptance condition. " +
+	"If CRITERIA.md exists, treat its BDD journey tests as required acceptance tests: include steps that " +
+	"implement each one as an automated test, and require those tests to pass in the relevant `Done when:` conditions. " +
 	"Do not implement anything or create STOP.md. "
 
 const standardQuality = "Before writing the files, enforce this quality gate: the intended outcome, target user/use case, " +

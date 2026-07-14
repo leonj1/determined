@@ -432,8 +432,11 @@ const noParsableStepsPrompt = "Read STEPS.md. It contains no checkbox-format ste
 // reopens the steps that fall short, sending the loop back to step execution.
 const auditPrompt = "All steps in STEPS.md are checked complete. Read PLAN.md and STEPS.md. " +
 	"Audit whether the implementation genuinely satisfies the plan. " +
+	"If CRITERIA.md exists, also audit that each of its BDD journey tests exists as an automated test and passes. " +
 	"If a step is not actually satisfied, change its `[x]` back to `[ ]` in STEPS.md " +
-	"and append the reason to FIXES.md. If everything is satisfied, create STOP.md. " +
+	"and append the reason to FIXES.md. If a required BDD test is missing or failing, append a new `- [ ]` step " +
+	"with a `Done when:` requiring that test to pass to STEPS.md, and append the reason to FIXES.md. " +
+	"If everything is satisfied, create STOP.md. " +
 	"Do not start work beyond this audit."
 
 // iterationPrompt reads the steps file and builds this iteration's instruction:

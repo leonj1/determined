@@ -28,6 +28,14 @@ const (
 	OutcomeInvalidGoal
 	// OutcomePlanReviewed means review mode assessed and revised an existing plan.
 	OutcomePlanReviewed
+	// OutcomeCriteriaReady means a criteria session recorded accepted BDD tests.
+	OutcomeCriteriaReady
+	// OutcomeCriteriaCancelled means the user ended a criteria session without
+	// keeping any tests, restoring the criteria file to its pre-session state.
+	OutcomeCriteriaCancelled
+	// OutcomeCriteriaStalled means the tool produced no BDD test draft, so the
+	// criteria session could not make progress.
+	OutcomeCriteriaStalled
 )
 
 // ExitCode maps an outcome to a process exit code: 0 only when the work
@@ -36,7 +44,8 @@ const (
 // its own code so callers can tell "stuck" apart from "failed".
 func (o Outcome) ExitCode() int {
 	switch o {
-	case OutcomeStopped, OutcomePlanReady, OutcomePlanReviewed:
+	case OutcomeStopped, OutcomePlanReady, OutcomePlanReviewed,
+		OutcomeCriteriaReady, OutcomeCriteriaCancelled:
 		return 0
 	case OutcomeStalled:
 		return 3
@@ -67,6 +76,12 @@ func (o Outcome) String() string {
 		return "aborted (planning goal is empty or incomplete)"
 	case OutcomePlanReviewed:
 		return "plan reviewed (PLAN.md and STEPS.md ready)"
+	case OutcomeCriteriaReady:
+		return "criteria ready (accepted BDD tests recorded in CRITERIA.md)"
+	case OutcomeCriteriaCancelled:
+		return "criteria cancelled (no BDD tests kept from this session)"
+	case OutcomeCriteriaStalled:
+		return "aborted (tool produced no BDD test draft)"
 	default:
 		return "unknown"
 	}

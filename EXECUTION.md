@@ -85,6 +85,10 @@ satisfies the plan:
 
 - If a step is not actually satisfied, the audit unchecks it and appends the
   reason to `FIXES.md` — the loop resumes on that step.
+- If `CRITERIA.md` exists (written by a `--criteria` session), the audit also
+  requires each of its BDD journey tests to exist as an automated test and
+  pass; a missing or failing test adds a new unchecked remediation step and a
+  `FIXES.md` entry.
 - If everything is satisfied, the audit creates `STOP.md`.
 
 Only *all steps checked + `STOP.md` present* ends the run with exit **0**.
@@ -98,6 +102,7 @@ Only *all steps checked + `STOP.md` present* ends the run with exit **0**.
 | `STOP.md`  | Created by the whole-plan audit to approve the finished run; deleted if it appears early. |
 | `NOTES.md` | Cross-iteration memory (see below); created by the tool on first use. |
 | `FIXES.md` | Why a verifier, specialist, or audit reopened/added a step; appended by reviewer invocations. |
+| `CRITERIA.md` | Optional user-approved BDD journey tests from a `--criteria` session; enforced by the final audit. |
 
 ## NOTES.md
 
