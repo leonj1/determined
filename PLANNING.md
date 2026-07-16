@@ -70,6 +70,32 @@ Each stage is announced with a brief timestamped status, for example
 `==> [2026-07-11 09:30:00] assessing plan`. Invocation statuses are also
 recorded in their iteration log.
 
+## Watching a session in the browser (`--interactive`)
+
+Add `-interactive` to a `--plan` run to serve a live status page on a local
+web server:
+
+```bash
+./determined --plan "build a todo CLI" --tool claude -interactive
+```
+
+`determined` prints the page URL (an ephemeral loopback port) before planning
+starts. The page shows the git remote and branch in its header, the goal, the
+plan once produced, and every workflow step as it happens — it updates in real
+time over server-sent events, including a visible notice whenever the session
+is waiting for your answers on the terminal. Answering questions still happens
+in the terminal; the page is read-only observability.
+
+When planning finishes, the page shows a clear completion banner (success or
+failure) with the start time, end time, and total duration of the planning
+phase. In plan-only mode the server keeps serving after completion so you can
+read the banner; press Enter (or interrupt) to exit. With `-exec`, execution
+starts immediately and the status server shuts down after the planning phase.
+
+`-interactive` requires `--plan`; using it alone or with other modes is a
+usage error. If the local port cannot be bound, the run fails before the AI
+tool is invoked.
+
 ## Plan quality gate and refinement
 
 A normal plan must identify its outcome, target user/use case, scope boundaries,

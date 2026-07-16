@@ -255,3 +255,21 @@ func TestPlanInputKeepsQuotedValueWhenNoTrailingWords(t *testing.T) {
 		t.Fatalf("plan input = %q, want the quoted value unchanged", got)
 	}
 }
+
+func TestUserCannotUseInteractiveWithoutPlan(t *testing.T) {
+	if err := validateInteractiveFlag(true, false); err == nil {
+		t.Fatal("expected -interactive without -plan to be rejected")
+	}
+}
+
+func TestUserCanUseInteractiveWithPlan(t *testing.T) {
+	if err := validateInteractiveFlag(true, true); err != nil {
+		t.Fatalf("expected -interactive with -plan to be accepted, got %v", err)
+	}
+}
+
+func TestPlanWithoutInteractiveIsUnaffected(t *testing.T) {
+	if err := validateInteractiveFlag(false, true); err != nil {
+		t.Fatalf("expected plain -plan to be accepted, got %v", err)
+	}
+}

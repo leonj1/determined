@@ -27,6 +27,18 @@ type FileStore interface {
 	Remove(path string) error
 }
 
+// PlanStatusReporter receives the planning session's observable events for the
+// interactive status page. The real implementation is PlanStatusService; a nil
+// reporter disables reporting.
+type PlanStatusReporter interface {
+	ProgressSink
+	Start()
+	SetGoal(goal string)
+	SetPlan(plan string)
+	WaitForInput()
+	Finish(succeeded bool)
+}
+
 // PlanOrchestrator runs the attended planning loop: it seeds the goal, runs the
 // tool, relays any clarifying questions to the user, records the answers, and
 // finishes once the tool has produced both the plan and the step list.
@@ -37,6 +49,7 @@ type PlanOrchestrator struct {
 	clock    Clock
 	logs     LogSink
 	terminal io.Writer
+	status   PlanStatusReporter
 	cfg      models.PlanConfig
 
 	iteration  int
@@ -64,18 +77,29 @@ func NewPlanOrchestrator(
 	}
 }
 
+// WithStatusReporter attaches the interactive status reporter and returns the
+// orchestrator for chaining. Without one the session runs terminal-only.
+func (o *PlanOrchestrator) WithStatusReporter(status PlanStatusReporter) *PlanOrchestrator {
+	o.status = status
+	return o
+}
+
 // Run executes the planning loop and returns the terminal outcome.
 func (o *PlanOrchestrator) Run(ctx context.Context) models.Outcome {
+	o.reportStart()
 	deadline := o.deadline()
+	var outcome models.Outcome
 	switch o.cfg.Operation {
 	case models.PlanOperationCreate:
-		return o.create(ctx, deadline)
+		outcome = o.create(ctx, deadline)
 	case models.PlanOperationReview:
-		return o.review(ctx, deadline)
+		outcome = o.review(ctx, deadline)
 	default:
 		fmt.Fprintf(o.terminal, "determined: unsupported plan operation %q\n", o.cfg.Operation)
-		return models.OutcomeDroidFailed
+		outcome = models.OutcomeDroidFailed
 	}
+	o.reportFinish(outcome)
+	return outcome
 }
 
 func (o *PlanOrchestrator) create(ctx context.Context, deadline time.Time) models.Outcome {
@@ -162,12 +186,14 @@ func (o *PlanOrchestrator) resolveExistingGoal() (bool, models.Outcome, bool) {
 	}
 	if useExisting {
 		o.goalSeeded = true
+		o.reportGoal()
 	}
 	return useExisting, models.OutcomePlanReady, false
 }
 
 func (o *PlanOrchestrator) writeGoal() (models.Outcome, bool) {
 	writeProgress(o.terminal, o.clock, "writing planning goal")
+	notifyProgress(o.status, "writing planning goal")
 	goal, err := o.goalContent()
 	if err != nil {
 		fmt.Fprintf(o.terminal, "determined: %v\n", err)
@@ -178,6 +204,7 @@ func (o *PlanOrchestrator) writeGoal() (models.Outcome, bool) {
 		return models.OutcomeDroidFailed, true
 	}
 	o.goalSeeded = true
+	o.reportGoal()
 	return models.OutcomePlanReady, false
 }
 
@@ -240,6 +267,7 @@ func (o *PlanOrchestrator) useExistingGoal() (bool, error) {
 // refine independently checks the completed plan and resolves quality findings
 // until it passes, the budget runs out, or the pass cap is hit.
 func (o *PlanOrchestrator) refine(ctx context.Context, deadline time.Time) models.Outcome {
+	o.reportPlan()
 	if o.cfg.MaxRefinePasses == 0 {
 		return models.OutcomePlanReady // refinement disabled
 	}
@@ -282,6 +310,7 @@ func (o *PlanOrchestrator) refine(ctx context.Context, deadline time.Time) model
 			ctx, o.cfg.RefineInvocation, "refining plan"); stop {
 			return outcome
 		}
+		o.reportPlan()
 		o.files.Remove(o.cfg.AssessmentFile)
 	}
 }
@@ -301,6 +330,7 @@ func (o *PlanOrchestrator) runInvocation(
 	defer log.Close()
 	out := io.MultiWriter(o.terminal, log)
 	writeProgress(out, o.clock, progress)
+	notifyProgress(o.status, progress)
 	if err := o.runner.Run(ctx, inv, out); err != nil {
 		if ctx.Err() != nil {
 			return models.OutcomeInterrupted, true
@@ -325,6 +355,9 @@ func (o *PlanOrchestrator) relayQuestions() (models.Outcome, bool) {
 		return models.OutcomePlanStalled, true
 	}
 	writeProgress(o.terminal, o.clock, o.questionProgress())
+	if o.status != nil {
+		o.status.WaitForInput()
+	}
 
 	var round strings.Builder
 	fmt.Fprintf(&round, "## Round %d\n\n", o.iteration)
@@ -381,4 +414,41 @@ func (o *PlanOrchestrator) budgetExceeded(deadline time.Time) bool {
 		return false
 	}
 	return !o.clock.Now().Before(deadline)
+}
+
+// reportStart marks the planning phase start on the status page.
+func (o *PlanOrchestrator) reportStart() {
+	if o.status != nil {
+		o.status.Start()
+	}
+}
+
+// reportGoal publishes GOAL.md contents to the status page.
+func (o *PlanOrchestrator) reportGoal() {
+	if o.status == nil {
+		return
+	}
+	if goal, err := o.files.Read(o.cfg.GoalFile); err == nil {
+		o.status.SetGoal(goal)
+	}
+}
+
+// reportPlan publishes the current PLAN.md contents to the status page.
+func (o *PlanOrchestrator) reportPlan() {
+	if o.status == nil || !o.files.Exists(o.cfg.PlanFile) {
+		return
+	}
+	if plan, err := o.files.Read(o.cfg.PlanFile); err == nil {
+		o.status.SetPlan(plan)
+	}
+}
+
+// reportFinish records the planning phase end and success state.
+func (o *PlanOrchestrator) reportFinish(outcome models.Outcome) {
+	if o.status == nil {
+		return
+	}
+	o.reportPlan()
+	succeeded := outcome == models.OutcomePlanReady || outcome == models.OutcomePlanReviewed
+	o.status.Finish(succeeded)
 }

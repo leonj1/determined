@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>determined — planning</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #f6f7f9; --fg: #1c1e21; --card: #ffffff; --muted: #667085;
+    --border: #e4e7ec; --accent: #2563eb;
+    --ok-bg: #ecfdf3; --ok-fg: #067647; --ok-border: #abefc6;
+    --bad-bg: #fef3f2; --bad-fg: #b42318; --bad-border: #fecdca;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #101418; --fg: #e6e8eb; --card: #1a1f26; --muted: #98a2b3;
+      --border: #2b323c; --accent: #60a5fa;
+      --ok-bg: #0b2a1c; --ok-fg: #75e0a7; --ok-border: #14532d;
+      --bad-bg: #2a1211; --bad-fg: #f97066; --bad-border: #7f1d1d;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font: 15px/1.5 system-ui, sans-serif; background: var(--bg); color: var(--fg); }
+  header {
+    display: flex; justify-content: space-between; align-items: center; gap: 1rem;
+    padding: 0.75rem 1.25rem; background: var(--card); border-bottom: 1px solid var(--border);
+    position: sticky; top: 0;
+  }
+  header .title { font-weight: 700; }
+  header .git { color: var(--muted); font-family: ui-monospace, monospace; font-size: 0.85rem; overflow-wrap: anywhere; text-align: right; }
+  header .git .branch { color: var(--accent); font-weight: 600; }
+  main { max-width: 60rem; margin: 0 auto; padding: 1.25rem; display: grid; gap: 1.25rem; }
+  #banner { display: none; padding: 1rem 1.25rem; border-radius: 0.6rem; border: 1px solid; font-weight: 600; }
+  #banner.succeeded { display: block; background: var(--ok-bg); color: var(--ok-fg); border-color: var(--ok-border); }
+  #banner.failed { display: block; background: var(--bad-bg); color: var(--bad-fg); border-color: var(--bad-border); }
+  #banner .timing { display: block; margin-top: 0.35rem; font-weight: 400; font-size: 0.9rem; }
+  #waiting { display: none; padding: 0.6rem 1rem; border-radius: 0.6rem; background: var(--card); border: 1px dashed var(--accent); color: var(--accent); }
+  #waiting.on { display: block; }
+  section { background: var(--card); border: 1px solid var(--border); border-radius: 0.6rem; padding: 1rem 1.25rem; }
+  section h2 { margin: 0 0 0.5rem; font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); }
+  pre { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font: 0.9rem/1.5 ui-monospace, monospace; }
+  .empty { color: var(--muted); font-style: italic; }
+  ol#steps { margin: 0; padding-left: 1.4rem; }
+  ol#steps li { margin: 0.2rem 0; }
+  ol#steps time { color: var(--muted); font-family: ui-monospace, monospace; font-size: 0.8rem; margin-right: 0.5rem; }
+  #disconnected { display: none; color: var(--bad-fg); font-size: 0.85rem; }
+  #disconnected.on { display: block; }
+</style>
+</head>
+<body>
+<header>
+  <div class="title">determined — planning</div>
+  <div class="git"><span id="remote">…</span> · <span id="branch" class="branch">…</span></div>
+</header>
+<main>
+  <div id="banner"><span id="banner-text"></span><span class="timing" id="banner-timing"></span></div>
+  <div id="waiting">Waiting for your input on the terminal…</div>
+  <div id="disconnected">Connection lost — the determined process may have exited.</div>
+  <section><h2>Goal</h2><pre id="goal" class="empty">Not written yet.</pre></section>
+  <section><h2>Plan</h2><pre id="plan" class="empty">Not produced yet.</pre></section>
+  <section><h2>Steps</h2><ol id="steps"></ol><div id="no-steps" class="empty">No steps yet.</div></section>
+</main>
+<script>
+  "use strict";
+  const el = (id) => document.getElementById(id);
+
+  function fmtTime(iso) {
+    return new Date(iso).toLocaleTimeString([], { hour12: false });
+  }
+  function fmtStamp(iso) {
+    return new Date(iso).toLocaleString([], { hour12: false });
+  }
+  function fmtDuration(startIso, endIso) {
+    let seconds = Math.max(0, Math.round((new Date(endIso) - new Date(startIso)) / 1000));
+    const h = Math.floor(seconds / 3600); seconds %= 3600;
+    const m = Math.floor(seconds / 60); const s = seconds % 60;
+    return (h ? h + "h " : "") + (h || m ? m + "m " : "") + s + "s";
+  }
+  function setText(node, text, emptyText) {
+    if (text) { node.textContent = text; node.classList.remove("empty"); }
+    else { node.textContent = emptyText; node.classList.add("empty"); }
+  }
+
+  function render(status) {
+    setText(el("remote"), status.git.remote, "no remote");
+    setText(el("branch"), status.git.branch, "no branch");
+    setText(el("goal"), status.goal, "Not written yet.");
+    setText(el("plan"), status.plan, "Not produced yet.");
+    el("waiting").classList.toggle("on", !!status.waitingForInput);
+
+    const steps = el("steps");
+    steps.replaceChildren();
+    for (const step of status.steps || []) {
+      const li = document.createElement("li");
+      const t = document.createElement("time");
+      t.textContent = fmtTime(step.at);
+      li.append(t, step.message);
+      steps.append(li);
+    }
+    el("no-steps").style.display = (status.steps || []).length ? "none" : "block";
+
+    renderBanner(status);
+  }
+
+  function renderBanner(status) {
+    const banner = el("banner");
+    banner.classList.remove("succeeded", "failed");
+    if (status.phase !== "succeeded" && status.phase !== "failed") return;
+    banner.classList.add(status.phase);
+    el("banner-text").textContent = status.phase === "succeeded"
+      ? "✓ Planning has completed"
+      : "✗ Planning ended without a completed plan";
+    el("banner-timing").textContent =
+      "Started " + fmtStamp(status.startedAt) +
+      " · Ended " + fmtStamp(status.endedAt) +
+      " · Duration " + fmtDuration(status.startedAt, status.endedAt);
+  }
+
+  const events = new EventSource("/events");
+  events.onmessage = (event) => {
+    el("disconnected").classList.remove("on");
+    render(JSON.parse(event.data));
+  };
+  events.onerror = () => el("disconnected").classList.add("on");
+</script>
+</body>
+</html>

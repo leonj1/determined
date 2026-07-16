@@ -180,6 +180,7 @@ ideally a clean git checkout, so every change is reviewable and revertible.
 | `--exec`         | `false`  | Run the unattended execute loop against `PLAN.md` + `STEPS.md`. With `--plan`, execution follows successful planning; incompatible with `--review-plan`. Without `--plan` or `--exec`, `determined` prints the usage screen. |
 | `--review-plan`  | `false`  | Critique existing `PLAN.md` + `STEPS.md`, interview the user about consequential choices, and revise without executing. |
 | `--criteria`     | `false`  | Interactively capture BDD journey tests into `CRITERIA.md` (accept / modify / skip / end / cancel per proposal). Runs before `--plan` / `-exec` when combined; incompatible with `--review-plan`. |
+| `--interactive`  | `false`  | With `--plan`, serve a live HTML status page (loopback web server) showing the goal, plan, and workflow steps in real time, with a completion banner and timing. Requires `--plan`. |
 | `--mvp`          | `false`  | Use a reduced quality gate for the smallest usable outcome. Requires `--plan`; incompatible with `--prototype`. |
 | `--prototype`    | `false`  | Ask only blocking questions and skip quality refinement for fast experiments. Requires `--plan`; incompatible with `--mvp`. |
 | `--max-step-passes` | `5`   | Max quality assess/refine rounds during planning or review. `0` disables refinement. |

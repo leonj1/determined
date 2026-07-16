@@ -42,6 +42,7 @@ func main() {
 	exec := flag.Bool("exec", false, "run the execute loop against PLAN.md / STEPS.md; with -plan, execution follows successful planning")
 	reviewPlan := flag.Bool("review-plan", false, "critique and interactively revise existing PLAN.md and STEPS.md")
 	criteria := flag.Bool("criteria", false, "interactively capture BDD journey tests into CRITERIA.md; with -plan or -exec, the session runs first and the tests become required acceptance criteria")
+	interactive := flag.Bool("interactive", false, "with -plan, serve a live HTML status page for the planning session on a local web server")
 	mvp := flag.Bool("mvp", false, "create a lean plan for the smallest usable outcome (plan mode only)")
 	prototype := flag.Bool("prototype", false, "create a fast experimental plan with minimal questioning and no refinement (plan mode only)")
 	maxStepPasses := flag.Int("max-step-passes", 5,
@@ -82,6 +83,10 @@ func main() {
 		fmt.Fprintf(os.Stderr, "determined: %v\n", err)
 		os.Exit(2)
 	}
+	if err := validateInteractiveFlag(*interactive, *plan != ""); err != nil {
+		fmt.Fprintf(os.Stderr, "determined: %v\n", err)
+		os.Exit(2)
+	}
 	if !operationRequested(*plan != "", *reviewPlan, *exec, *criteria) {
 		flag.Usage()
 		os.Exit(2)
@@ -113,7 +118,7 @@ func main() {
 		if *reviewPlan {
 			outcome = runReviewPlan(ctx, selected, *budget, *maxStepPasses, clock, logs)
 		} else if *plan != "" {
-			outcome = runPlan(ctx, selected, planInput(*plan, flag.Args()), planMode, *budget, *maxStepPasses, clock, logs)
+			outcome = runPlan(ctx, selected, planInput(*plan, flag.Args()), planMode, *budget, *maxStepPasses, *interactive, !*exec, clock, logs)
 			if shouldExecuteAfterPlan(*exec, outcome) {
 				outcome = runLoop(ctx, selected, *budget, *maxStalled, *maxFailures, *maxIterationDuration, *verify, *specializedReviews, *gitCheckpoint, clock, logs)
 			}
@@ -199,6 +204,15 @@ func operationRequested(planning, reviewing, executing, criteria bool) bool {
 func validateCriteriaFlag(criteria, reviewing bool) error {
 	if criteria && reviewing {
 		return fmt.Errorf("-criteria and -review-plan cannot be used together")
+	}
+	return nil
+}
+
+// validateInteractiveFlag rejects -interactive without -plan: the live status
+// page observes a planning session and has nothing to show otherwise.
+func validateInteractiveFlag(interactive, planning bool) error {
+	if interactive && !planning {
+		return fmt.Errorf("-interactive requires -plan")
 	}
 	return nil
 }
@@ -299,8 +313,10 @@ func runUpdateCommand() {
 }
 
 // runPlan runs the attended planning loop, relaying the tool's clarifying
-// questions to the user until a plan is produced.
-func runPlan(ctx context.Context, tool models.Tool, goal string, mode models.PlanMode, budget time.Duration, maxStepPasses int, clock services.Clock, logs services.LogSink) models.Outcome {
+// questions to the user until a plan is produced. With interactive set, a
+// local web server shows the session live; holdPage keeps it serving after
+// completion (plan-only mode) until the user dismisses it.
+func runPlan(ctx context.Context, tool models.Tool, goal string, mode models.PlanMode, budget time.Duration, maxStepPasses int, interactive, holdPage bool, clock services.Clock, logs services.LogSink) models.Outcome {
 	prompts := services.PlanningPrompts(mode)
 	cfg := models.PlanConfig{
 		Operation:        models.PlanOperationCreate,
@@ -326,7 +342,50 @@ func runPlan(ctx context.Context, tool models.Tool, goal string, mode models.Pla
 		os.Stdout,
 		cfg,
 	)
-	return orchestrator.Run(ctx)
+	if !interactive {
+		return orchestrator.Run(ctx)
+	}
+	return runInteractivePlan(ctx, orchestrator, holdPage, clock)
+}
+
+// runInteractivePlan wraps a planning run with the live status web server. A
+// bind failure aborts before the AI tool is ever invoked; in plan-only mode
+// the page stays served after completion until the user presses Enter or
+// interrupts, so the completion banner remains viewable.
+func runInteractivePlan(ctx context.Context, orchestrator *services.PlanOrchestrator, holdPage bool, clock services.Clock) models.Outcome {
+	status := services.NewPlanStatusService(clock, clients.NewGitContextReader().Read(ctx))
+	server := clients.NewPlanStatusServer(status)
+	if err := server.Start(); err != nil {
+		fmt.Fprintf(os.Stderr, "determined: %v\n", err)
+		return models.OutcomeDroidFailed
+	}
+	fmt.Fprintf(os.Stdout, "determined: planning status page at %s\n", server.URL())
+
+	outcome := orchestrator.WithStatusReporter(status).Run(ctx)
+
+	if holdPage && ctx.Err() == nil {
+		fmt.Fprintf(os.Stdout, "determined: status page still serving at %s — press Enter to exit\n", server.URL())
+		waitForDismissal(ctx)
+	}
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	server.Shutdown(shutdownCtx) //nolint:errcheck // best-effort shutdown on exit
+	return outcome
+}
+
+// waitForDismissal blocks until the user presses Enter or the run is
+// interrupted, keeping the status page available for reading.
+func waitForDismissal(ctx context.Context) {
+	dismissed := make(chan struct{})
+	go func() {
+		buf := make([]byte, 1)
+		os.Stdin.Read(buf) //nolint:errcheck // any read result dismisses
+		close(dismissed)
+	}()
+	select {
+	case <-ctx.Done():
+	case <-dismissed:
+	}
 }
 
 // runCriteria runs the attended criteria session, capturing user-approved BDD
