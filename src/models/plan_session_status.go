@@ -28,6 +28,14 @@ type PlanStep struct {
 	Message string    `json:"message"`
 }
 
+// TaskStep is one checkbox item from the produced STEPS.md, rendered as a card
+// on the status page's Steps tab.
+type TaskStep struct {
+	Text      string `json:"text"`
+	DoneWhen  string `json:"doneWhen"`
+	Completed bool   `json:"completed"`
+}
+
 // PlanSessionStatus is the full snapshot the interactive status page renders.
 // Each broadcast carries the whole snapshot; browsers re-render on receipt.
 type PlanSessionStatus struct {
@@ -37,6 +45,7 @@ type PlanSessionStatus struct {
 	Phase           PlanPhase  `json:"phase"`
 	WaitingForInput bool       `json:"waitingForInput"`
 	Steps           []PlanStep `json:"steps"`
+	TaskSteps       []TaskStep `json:"taskSteps"`
 	StartedAt       time.Time  `json:"startedAt"`
 	EndedAt         time.Time  `json:"endedAt"`
 }

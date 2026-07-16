@@ -13,9 +13,10 @@ import (
 // fakeStatusReporter records every status event the orchestrator emits, in
 // order, so tests can assert the exact reporting sequence.
 type fakeStatusReporter struct {
-	events []string
-	goal   string
-	plan   string
+	events    []string
+	goal      string
+	plan      string
+	taskSteps []models.TaskStep
 }
 
 func (r *fakeStatusReporter) Progress(message string) {
@@ -29,6 +30,10 @@ func (r *fakeStatusReporter) SetGoal(goal string) {
 func (r *fakeStatusReporter) SetPlan(plan string) {
 	r.plan = plan
 	r.events = append(r.events, "plan")
+}
+func (r *fakeStatusReporter) SetTaskSteps(steps []models.TaskStep) {
+	r.taskSteps = steps
+	r.events = append(r.events, "task-steps")
 }
 func (r *fakeStatusReporter) WaitForInput() { r.events = append(r.events, "wait-for-input") }
 func (r *fakeStatusReporter) Finish(succeeded bool) {
@@ -48,7 +53,7 @@ func TestSuccessfulPlanReportsFullStatusSequence(t *testing.T) {
 			fs.Write("QUESTIONS.md", "1. What database?\n")
 		case 2:
 			fs.Write("PLAN.md", "the plan")
-			fs.Write("STEPS.md", "the steps")
+			fs.Write("STEPS.md", "- [x] scaffold the CLI\n  Done when: `go build` passes.\n\n- [ ] add the todo store\n")
 		}
 		return nil
 	}}
@@ -68,8 +73,10 @@ func TestSuccessfulPlanReportsFullStatusSequence(t *testing.T) {
 		"progress: planning project",
 		"wait-for-input",
 		"progress: planning project",
-		"plan",   // refine entry publishes the finished plan
-		"plan",   // reportFinish re-publishes the final plan text
+		"plan",       // refine entry publishes the finished plan
+		"task-steps", // ...and the parsed STEPS.md items
+		"plan",       // reportFinish re-publishes the final plan text
+		"task-steps", // ...and the final step list
 		"finish: succeeded",
 	}
 	if len(reporter.events) != len(want) {
@@ -85,6 +92,18 @@ func TestSuccessfulPlanReportsFullStatusSequence(t *testing.T) {
 	}
 	if reporter.plan != "the plan" {
 		t.Errorf("reported plan = %q, want PLAN.md contents", reporter.plan)
+	}
+	wantSteps := []models.TaskStep{
+		{Text: "scaffold the CLI", DoneWhen: "`go build` passes.", Completed: true},
+		{Text: "add the todo store"},
+	}
+	if len(reporter.taskSteps) != len(wantSteps) {
+		t.Fatalf("task steps = %+v, want %+v", reporter.taskSteps, wantSteps)
+	}
+	for i, want := range wantSteps {
+		if reporter.taskSteps[i] != want {
+			t.Errorf("task steps[%d] = %+v, want %+v", i, reporter.taskSteps[i], want)
+		}
 	}
 }
 

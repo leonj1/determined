@@ -35,6 +35,7 @@ type PlanStatusReporter interface {
 	Start()
 	SetGoal(goal string)
 	SetPlan(plan string)
+	SetTaskSteps(steps []models.TaskStep)
 	WaitForInput()
 	Finish(succeeded bool)
 }
@@ -433,14 +434,40 @@ func (o *PlanOrchestrator) reportGoal() {
 	}
 }
 
-// reportPlan publishes the current PLAN.md contents to the status page.
+// reportPlan publishes the current PLAN.md contents and the parsed STEPS.md
+// checkbox items to the status page.
 func (o *PlanOrchestrator) reportPlan() {
-	if o.status == nil || !o.files.Exists(o.cfg.PlanFile) {
+	if o.status == nil {
 		return
 	}
-	if plan, err := o.files.Read(o.cfg.PlanFile); err == nil {
-		o.status.SetPlan(plan)
+	if o.files.Exists(o.cfg.PlanFile) {
+		if plan, err := o.files.Read(o.cfg.PlanFile); err == nil {
+			o.status.SetPlan(plan)
+		}
 	}
+	o.reportTaskSteps()
+}
+
+// reportTaskSteps publishes STEPS.md as parsed checkbox items so the status
+// page can render one card per step.
+func (o *PlanOrchestrator) reportTaskSteps() {
+	if !o.files.Exists(o.cfg.StepsFile) {
+		return
+	}
+	content, err := o.files.Read(o.cfg.StepsFile)
+	if err != nil {
+		return
+	}
+	o.status.SetTaskSteps(taskSteps(ParseSteps(content)))
+}
+
+// taskSteps converts parsed steps into the status page's task-step model.
+func taskSteps(steps []Step) []models.TaskStep {
+	out := make([]models.TaskStep, len(steps))
+	for i, s := range steps {
+		out[i] = models.TaskStep{Text: s.Text, DoneWhen: s.DoneWhen, Completed: s.Completed}
+	}
+	return out
 }
 
 // reportFinish records the planning phase end and success state.

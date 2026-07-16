@@ -84,6 +84,29 @@ func TestPlanStatusServiceBroadcastsUpdatesToSubscribers(t *testing.T) {
 	}
 }
 
+func TestPlanStatusServiceBroadcastsTaskSteps(t *testing.T) {
+	service := services.NewPlanStatusService(newSteppingClock(planStart()), models.GitContext{})
+	snapshots, cancel := service.Subscribe()
+	defer cancel()
+	<-snapshots // drain the primed snapshot
+
+	steps := []models.TaskStep{
+		{Text: "scaffold the CLI", DoneWhen: "`go build` passes.", Completed: true},
+		{Text: "add the todo store"},
+	}
+	service.SetTaskSteps(steps)
+
+	updated := <-snapshots
+	if len(updated.TaskSteps) != 2 {
+		t.Fatalf("task steps = %+v, want 2 entries", updated.TaskSteps)
+	}
+	for i, want := range steps {
+		if updated.TaskSteps[i] != want {
+			t.Errorf("task steps[%d] = %+v, want %+v", i, updated.TaskSteps[i], want)
+		}
+	}
+}
+
 func TestPlanStatusServiceFinishRecordsTimingAndPhase(t *testing.T) {
 	clock := newSteppingClock(planStart())
 	service := services.NewPlanStatusService(clock, models.GitContext{})

@@ -85,6 +85,14 @@ func (s *PlanStatusService) SetPlan(plan string) {
 	})
 }
 
+// SetTaskSteps publishes the parsed STEPS.md checkbox items.
+func (s *PlanStatusService) SetTaskSteps(steps []models.TaskStep) {
+	s.update(func(st models.PlanSessionStatus) models.PlanSessionStatus {
+		st.TaskSteps = steps
+		return st
+	})
+}
+
 // AddStep appends a timestamped workflow step, clearing any waiting flag.
 func (s *PlanStatusService) AddStep(message string) {
 	s.update(func(st models.PlanSessionStatus) models.PlanSessionStatus {
