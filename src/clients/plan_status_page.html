@@ -127,8 +127,18 @@
     }
   }
   for (const button of document.querySelectorAll("#tabs button")) {
-    button.addEventListener("click", () => selectTab(button.dataset.tab));
+    button.addEventListener("click", () => {
+      history.pushState(null, "", "/" + button.dataset.tab);
+      selectTab(button.dataset.tab);
+    });
   }
+
+  function tabFromPath() {
+    const name = window.location.pathname.replace(/^\//, "");
+    return ["goal", "plan", "steps"].includes(name) ? name : "goal";
+  }
+  window.addEventListener("popstate", () => selectTab(tabFromPath()));
+  selectTab(tabFromPath());
 
   function render(status) {
     setText(el("remote"), status.git.remote, "no remote");

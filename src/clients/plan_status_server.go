@@ -69,7 +69,9 @@ func (s *PlanStatusServer) Shutdown(ctx context.Context) error {
 }
 
 func (s *PlanStatusServer) servePage(w http.ResponseWriter, r *http.Request) {
-	if r.URL.Path != "/" {
+	switch r.URL.Path {
+	case "/", "/goal", "/plan", "/steps":
+	default:
 		http.NotFound(w, r)
 		return
 	}
