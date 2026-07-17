@@ -20,7 +20,7 @@ func TestStandardPlanRequiresQualityGateAndTaskTemplate(t *testing.T) {
 func TestPlanRequiresRecommendedTestsFile(t *testing.T) {
 	for _, mode := range []models.PlanMode{models.PlanModeStandard, models.PlanModeMVP, models.PlanModePrototype} {
 		prompt := services.PlanningPrompts(mode).Plan
-		for _, expected := range []string{"TESTS.md", "exactly 3 recommended tests", "journey test", "Given/When/Then", "```gherkin"} {
+		for _, expected := range []string{"TESTS.md", "up to 3 recommended tests", "fewer when", "journey test", "Given/When/Then", "```gherkin"} {
 			if !strings.Contains(prompt, expected) {
 				t.Fatalf("expected %s planning prompt to contain %q", mode, expected)
 			}
@@ -35,7 +35,8 @@ func TestTestsPromptBackfillsOnlyTheTestsFile(t *testing.T) {
 	} {
 		for _, expected := range []string{
 			"Write only TESTS.md",
-			"exactly 3 recommended tests",
+			"up to 3 recommended tests",
+			"fewer when",
 			"journey test",
 			"Given/When/Then",
 			"```gherkin",

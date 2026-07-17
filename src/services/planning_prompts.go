@@ -2,7 +2,8 @@ package services
 
 import "determined/src/models"
 
-const testsRequirement = "TESTS.md must list exactly 3 recommended tests that validate the goal is implemented: at least one " +
+const testsRequirement = "TESTS.md must list up to 3 recommended tests that validate the goal is implemented — fewer when " +
+	"the goal is small enough that fewer tests cover it: at least one " +
 	"end-to-end journey test and at least one BDD test written as a Gherkin `Scenario` with Given/When/Then " +
 	"steps. Format TESTS.md with one `### Test N: <name>` heading per test followed by its journey " +
 	"narrative or its Gherkin scenario in a fenced ```gherkin block. " +
