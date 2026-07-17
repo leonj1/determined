@@ -136,6 +136,7 @@ func TestToolOutputWithoutTrailingNewlineIsFlushedToLog(t *testing.T) {
 		io.WriteString(out, "partial line without newline")
 		fs.Write("PLAN.md", "the plan")
 		fs.Write("STEPS.md", "the steps")
+		fs.Write("TESTS.md", "### Test 1: journey")
 		return nil
 	}}
 	reporter := &fakeStatusReporter{}
@@ -173,6 +174,7 @@ func TestPlanWithoutReporterRunsTerminalOnly(t *testing.T) {
 	runner := &fakeRunner{script: func(int, io.Writer) error {
 		fs.Write("PLAN.md", "the plan")
 		fs.Write("STEPS.md", "the steps")
+		fs.Write("TESTS.md", "### Test 1: journey")
 		return nil
 	}}
 	o := services.NewPlanOrchestrator(runner, fs, &fakePrompter{}, &fakeClock{now: time.Now()}, &fakeLogSink{}, io.Discard, planConfig(0))

@@ -16,6 +16,7 @@ type PlanConfig struct {
 
 	AssessInvocation Invocation // reviews plan and step quality, writing AssessmentFile
 	RefineInvocation Invocation // resolves assessment findings in PlanFile and StepsFile
+	TestsInvocation  Invocation // backfills TestsFile when a plan exists without it
 	MaxRefinePasses  int        // cap on assess/refine rounds; 0 disables refinement
 
 	// MaxConsecutiveFailures aborts the run after this many consecutive failed

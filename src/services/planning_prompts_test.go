@@ -28,6 +28,26 @@ func TestPlanRequiresRecommendedTestsFile(t *testing.T) {
 	}
 }
 
+func TestTestsPromptBackfillsOnlyTheTestsFile(t *testing.T) {
+	for _, prompt := range []string{
+		services.PlanningPrompts(models.PlanModeStandard).Tests,
+		services.ReviewPrompts().Tests,
+	} {
+		for _, expected := range []string{
+			"Write only TESTS.md",
+			"exactly 3 recommended tests",
+			"journey test",
+			"Given/When/Then",
+			"```gherkin",
+			"Do not modify PLAN.md or STEPS.md",
+		} {
+			if !strings.Contains(prompt, expected) {
+				t.Fatalf("expected tests prompt to contain %q, got:\n%s", expected, prompt)
+			}
+		}
+	}
+}
+
 func TestPlanRequiresPurposeLinePerStep(t *testing.T) {
 	for _, mode := range []models.PlanMode{models.PlanModeStandard, models.PlanModeMVP, models.PlanModePrototype} {
 		prompt := services.PlanningPrompts(mode).Plan

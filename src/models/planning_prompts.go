@@ -5,4 +5,5 @@ type PlanningPrompts struct {
 	Plan   string
 	Assess string
 	Refine string
+	Tests  string
 }

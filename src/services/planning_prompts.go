@@ -2,14 +2,20 @@ package services
 
 import "determined/src/models"
 
+const testsRequirement = "TESTS.md must list exactly 3 recommended tests that validate the goal is implemented: at least one " +
+	"end-to-end journey test and at least one BDD test written as a Gherkin `Scenario` with Given/When/Then " +
+	"steps. Format TESTS.md with one `### Test N: <name>` heading per test followed by its journey " +
+	"narrative or its Gherkin scenario in a fenced ```gherkin block. "
+
+const testsProtocol = "Read GOAL.md if it exists, PLAN.md, and STEPS.md. Write only TESTS.md. " +
+	testsRequirement +
+	"Do not modify PLAN.md or STEPS.md, implement anything, or create STOP.md."
+
 const planProtocol = "Read GOAL.md and ANSWERS.md if it exists. Treat GOAL.md as authoritative. " +
 	"If essential information is missing, write only high-impact clarifying questions to QUESTIONS.md " +
 	"as a markdown numbered list, one question per line. Accept `use sensible defaults` as an answer. " +
 	"Otherwise write PLAN.md, STEPS.md, and TESTS.md, and do not write QUESTIONS.md. " +
-	"TESTS.md must list exactly 3 recommended tests that validate the goal is implemented: at least one " +
-	"end-to-end journey test and at least one BDD test written as a Gherkin `Scenario` with Given/When/Then " +
-	"steps. Format TESTS.md with one `### Test N: <name>` heading per test followed by its journey " +
-	"narrative or its Gherkin scenario in a fenced ```gherkin block. " +
+	testsRequirement +
 	"Classify the work and apply the matching template: greenfield (foundations and delivery), feature " +
 	"(user behavior, integration, regression), bugfix (reproduction, cause, fix, regression), refactor " +
 	"(preserved behavior and incremental checks), migration (compatibility, rollout, rollback), API " +
@@ -51,6 +57,7 @@ func PlanningPrompts(mode models.PlanMode) models.PlanningPrompts {
 		Plan:   "You are planning software before implementation. " + planProtocol + quality,
 		Assess: assessmentPrompt(mode),
 		Refine: refinementPrompt(mode),
+		Tests:  testsProtocol,
 	}
 }
 
@@ -69,6 +76,7 @@ func ReviewPrompts() models.PlanningPrompts {
 			"Preserve confirmed scope, make assumptions and edge-case decisions explicit, order dependencies, and give each incomplete " +
 			"`- [ ]` step a `Purpose:` line stating its functional intent and a concrete `Done when:` acceptance condition. " +
 			"Do not implement anything or create STOP.md.",
+		Tests: testsProtocol,
 	}
 }
 

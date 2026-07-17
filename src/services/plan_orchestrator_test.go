@@ -65,6 +65,7 @@ func planConfig(budget time.Duration) models.PlanConfig {
 		Budget:           budget,
 		AssessInvocation: models.Invocation{Binary: "claude", Args: []string{"-p", "assess"}},
 		RefineInvocation: models.Invocation{Binary: "claude", Args: []string{"-p", "refine"}},
+		TestsInvocation:  models.Invocation{Binary: "claude", Args: []string{"-p", "tests"}},
 		MaxRefinePasses:  0, // refinement off by default; refinement tests opt in
 		GoalFile:         "GOAL.md",
 		QuestionsFile:    "QUESTIONS.md",
@@ -99,6 +100,7 @@ func TestPlanAsksQuestionsThenCompletes(t *testing.T) {
 		case 2:
 			fs.Write("PLAN.md", "the plan")
 			fs.Write("STEPS.md", "the steps")
+			fs.Write("TESTS.md", "### Test 1: journey")
 		}
 		return nil
 	}}
@@ -143,6 +145,7 @@ func TestUserCanSeeTimestampedPlanningStages(t *testing.T) {
 		case 2:
 			fs.Write("PLAN.md", "the plan")
 			fs.Write("STEPS.md", "the steps")
+			fs.Write("TESTS.md", "### Test 1: journey")
 		case 3:
 			fs.Write("REFINEMENTS.md", "- Add validation")
 		case 5:
@@ -181,6 +184,7 @@ func TestPlanUsesExistingGoalWhenConfirmed(t *testing.T) {
 		case 2:
 			fs.Write("PLAN.md", "the plan")
 			fs.Write("STEPS.md", "the steps")
+			fs.Write("TESTS.md", "### Test 1: journey")
 		}
 		return nil
 	}}
@@ -209,6 +213,7 @@ func TestPlanReplacesExistingGoalWhenDeclined(t *testing.T) {
 	runner := &fakeRunner{script: func(int, io.Writer) error {
 		fs.Write("PLAN.md", "the plan")
 		fs.Write("STEPS.md", "the steps")
+		fs.Write("TESTS.md", "### Test 1: journey")
 		return nil
 	}}
 	o := services.NewPlanOrchestrator(runner, fs, prompter, &fakeClock{now: time.Now()}, &fakeLogSink{}, io.Discard, planConfig(0))
@@ -234,6 +239,7 @@ func TestPlanUsesProvidedFileAsGoal(t *testing.T) {
 	runner := &fakeRunner{script: func(int, io.Writer) error {
 		fs.Write("PLAN.md", "the plan")
 		fs.Write("STEPS.md", "the steps")
+		fs.Write("TESTS.md", "### Test 1: journey")
 		return nil
 	}}
 	o := services.NewPlanOrchestrator(runner, fs, &fakePrompter{}, &fakeClock{now: time.Now()}, &fakeLogSink{}, io.Discard, cfg)
@@ -256,6 +262,7 @@ func TestPlanUsesProvidedFileWithSpacesAsGoal(t *testing.T) {
 	runner := &fakeRunner{script: func(int, io.Writer) error {
 		fs.Write("PLAN.md", "the plan")
 		fs.Write("STEPS.md", "the steps")
+		fs.Write("TESTS.md", "### Test 1: journey")
 		return nil
 	}}
 	o := services.NewPlanOrchestrator(runner, fs, &fakePrompter{}, &fakeClock{now: time.Now()}, &fakeLogSink{}, io.Discard, cfg)
@@ -278,6 +285,7 @@ func TestPlanUsesProvidedPathAsGoal(t *testing.T) {
 	runner := &fakeRunner{script: func(int, io.Writer) error {
 		fs.Write("PLAN.md", "the plan")
 		fs.Write("STEPS.md", "the steps")
+		fs.Write("TESTS.md", "### Test 1: journey")
 		return nil
 	}}
 	o := services.NewPlanOrchestrator(runner, fs, &fakePrompter{}, &fakeClock{now: time.Now()}, &fakeLogSink{}, io.Discard, cfg)
@@ -302,6 +310,7 @@ func TestPlanReplacesExistingGoalWithProvidedFileWhenDeclined(t *testing.T) {
 	runner := &fakeRunner{script: func(int, io.Writer) error {
 		fs.Write("PLAN.md", "the plan")
 		fs.Write("STEPS.md", "the steps")
+		fs.Write("TESTS.md", "### Test 1: journey")
 		return nil
 	}}
 	o := services.NewPlanOrchestrator(runner, fs, prompter, &fakeClock{now: time.Now()}, &fakeLogSink{}, io.Discard, cfg)
@@ -326,6 +335,7 @@ func TestPlanReplacesBareHeadingGoalWithoutPrompt(t *testing.T) {
 	runner := &fakeRunner{script: func(int, io.Writer) error {
 		fs.Write("PLAN.md", "the plan")
 		fs.Write("STEPS.md", "the steps")
+		fs.Write("TESTS.md", "### Test 1: journey")
 		return nil
 	}}
 	var terminal strings.Builder
@@ -382,10 +392,12 @@ func TestPlanRefinesOversizedSteps(t *testing.T) {
 		case 1: // planning round produces a plan with one big step
 			fs.Write("PLAN.md", "the plan")
 			fs.Write("STEPS.md", "1. Build the entire app")
+			fs.Write("TESTS.md", "### Test 1: journey")
 		case 2: // first assessment: the step is too large
 			fs.Write("REFINEMENTS.md", "- Step is too large: Build the entire app")
 		case 3: // breakdown: rewrite STEPS.md into smaller steps
 			fs.Write("STEPS.md", "1. Add storage\n2. Add CLI\n3. Wire up")
+			fs.Write("TESTS.md", "### Test 1: journey")
 		case 4: // second assessment: now everything is small enough
 			fs.Write("REFINEMENTS.md", "NONE")
 		}
@@ -414,6 +426,7 @@ func TestUserCanReviewExistingPlanThroughAnInterview(t *testing.T) {
 	fs.Write("GOAL.md", "ship a safe import flow")
 	fs.Write("PLAN.md", "Import all files")
 	fs.Write("STEPS.md", "- [ ] Add import. Done when: it works")
+	fs.Write("TESTS.md", "### Test 1: journey")
 	prompter := &fakePrompter{answers: []string{"Skip invalid rows and report them"}}
 	runner := &fakeRunner{script: func(call int, _ io.Writer) error {
 		switch call {
@@ -423,6 +436,7 @@ func TestUserCanReviewExistingPlanThroughAnInterview(t *testing.T) {
 		case 2:
 			fs.Write("PLAN.md", "Import valid rows; skip and report invalid rows")
 			fs.Write("STEPS.md", "- [ ] Add partial import reporting. Done when: valid rows persist and invalid rows appear in the summary")
+			fs.Write("TESTS.md", "### Test 1: journey")
 		case 3:
 			fs.Write("REFINEMENTS.md", "NONE")
 		}
@@ -472,6 +486,7 @@ func TestReviewResumesAPendingInterview(t *testing.T) {
 	fs := newFakeFileStore()
 	fs.Write("PLAN.md", "existing plan")
 	fs.Write("STEPS.md", "existing steps")
+	fs.Write("TESTS.md", "### Test 1: journey")
 	fs.Write("REVIEW_QUESTIONS.md", "1. Keep backward compatibility?\n")
 	prompter := &fakePrompter{answers: []string{"Yes"}}
 	runner := &fakeRunner{script: func(_ int, _ io.Writer) error {
@@ -498,6 +513,7 @@ func TestPlanRefinementStopsAtPassCap(t *testing.T) {
 		if call == 1 {
 			fs.Write("PLAN.md", "the plan")
 			fs.Write("STEPS.md", "1. Build everything")
+			fs.Write("TESTS.md", "### Test 1: journey")
 			return nil
 		}
 		// Every assessment keeps flagging a too-large step: it never converges.
@@ -524,6 +540,7 @@ func TestPlanRefinementDisabledByZeroPasses(t *testing.T) {
 		if call == 1 {
 			fs.Write("PLAN.md", "the plan")
 			fs.Write("STEPS.md", "1. Build everything")
+			fs.Write("TESTS.md", "### Test 1: journey")
 		}
 		return nil
 	}}
@@ -547,6 +564,7 @@ func TestPlanRefinementAbortsWhenAssessorFails(t *testing.T) {
 		if call == 1 {
 			fs.Write("PLAN.md", "the plan")
 			fs.Write("STEPS.md", "1. Build everything")
+			fs.Write("TESTS.md", "### Test 1: journey")
 			return nil
 		}
 		return errors.New("claude: rate limited") // the assessment call fails
@@ -564,6 +582,7 @@ func TestPlanResumesWhenAlreadyComplete(t *testing.T) {
 	fs := newFakeFileStore()
 	fs.Write("PLAN.md", "existing")
 	fs.Write("STEPS.md", "existing")
+	fs.Write("TESTS.md", "### Test 1: journey")
 	runner := &fakeRunner{}
 	o := services.NewPlanOrchestrator(runner, fs, &fakePrompter{}, &fakeClock{now: time.Now()}, &fakeLogSink{}, io.Discard, planConfig(0))
 
@@ -574,6 +593,79 @@ func TestPlanResumesWhenAlreadyComplete(t *testing.T) {
 	}
 	if runner.calls != 0 {
 		t.Fatalf("expected no tool runs when the plan already exists, got %d", runner.calls)
+	}
+}
+
+func TestPlanBackfillsMissingRecommendedTests(t *testing.T) {
+	fs := newFakeFileStore()
+	fs.Write("PLAN.md", "existing")
+	fs.Write("STEPS.md", "existing")
+	runner := &fakeRunner{script: func(int, io.Writer) error {
+		fs.Write("TESTS.md", "### Test 1: journey")
+		return nil
+	}}
+	o := services.NewPlanOrchestrator(runner, fs, &fakePrompter{}, &fakeClock{now: time.Now()}, &fakeLogSink{}, io.Discard, planConfig(0))
+
+	outcome := o.Run(context.Background())
+
+	if outcome != models.OutcomePlanReady {
+		t.Fatalf("expected the plan to be ready after backfilling tests, got %v", outcome)
+	}
+	if runner.calls != 1 {
+		t.Fatalf("expected exactly one tests-only tool run, got %d", runner.calls)
+	}
+	if got := runner.invocations[0].Args[1]; got != "tests" {
+		t.Fatalf("expected the tests invocation to run, got prompt %q", got)
+	}
+	if fs.data["TESTS.md"] != "### Test 1: journey" {
+		t.Fatalf("expected TESTS.md to be written, got %q", fs.data["TESTS.md"])
+	}
+	if fs.data["PLAN.md"] != "existing" || fs.data["STEPS.md"] != "existing" {
+		t.Fatal("expected the existing plan and steps to be untouched")
+	}
+}
+
+func TestPlanStallsWhenTestsBackfillProducesNothing(t *testing.T) {
+	fs := newFakeFileStore()
+	fs.Write("PLAN.md", "existing")
+	fs.Write("STEPS.md", "existing")
+	runner := &fakeRunner{} // succeeds but never writes TESTS.md
+	o := services.NewPlanOrchestrator(runner, fs, &fakePrompter{}, &fakeClock{now: time.Now()}, &fakeLogSink{}, io.Discard, planConfig(0))
+
+	outcome := o.Run(context.Background())
+
+	if outcome != models.OutcomePlanStalled || outcome.ExitCode() != 1 {
+		t.Fatalf("expected a stall when tests are never produced, got %v (exit %d)", outcome, outcome.ExitCode())
+	}
+	if runner.calls != 1 {
+		t.Fatalf("expected the loop to give up after one fruitless tests round, got %d", runner.calls)
+	}
+}
+
+func TestReviewBackfillsMissingRecommendedTests(t *testing.T) {
+	fs := newFakeFileStore()
+	fs.Write("PLAN.md", "existing plan")
+	fs.Write("STEPS.md", "existing steps")
+	runner := &fakeRunner{script: func(call int, _ io.Writer) error {
+		if call == 1 {
+			fs.Write("TESTS.md", "### Test 1: journey")
+			return nil
+		}
+		fs.Write("REFINEMENTS.md", "NONE")
+		return nil
+	}}
+	o := services.NewPlanOrchestrator(runner, fs, &fakePrompter{}, &fakeClock{now: time.Now()}, &fakeLogSink{}, io.Discard, reviewConfig())
+
+	outcome := o.Run(context.Background())
+
+	if outcome != models.OutcomePlanReviewed {
+		t.Fatalf("expected a reviewed plan after backfilling tests, got %v", outcome)
+	}
+	if got := runner.invocations[0].Args[1]; got != "tests" {
+		t.Fatalf("expected the first invocation to backfill tests, got prompt %q", got)
+	}
+	if fs.data["TESTS.md"] != "### Test 1: journey" {
+		t.Fatalf("expected TESTS.md to be written, got %q", fs.data["TESTS.md"])
 	}
 }
 
@@ -645,6 +737,7 @@ func TestPlanRetriesTransientToolFailure(t *testing.T) {
 		}
 		fs.Write("PLAN.md", "the plan")
 		fs.Write("STEPS.md", "the steps")
+		fs.Write("TESTS.md", "### Test 1: journey")
 		return nil
 	}}
 	terminal := &strings.Builder{}

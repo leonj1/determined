@@ -112,7 +112,10 @@ func (o *PlanOrchestrator) create(ctx context.Context, deadline time.Time) model
 		switch {
 		case ctx.Err() != nil:
 			return models.OutcomeInterrupted
-		case o.planComplete():
+		case o.planDrafted():
+			if outcome, stop := o.ensureTests(ctx); stop {
+				return outcome
+			}
 			return o.refine(ctx, deadline)
 		case o.budgetExceeded(deadline):
 			return models.OutcomeBudgetExceeded
@@ -125,7 +128,10 @@ func (o *PlanOrchestrator) create(ctx context.Context, deadline time.Time) model
 			return outcome
 		}
 
-		if o.planComplete() {
+		if o.planDrafted() {
+			if outcome, stop := o.ensureTests(ctx); stop {
+				return outcome
+			}
 			return o.refine(ctx, deadline)
 		}
 		if o.files.Exists(o.cfg.QuestionsFile) {
@@ -143,9 +149,12 @@ func (o *PlanOrchestrator) review(ctx context.Context, deadline time.Time) model
 	if ctx.Err() != nil {
 		return models.OutcomeInterrupted
 	}
-	if !o.planComplete() {
+	if !o.planDrafted() {
 		fmt.Fprintf(o.terminal, "determined: review requires %s and %s\n", o.cfg.PlanFile, o.cfg.StepsFile)
 		return models.OutcomeMissingFiles
+	}
+	if outcome, stop := o.ensureTests(ctx); stop {
+		return outcome
 	}
 	if o.files.Exists(o.cfg.QuestionsFile) {
 		if outcome, stop := o.relayQuestions(); stop {
@@ -446,9 +455,33 @@ func (o *PlanOrchestrator) questionProgress() progressMessage {
 	return "answering planning questions"
 }
 
-// planComplete reports whether both finished-plan files now exist.
+// planComplete reports whether every finished-plan file now exists: the plan,
+// the step list, and the recommended journey/BDD tests.
 func (o *PlanOrchestrator) planComplete() bool {
+	return o.planDrafted() && o.files.Exists(o.cfg.TestsFile)
+}
+
+// planDrafted reports whether the plan and step list exist, regardless of
+// whether the recommended tests were produced yet.
+func (o *PlanOrchestrator) planDrafted() bool {
 	return o.files.Exists(o.cfg.PlanFile) && o.files.Exists(o.cfg.StepsFile)
+}
+
+// ensureTests backfills the recommended journey/BDD tests when the plan and
+// steps exist but the tests file is missing, so planning never completes
+// without them. It reports whether the loop should stop.
+func (o *PlanOrchestrator) ensureTests(ctx context.Context) (models.Outcome, bool) {
+	if o.files.Exists(o.cfg.TestsFile) {
+		return models.OutcomePlanReady, false
+	}
+	if outcome, stop := o.runInvocation(ctx, o.cfg.TestsInvocation, "recommending tests"); stop {
+		return outcome, stop
+	}
+	if !o.files.Exists(o.cfg.TestsFile) {
+		fmt.Fprintf(o.terminal, "determined: the tool did not produce %s\n", o.cfg.TestsFile)
+		return models.OutcomePlanStalled, true
+	}
+	return models.OutcomePlanReady, false
 }
 
 // deadline returns the instant the run must stop by, or the zero time when the
