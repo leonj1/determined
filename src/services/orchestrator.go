@@ -56,6 +56,7 @@ type Orchestrator struct {
 	logs     LogSink
 	terminal io.Writer
 	status   ExecStatusReporter
+	guard    *TamperGuard
 	cfg      models.Config
 
 	iteration int
@@ -91,6 +92,7 @@ func NewOrchestrator(
 		clock:    clock,
 		logs:     logs,
 		terminal: terminal,
+		guard:    NewTamperGuard(files, cfg.ProtectedFiles),
 		cfg:      cfg,
 	}
 }
@@ -305,12 +307,42 @@ func (o *Orchestrator) invoke(
 	}
 	runCtx, cancel := o.iterationContext(ctx)
 	defer cancel()
-	if err := o.runner.Run(runCtx, o.cfg.Tool.Invocation(prompt), out); err != nil {
+	if err := o.guardedRun(runCtx, prompt, out); err != nil {
 		outcome, stop := o.recordFailure(ctx, err)
 		return invocationResult{outcome: outcome, stop: stop}
 	}
 	o.failures = 0
 	return invocationResult{outcome: models.OutcomeStopped, succeeded: true}
+}
+
+// guardedRun runs one tool invocation with the protected files snapshotted
+// around it, reverting any the tool modified — even when the invocation itself
+// failed, since a tool can tamper and then crash.
+func (o *Orchestrator) guardedRun(ctx context.Context, prompt string, out io.Writer) error {
+	snapshot := o.guard.Snapshot()
+	err := o.runner.Run(ctx, o.cfg.Tool.Invocation(prompt), out)
+	o.reportTampering(o.guard.RestoreTampered(snapshot))
+	return err
+}
+
+// reportTampering warns about each protected file the tool modified, on the
+// terminal and in FIXES.md so the next invocation sees the correction.
+func (o *Orchestrator) reportTampering(restored []string) {
+	for _, path := range restored {
+		fmt.Fprintf(o.terminal,
+			"determined: warning: tool modified protected file %s during iteration %d; restored it\n",
+			path, o.iteration)
+		o.appendTamperNote(path)
+	}
+}
+
+func (o *Orchestrator) appendTamperNote(path string) {
+	note := fmt.Sprintf("- Iteration %d modified %s, which defines the work's acceptance "+
+		"criteria and must not change during execution; the change was reverted. "+
+		"Satisfy the criteria as written instead.\n", o.iteration, path)
+	if err := o.files.Append("FIXES.md", note); err != nil {
+		fmt.Fprintf(o.terminal, "determined: could not record tampering in FIXES.md: %v\n", err)
+	}
 }
 
 // verifyNewSteps runs an independent reviewer invocation over every step the
