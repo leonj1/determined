@@ -28,5 +28,6 @@ type PlanConfig struct {
 	AnswersFile    string // where determined appends the Q&A history (ANSWERS.md)
 	PlanFile       string // a finished plan output (PLAN.md)
 	StepsFile      string // a finished step list output (STEPS.md)
+	TestsFile      string // recommended journey/BDD tests output (TESTS.md)
 	AssessmentFile string // where the assessor lists planning issues (REFINEMENTS.md)
 }

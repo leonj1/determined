@@ -32,6 +32,7 @@ type PlanStep struct {
 // on the status page's Steps tab.
 type TaskStep struct {
 	Text      string `json:"text"`
+	Purpose   string `json:"purpose"`
 	DoneWhen  string `json:"doneWhen"`
 	Completed bool   `json:"completed"`
 }
@@ -56,6 +57,7 @@ type PlanSessionStatus struct {
 	Git             GitContext `json:"git"`
 	Goal            string     `json:"goal"`
 	Plan            string     `json:"plan"`
+	Tests           string     `json:"tests"`
 	Phase           PlanPhase  `json:"phase"`
 	WaitingForInput bool       `json:"waitingForInput"`
 	Steps           []PlanStep `json:"steps"`

@@ -57,6 +57,12 @@
   section h2 { margin: 0 0 0.5rem; font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); }
   section.panel { display: none; }
   section.panel.active { display: block; }
+  .plan-columns { display: grid; grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); gap: 1.25rem; align-items: start; }
+  .plan-columns .plan-column:last-child { border-left: 1px solid var(--border); padding-left: 1.25rem; }
+  @media (max-width: 50rem) {
+    .plan-columns { grid-template-columns: 1fr; }
+    .plan-columns .plan-column:last-child { border-left: none; padding-left: 0; border-top: 1px solid var(--border); padding-top: 1rem; }
+  }
   pre { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font: 0.9rem/1.5 ui-monospace, monospace; }
   .empty { color: var(--muted); font-style: italic; }
   .doc { overflow-wrap: anywhere; }
@@ -88,9 +94,9 @@
   .step-card .badge.pending { background: var(--card); color: var(--muted); border-color: var(--border); }
   .step-card .step-text { margin: 0; overflow-wrap: anywhere; }
   .step-card .step-text.doc p:last-child, .step-card .step-text.doc ul:last-child, .step-card .step-text.doc pre:last-child { margin-bottom: 0; }
-  .step-card .done-when { margin: 0.5rem 0 0; font-size: 0.85rem; color: var(--muted); overflow-wrap: anywhere; }
-  .step-card .done-when p { display: inline; margin: 0; }
-  .step-card .done-when strong { color: var(--fg); }
+  .step-card .done-when, .step-card .purpose { margin: 0.5rem 0 0; font-size: 0.85rem; color: var(--muted); overflow-wrap: anywhere; }
+  .step-card .done-when p, .step-card .purpose p { display: inline; margin: 0; }
+  .step-card .done-when strong, .step-card .purpose strong { color: var(--fg); }
   #log { display: grid; gap: 0.75rem; }
   .log-entry { border: 1px solid var(--border); border-radius: 0.6rem; background: var(--bg); }
   .log-entry .log-head {
@@ -129,7 +135,12 @@
     <div id="waiting">Waiting for your input on the terminal…</div>
     <div id="disconnected">Connection lost — the determined process may have exited.</div>
     <section class="panel active" id="panel-goal"><h2>Goal</h2><div id="goal" class="doc empty">Not written yet.</div></section>
-    <section class="panel" id="panel-plan"><h2>Plan</h2><div id="plan" class="doc empty">Not produced yet.</div></section>
+    <section class="panel" id="panel-plan">
+      <div class="plan-columns">
+        <div class="plan-column"><h2>Plan</h2><div id="plan" class="doc empty">Not produced yet.</div></div>
+        <div class="plan-column"><h2>Tests</h2><div id="tests" class="doc empty">Not produced yet.</div></div>
+      </div>
+    </section>
     <section class="panel" id="panel-steps"><h2>Steps</h2><div id="steps"></div><div id="no-steps" class="empty">No steps yet.</div></section>
     <section class="panel" id="panel-log"><h2>Log</h2><div id="log"></div><div id="no-log" class="empty">No log output yet.</div></section>
   </div>
@@ -368,6 +379,7 @@
     setText(el("branch"), status.git.branch, "no branch");
     setDoc(el("goal"), status.goal, "Not written yet.");
     setDoc(el("plan"), status.plan, "Not produced yet.");
+    setDoc(el("tests"), status.tests, "Not produced yet.");
     el("waiting").classList.toggle("on", !!status.waitingForInput);
 
     renderSteps(status.taskSteps || []);
@@ -434,6 +446,21 @@
       if (looksLikeMarkdown(step.text)) text.innerHTML = markdownToHtml(step.text);
       else { text.textContent = step.text; text.classList.add("plain"); }
       card.append(head, text);
+
+      if (step.purpose) {
+        const purpose = document.createElement("div");
+        purpose.className = "purpose doc";
+        const label = document.createElement("strong");
+        label.textContent = "Purpose: ";
+        if (looksLikeMarkdown(step.purpose)) {
+          const body = document.createElement("span");
+          body.innerHTML = markdownToHtml(step.purpose);
+          purpose.append(label, body);
+        } else {
+          purpose.append(label, step.purpose);
+        }
+        card.append(purpose);
+      }
 
       if (step.doneWhen) {
         const doneWhen = document.createElement("div");

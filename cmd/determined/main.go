@@ -332,6 +332,7 @@ func runPlan(ctx context.Context, tool models.Tool, goal string, mode models.Pla
 		AnswersFile:            "ANSWERS.md",
 		PlanFile:               "PLAN.md",
 		StepsFile:              "STEPS.md",
+		TestsFile:              "TESTS.md",
 		AssessmentFile:         "REFINEMENTS.md",
 	}
 	orchestrator := services.NewPlanOrchestrator(
@@ -427,6 +428,7 @@ func runReviewPlan(ctx context.Context, tool models.Tool, budget time.Duration, 
 		AnswersFile:            "REVIEW_ANSWERS.md",
 		PlanFile:               "PLAN.md",
 		StepsFile:              "STEPS.md",
+		TestsFile:              "TESTS.md",
 		AssessmentFile:         "REFINEMENTS.md",
 	}
 	orchestrator := services.NewPlanOrchestrator(

@@ -37,6 +37,7 @@ type PlanStatusReporter interface {
 	AppendLogOutput(text string)
 	SetGoal(goal string)
 	SetPlan(plan string)
+	SetTests(tests string)
 	SetTaskSteps(steps []models.TaskStep)
 	WaitForInput()
 	Finish(succeeded bool)
@@ -494,7 +495,18 @@ func (o *PlanOrchestrator) reportPlan() {
 			o.status.SetPlan(plan)
 		}
 	}
+	o.reportTests()
 	o.reportTaskSteps()
+}
+
+// reportTests publishes the recommended TESTS.md contents to the status page.
+func (o *PlanOrchestrator) reportTests() {
+	if !o.files.Exists(o.cfg.TestsFile) {
+		return
+	}
+	if tests, err := o.files.Read(o.cfg.TestsFile); err == nil {
+		o.status.SetTests(tests)
+	}
 }
 
 // reportTaskSteps publishes STEPS.md as parsed checkbox items so the status
@@ -514,7 +526,7 @@ func (o *PlanOrchestrator) reportTaskSteps() {
 func taskSteps(steps []Step) []models.TaskStep {
 	out := make([]models.TaskStep, len(steps))
 	for i, s := range steps {
-		out[i] = models.TaskStep{Text: s.Text, DoneWhen: s.DoneWhen, Completed: s.Completed}
+		out[i] = models.TaskStep{Text: s.Text, Purpose: s.Purpose, DoneWhen: s.DoneWhen, Completed: s.Completed}
 	}
 	return out
 }

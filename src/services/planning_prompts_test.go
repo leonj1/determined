@@ -17,6 +17,44 @@ func TestStandardPlanRequiresQualityGateAndTaskTemplate(t *testing.T) {
 	}
 }
 
+func TestPlanRequiresRecommendedTestsFile(t *testing.T) {
+	for _, mode := range []models.PlanMode{models.PlanModeStandard, models.PlanModeMVP, models.PlanModePrototype} {
+		prompt := services.PlanningPrompts(mode).Plan
+		for _, expected := range []string{"TESTS.md", "exactly 3 recommended tests", "journey test", "Given/When/Then", "```gherkin"} {
+			if !strings.Contains(prompt, expected) {
+				t.Fatalf("expected %s planning prompt to contain %q", mode, expected)
+			}
+		}
+	}
+}
+
+func TestPlanRequiresPurposeLinePerStep(t *testing.T) {
+	for _, mode := range []models.PlanMode{models.PlanModeStandard, models.PlanModeMVP, models.PlanModePrototype} {
+		prompt := services.PlanningPrompts(mode).Plan
+		for _, expected := range []string{"`Purpose:`", "functional intent", "not the technical mechanics", "throttled to prevent DDOS"} {
+			if !strings.Contains(prompt, expected) {
+				t.Fatalf("expected %s planning prompt to contain %q", mode, expected)
+			}
+		}
+	}
+}
+
+func TestAssessmentFlagsTechnicalPurposeLines(t *testing.T) {
+	prompt := services.PlanningPrompts(models.PlanModeStandard).Assess
+	for _, expected := range []string{"`Purpose:` line", "restates the technical action"} {
+		if !strings.Contains(prompt, expected) {
+			t.Fatalf("expected assessment prompt to contain %q", expected)
+		}
+	}
+}
+
+func TestRefinementKeepsPurposeLineRequirement(t *testing.T) {
+	prompt := services.PlanningPrompts(models.PlanModeStandard).Refine
+	if !strings.Contains(prompt, "`Purpose:` line") {
+		t.Fatalf("expected refinement prompt to contain %q", "`Purpose:` line")
+	}
+}
+
 func TestStandardAssessmentFindsVagueAcceptanceCriteria(t *testing.T) {
 	prompt := services.PlanningPrompts(models.PlanModeStandard).Assess
 	for _, expected := range []string{"vague `Done when:`", "works correctly", "unqualified `tests pass`", "REFINEMENTS.md"} {

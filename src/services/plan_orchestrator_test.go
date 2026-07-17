@@ -71,6 +71,7 @@ func planConfig(budget time.Duration) models.PlanConfig {
 		AnswersFile:      "ANSWERS.md",
 		PlanFile:         "PLAN.md",
 		StepsFile:        "STEPS.md",
+		TestsFile:        "TESTS.md",
 		AssessmentFile:   "REFINEMENTS.md",
 	}
 }

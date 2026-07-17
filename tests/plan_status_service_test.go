@@ -84,6 +84,20 @@ func TestPlanStatusServiceBroadcastsUpdatesToSubscribers(t *testing.T) {
 	}
 }
 
+func TestPlanStatusServiceBroadcastsTests(t *testing.T) {
+	service := services.NewPlanStatusService(newSteppingClock(planStart()), models.GitContext{})
+	snapshots, cancel := service.Subscribe()
+	defer cancel()
+	<-snapshots // drain the primed snapshot
+
+	service.SetTests("### Test 1: journey")
+
+	updated := <-snapshots
+	if updated.Tests != "### Test 1: journey" {
+		t.Errorf("broadcast tests = %q, want %q", updated.Tests, "### Test 1: journey")
+	}
+}
+
 func TestPlanStatusServiceBroadcastsTaskSteps(t *testing.T) {
 	service := services.NewPlanStatusService(newSteppingClock(planStart()), models.GitContext{})
 	snapshots, cancel := service.Subscribe()

@@ -5,13 +5,20 @@ import "determined/src/models"
 const planProtocol = "Read GOAL.md and ANSWERS.md if it exists. Treat GOAL.md as authoritative. " +
 	"If essential information is missing, write only high-impact clarifying questions to QUESTIONS.md " +
 	"as a markdown numbered list, one question per line. Accept `use sensible defaults` as an answer. " +
-	"Otherwise write PLAN.md and STEPS.md, and do not write QUESTIONS.md. " +
+	"Otherwise write PLAN.md, STEPS.md, and TESTS.md, and do not write QUESTIONS.md. " +
+	"TESTS.md must list exactly 3 recommended tests that validate the goal is implemented: at least one " +
+	"end-to-end journey test and at least one BDD test written as a Gherkin `Scenario` with Given/When/Then " +
+	"steps. Format TESTS.md with one `### Test N: <name>` heading per test followed by its journey " +
+	"narrative or its Gherkin scenario in a fenced ```gherkin block. " +
 	"Classify the work and apply the matching template: greenfield (foundations and delivery), feature " +
 	"(user behavior, integration, regression), bugfix (reproduction, cause, fix, regression), refactor " +
 	"(preserved behavior and incremental checks), migration (compatibility, rollout, rollback), API " +
 	"(contract, errors, tests), UI (states, accessibility, responsiveness), CLI (syntax, output, exit codes), " +
 	"or integration (boundaries and failure handling). Use multiple templates when appropriate. " +
 	"STEPS.md must be an ordered markdown checkbox list with one `- [ ]` item per focused step. " +
+	"Every step must include a `Purpose:` line stating its functional intent — the user-facing or " +
+	"system-level outcome the step exists to achieve, not the technical mechanics (for example " +
+	"`Purpose: Email messages are throttled to prevent DDOS`, not `Add message payloads to a queue`). " +
 	"Every step must end with `Done when:` and a concrete acceptance condition. " +
 	"If CRITERIA.md exists, treat its BDD journey tests as required acceptance tests: include steps that " +
 	"implement each one as an automated test, and require those tests to pass in the relevant `Done when:` conditions. " +
@@ -60,7 +67,8 @@ func ReviewPrompts() models.PlanningPrompts {
 		Refine: "Read GOAL.md if it exists, PLAN.md, STEPS.md, REFINEMENTS.md, and REVIEW_ANSWERS.md if it exists. " +
 			"Treat the user's review answers as authoritative and resolve every finding by rewriting PLAN.md and/or STEPS.md. " +
 			"Preserve confirmed scope, make assumptions and edge-case decisions explicit, order dependencies, and give each incomplete " +
-			"`- [ ]` step a concrete `Done when:` acceptance condition. Do not implement anything or create STOP.md.",
+			"`- [ ]` step a `Purpose:` line stating its functional intent and a concrete `Done when:` acceptance condition. " +
+			"Do not implement anything or create STOP.md.",
 	}
 }
 
@@ -73,9 +81,10 @@ func assessmentPrompt(mode models.PlanMode) string {
 		"conversation, or permission to make consequential design decisions. Do not fill in missing details yourself. Flag any " +
 		"step that requires guessing about scope, location, behavior, dependencies, interfaces, or validation. A step passes only " +
 		"when it identifies one bounded change, can begin without inventing requirements, has completed or explicit prerequisites, " +
-		"settles or deliberately delegates consequential design choices, has a step-specific `Done when:`, and can be completed " +
-		"and reviewed independently. Also flag steps that are out of order or have vague `Done when:` criteria such as `works " +
-		"correctly`, `is implemented`, `looks good`, or unqualified `tests pass`. " +
+		"settles or deliberately delegates consequential design choices, has a step-specific `Done when:`, states its functional " +
+		"intent in a `Purpose:` line, and can be completed and reviewed independently. Also flag steps that are out of order, " +
+		"have vague `Done when:` criteria such as `works correctly`, `is implemented`, `looks good`, or unqualified `tests pass`, " +
+		"or whose `Purpose:` merely restates the technical action instead of the functional outcome it serves. " +
 		"Write each specific, actionable finding as a markdown list item in REFINEMENTS.md. " +
 		"If there are no findings, write exactly NONE. Do not modify the plan or implement anything."
 }
@@ -84,6 +93,7 @@ func refinementPrompt(mode models.PlanMode) string {
 	return "Read GOAL.md, PLAN.md, STEPS.md, and REFINEMENTS.md. Resolve every listed planning issue by rewriting PLAN.md " +
 		"and/or STEPS.md while preserving the user's scope. Split oversized steps, make dependencies explicit and ordered, " +
 		"and replace vague acceptance criteria with commands or observable behavior specific to the step. Apply the " +
-		string(mode) + " quality gate and task template. Keep each step as one incomplete `- [ ]` item ending in `Done when:`. " +
+		string(mode) + " quality gate and task template. Keep each step as one incomplete `- [ ]` item with a `Purpose:` line " +
+		"stating its functional intent, ending in `Done when:`. " +
 		"Do not implement anything or create STOP.md."
 }

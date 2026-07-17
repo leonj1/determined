@@ -16,6 +16,7 @@ type fakeStatusReporter struct {
 	events    []string
 	goal      string
 	plan      string
+	tests     string
 	taskSteps []models.TaskStep
 	logOutput string
 }
@@ -35,6 +36,10 @@ func (r *fakeStatusReporter) SetGoal(goal string) {
 func (r *fakeStatusReporter) SetPlan(plan string) {
 	r.plan = plan
 	r.events = append(r.events, "plan")
+}
+func (r *fakeStatusReporter) SetTests(tests string) {
+	r.tests = tests
+	r.events = append(r.events, "tests")
 }
 func (r *fakeStatusReporter) SetTaskSteps(steps []models.TaskStep) {
 	r.taskSteps = steps
@@ -60,6 +65,7 @@ func TestSuccessfulPlanReportsFullStatusSequence(t *testing.T) {
 		case 2:
 			io.WriteString(out, "plan written\n")
 			fs.Write("PLAN.md", "the plan")
+			fs.Write("TESTS.md", "### Test 1: journey")
 			fs.Write("STEPS.md", "- [x] scaffold the CLI\n  Done when: `go build` passes.\n\n- [ ] add the todo store\n")
 		}
 		return nil
@@ -83,8 +89,10 @@ func TestSuccessfulPlanReportsFullStatusSequence(t *testing.T) {
 		"progress: planning project",
 		"log-entry: planning project",
 		"plan",       // refine entry publishes the finished plan
+		"tests",      // ...the recommended TESTS.md
 		"task-steps", // ...and the parsed STEPS.md items
 		"plan",       // reportFinish re-publishes the final plan text
+		"tests",      // ...the final recommended tests
 		"task-steps", // ...and the final step list
 		"finish: succeeded",
 	}
@@ -101,6 +109,9 @@ func TestSuccessfulPlanReportsFullStatusSequence(t *testing.T) {
 	}
 	if reporter.plan != "the plan" {
 		t.Errorf("reported plan = %q, want PLAN.md contents", reporter.plan)
+	}
+	if reporter.tests != "### Test 1: journey" {
+		t.Errorf("reported tests = %q, want TESTS.md contents", reporter.tests)
 	}
 	if reporter.logOutput != "asking about storage\nplan written\n" {
 		t.Errorf("log output = %q, want both invocations' streamed output", reporter.logOutput)
