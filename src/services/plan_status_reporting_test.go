@@ -3,6 +3,7 @@ package services_test
 import (
 	"context"
 	"io"
+	"sync"
 	"testing"
 	"time"
 
@@ -19,6 +20,12 @@ type fakeStatusReporter struct {
 	tests     string
 	taskSteps []models.TaskStep
 	logOutput string
+
+	// mu guards annotations: ServeAnnotations drains them from another
+	// goroutine while a test appends late arrivals.
+	mu          sync.Mutex
+	annotations []models.Annotation
+	signal      chan struct{}
 }
 
 func (r *fakeStatusReporter) Progress(message string) {
@@ -46,6 +53,22 @@ func (r *fakeStatusReporter) SetTaskSteps(steps []models.TaskStep) {
 	r.events = append(r.events, "task-steps")
 }
 func (r *fakeStatusReporter) WaitForInput() { r.events = append(r.events, "wait-for-input") }
+func (r *fakeStatusReporter) TakeAnnotation() (models.Annotation, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if len(r.annotations) == 0 {
+		return models.Annotation{}, false
+	}
+	taken := r.annotations[0]
+	r.annotations = r.annotations[1:]
+	return taken, true
+}
+func (r *fakeStatusReporter) AnnotationSignal() <-chan struct{} {
+	if r.signal == nil {
+		r.signal = make(chan struct{}, 1)
+	}
+	return r.signal
+}
 func (r *fakeStatusReporter) Finish(succeeded bool) {
 	if succeeded {
 		r.events = append(r.events, "finish: succeeded")

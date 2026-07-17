@@ -23,18 +23,27 @@ type PlanStatusSource interface {
 	Subscribe() (<-chan models.PlanSessionStatus, func())
 }
 
-// PlanStatusServer serves the interactive planning status page on loopback:
-// the embedded HTML at / and a server-sent-events stream of full status
-// snapshots at /events.
-type PlanStatusServer struct {
-	source   PlanStatusSource
-	listener net.Listener
-	server   *http.Server
+// AnnotationSink receives user feedback submitted from the status page. The
+// real implementation is services.PlanStatusService.
+type AnnotationSink interface {
+	SubmitAnnotation(models.Annotation)
 }
 
-// NewPlanStatusServer constructs a PlanStatusServer over a status source.
-func NewPlanStatusServer(source PlanStatusSource) *PlanStatusServer {
-	return &PlanStatusServer{source: source}
+// PlanStatusServer serves the interactive planning status page on loopback:
+// the embedded HTML at /, a server-sent-events stream of full status snapshots
+// at /events, and an annotation intake at /annotate.
+type PlanStatusServer struct {
+	source      PlanStatusSource
+	annotations AnnotationSink
+	clock       clock
+	listener    net.Listener
+	server      *http.Server
+}
+
+// NewPlanStatusServer constructs a PlanStatusServer over a status source and
+// an annotation sink.
+func NewPlanStatusServer(source PlanStatusSource, annotations AnnotationSink, clock clock) *PlanStatusServer {
+	return &PlanStatusServer{source: source, annotations: annotations, clock: clock}
 }
 
 // Start binds an ephemeral loopback port and begins serving. It returns an
@@ -49,6 +58,7 @@ func (s *PlanStatusServer) Start() error {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", s.servePage)
 	mux.HandleFunc("/events", s.serveEvents)
+	mux.HandleFunc("/annotate", s.serveAnnotate)
 	s.server = &http.Server{Handler: mux}
 	go s.server.Serve(listener) //nolint:errcheck // Serve always returns on Shutdown/Close
 
@@ -70,7 +80,7 @@ func (s *PlanStatusServer) Shutdown(ctx context.Context) error {
 
 func (s *PlanStatusServer) servePage(w http.ResponseWriter, r *http.Request) {
 	switch r.URL.Path {
-	case "/", "/goal", "/plan", "/steps", "/log":
+	case "/", "/goal", "/plan", "/tests", "/steps", "/log":
 	default:
 		http.NotFound(w, r)
 		return
@@ -111,6 +121,28 @@ func (s *PlanStatusServer) serveEvents(w http.ResponseWriter, r *http.Request) {
 			flusher.Flush()
 		}
 	}
+}
+
+// serveAnnotate accepts one user annotation from the page, stamps its arrival
+// time server-side, and queues it on the sink. Invalid payloads are rejected
+// so the queue only ever holds actionable feedback.
+func (s *PlanStatusServer) serveAnnotate(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var annotation models.Annotation
+	if err := json.NewDecoder(r.Body).Decode(&annotation); err != nil {
+		http.Error(w, "invalid annotation payload", http.StatusBadRequest)
+		return
+	}
+	annotation.At = s.clock.Now()
+	if !annotation.Valid() {
+		http.Error(w, "annotation requires a known section and a non-blank comment", http.StatusBadRequest)
+		return
+	}
+	s.annotations.SubmitAnnotation(annotation)
+	w.WriteHeader(http.StatusAccepted)
 }
 
 func writeEvent(w http.ResponseWriter, snapshot models.PlanSessionStatus) error {

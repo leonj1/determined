@@ -14,10 +14,11 @@ type PlanConfig struct {
 	Invocation Invocation    // the planning tool command (print mode) run each round
 	Budget     time.Duration // wall-clock budget; 0 means unlimited
 
-	AssessInvocation Invocation // reviews plan and step quality, writing AssessmentFile
-	RefineInvocation Invocation // resolves assessment findings in PlanFile and StepsFile
-	TestsInvocation  Invocation // backfills TestsFile when a plan exists without it
-	MaxRefinePasses  int        // cap on assess/refine rounds; 0 disables refinement
+	AssessInvocation   Invocation // reviews plan and step quality, writing AssessmentFile
+	RefineInvocation   Invocation // resolves assessment findings in PlanFile and StepsFile
+	TestsInvocation    Invocation // backfills TestsFile when a plan exists without it
+	AnnotateInvocation Invocation // applies one AnnotationFile feedback item to its plan document
+	MaxRefinePasses    int        // cap on assess/refine rounds; 0 disables refinement
 
 	// MaxConsecutiveFailures aborts the run after this many consecutive failed
 	// tool invocations; a success resets the count. Values below 1 mean a single
@@ -31,4 +32,5 @@ type PlanConfig struct {
 	StepsFile      string // a finished step list output (STEPS.md)
 	TestsFile      string // recommended journey/BDD tests output (TESTS.md)
 	AssessmentFile string // where the assessor lists planning issues (REFINEMENTS.md)
+	AnnotationFile string // where one page annotation is staged for the tool (ANNOTATION.md)
 }

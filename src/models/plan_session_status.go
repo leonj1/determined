@@ -65,6 +65,10 @@ type PlanSessionStatus struct {
 	Log             []LogEntry `json:"log"`
 	StartedAt       time.Time  `json:"startedAt"`
 	EndedAt         time.Time  `json:"endedAt"`
+
+	// PendingAnnotations is the queue of user feedback submitted from the page
+	// and not yet applied by the AI tool.
+	PendingAnnotations []Annotation `json:"pendingAnnotations"`
 }
 
 // Duration returns the elapsed planning time: zero until the session starts,

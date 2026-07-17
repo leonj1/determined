@@ -59,21 +59,23 @@ func (p *fakePrompter) Ask(question string) (string, error) {
 
 func planConfig(budget time.Duration) models.PlanConfig {
 	return models.PlanConfig{
-		Operation:        models.PlanOperationCreate,
-		Goal:             "build a todo CLI",
-		Invocation:       models.Invocation{Binary: "claude", Args: []string{"-p", "plan"}},
-		Budget:           budget,
-		AssessInvocation: models.Invocation{Binary: "claude", Args: []string{"-p", "assess"}},
-		RefineInvocation: models.Invocation{Binary: "claude", Args: []string{"-p", "refine"}},
-		TestsInvocation:  models.Invocation{Binary: "claude", Args: []string{"-p", "tests"}},
-		MaxRefinePasses:  0, // refinement off by default; refinement tests opt in
-		GoalFile:         "GOAL.md",
-		QuestionsFile:    "QUESTIONS.md",
-		AnswersFile:      "ANSWERS.md",
-		PlanFile:         "PLAN.md",
-		StepsFile:        "STEPS.md",
-		TestsFile:        "TESTS.md",
-		AssessmentFile:   "REFINEMENTS.md",
+		Operation:          models.PlanOperationCreate,
+		Goal:               "build a todo CLI",
+		Invocation:         models.Invocation{Binary: "claude", Args: []string{"-p", "plan"}},
+		Budget:             budget,
+		AssessInvocation:   models.Invocation{Binary: "claude", Args: []string{"-p", "assess"}},
+		RefineInvocation:   models.Invocation{Binary: "claude", Args: []string{"-p", "refine"}},
+		TestsInvocation:    models.Invocation{Binary: "claude", Args: []string{"-p", "tests"}},
+		AnnotateInvocation: models.Invocation{Binary: "claude", Args: []string{"-p", "annotate"}},
+		MaxRefinePasses:    0, // refinement off by default; refinement tests opt in
+		GoalFile:           "GOAL.md",
+		QuestionsFile:      "QUESTIONS.md",
+		AnswersFile:        "ANSWERS.md",
+		PlanFile:           "PLAN.md",
+		StepsFile:          "STEPS.md",
+		TestsFile:          "TESTS.md",
+		AssessmentFile:     "REFINEMENTS.md",
+		AnnotationFile:     "ANNOTATION.md",
 	}
 }
 

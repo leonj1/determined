@@ -57,12 +57,23 @@
   section h2 { margin: 0 0 0.5rem; font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--muted); }
   section.panel { display: none; }
   section.panel.active { display: block; }
-  .plan-columns { display: grid; grid-template-columns: minmax(0, 3fr) minmax(0, 2fr); gap: 1.25rem; align-items: start; }
-  .plan-columns .plan-column:last-child { border-left: 1px solid var(--border); padding-left: 1.25rem; }
-  @media (max-width: 50rem) {
-    .plan-columns { grid-template-columns: 1fr; }
-    .plan-columns .plan-column:last-child { border-left: none; padding-left: 0; border-top: 1px solid var(--border); padding-top: 1rem; }
+  nav#tests-tabs { display: flex; gap: 0.25rem; border-bottom: 1px solid var(--border); margin-bottom: 1rem; }
+  nav#tests-tabs button {
+    appearance: none; background: none; border: none; border-bottom: 2px solid transparent;
+    padding: 0.4rem 0.9rem; font: inherit; font-weight: 600; color: var(--muted); cursor: pointer;
   }
+  nav#tests-tabs button.active { color: var(--accent); border-bottom-color: var(--accent); }
+  nav#tests-tabs button:hover { color: var(--fg); }
+  .tests-panel { display: none; }
+  .tests-panel.active { display: block; }
+  .seq-diagram { margin: 0.75rem 0; overflow-x: auto; background: var(--bg); border: 1px solid var(--border); border-radius: 0.4rem; padding: 0.6rem; }
+  .seq-diagram svg { display: block; font: 0.8rem system-ui, sans-serif; }
+  .seq-actor { fill: var(--card); stroke: var(--accent); }
+  .seq-actor-label { fill: var(--fg); font-weight: 600; }
+  .seq-lifeline { stroke: var(--border); stroke-dasharray: 3 4; }
+  .seq-arrow { stroke: var(--fg); fill: none; }
+  .seq-arrowhead { fill: var(--fg); }
+  .seq-label { fill: var(--muted); }
   pre { margin: 0; white-space: pre-wrap; overflow-wrap: anywhere; font: 0.9rem/1.5 ui-monospace, monospace; }
   .empty { color: var(--muted); font-style: italic; }
   .doc { overflow-wrap: anywhere; }
@@ -116,6 +127,33 @@
   aside#activity time { display: block; color: var(--muted); font-family: ui-monospace, monospace; font-size: 0.75rem; }
   #disconnected { display: none; color: var(--bad-fg); font-size: 0.85rem; }
   #disconnected.on { display: block; }
+  .annotate-btn {
+    appearance: none; background: none; border: 1px solid var(--border); border-radius: 0.4rem;
+    padding: 0.1rem 0.55rem; font: inherit; font-size: 0.75rem; font-weight: 600;
+    color: var(--muted); cursor: pointer; white-space: nowrap;
+  }
+  .annotate-btn:hover { color: var(--accent); border-color: var(--accent); }
+  .step-card .step-head .annotate-btn { margin-left: auto; }
+  .panel-head { display: flex; justify-content: space-between; align-items: baseline; gap: 0.5rem; }
+  .annotate-form { display: none; margin: 0.6rem 0; }
+  .annotate-form.open { display: block; }
+  .annotate-form textarea {
+    width: 100%; min-height: 4rem; resize: vertical; font: inherit; font-size: 0.9rem;
+    color: var(--fg); background: var(--bg); border: 1px solid var(--border); border-radius: 0.4rem;
+    padding: 0.5rem 0.7rem;
+  }
+  .annotate-form .annotate-actions { display: flex; gap: 0.5rem; margin-top: 0.4rem; }
+  .annotate-form button {
+    appearance: none; font: inherit; font-size: 0.8rem; font-weight: 600; cursor: pointer;
+    border-radius: 0.4rem; padding: 0.25rem 0.8rem; border: 1px solid var(--border);
+    background: var(--card); color: var(--muted);
+  }
+  .annotate-form button.send { background: var(--accent); border-color: var(--accent); color: #fff; }
+  aside#activity .annotation-chip {
+    display: block; margin: 0.4rem 0; padding: 0.35rem 0.6rem; font-size: 0.8rem;
+    border: 1px dashed var(--accent); border-radius: 0.4rem; color: var(--accent);
+    overflow-wrap: anywhere;
+  }
 </style>
 </head>
 <body>
@@ -126,6 +164,7 @@
 <nav id="tabs">
   <button data-tab="goal" class="active">Goal</button>
   <button data-tab="plan">Plan</button>
+  <button data-tab="tests">Tests</button>
   <button data-tab="steps">Steps</button>
   <button data-tab="log">Log</button>
 </nav>
@@ -134,11 +173,27 @@
     <div id="banner"><span id="banner-text"></span><span class="timing" id="banner-timing"></span></div>
     <div id="waiting">Waiting for your input on the terminal…</div>
     <div id="disconnected">Connection lost — the determined process may have exited.</div>
-    <section class="panel active" id="panel-goal"><h2>Goal</h2><div id="goal" class="doc empty">Not written yet.</div></section>
+    <section class="panel active" id="panel-goal">
+      <div class="panel-head" id="goal-head"><h2>Goal</h2></div>
+      <div id="goal" class="doc empty">Not written yet.</div>
+    </section>
     <section class="panel" id="panel-plan">
-      <div class="plan-columns">
-        <div class="plan-column"><h2>Plan</h2><div id="plan" class="doc empty">Not produced yet.</div></div>
-        <div class="plan-column"><h2>Tests</h2><div id="tests" class="doc empty">Not produced yet.</div></div>
+      <div class="panel-head" id="plan-head"><h2>Plan</h2></div>
+      <div id="plan" class="doc empty">Not produced yet.</div>
+    </section>
+    <section class="panel" id="panel-tests">
+      <h2>Tests</h2>
+      <nav id="tests-tabs">
+        <button data-tests-tab="journey" class="active">Journey</button>
+        <button data-tests-tab="bdd">BDD</button>
+      </nav>
+      <div id="tests-journey" class="tests-panel active">
+        <div class="panel-head" id="tests-journey-head"></div>
+        <div id="tests-journey-doc" class="doc empty">Not produced yet.</div>
+      </div>
+      <div id="tests-bdd" class="tests-panel">
+        <div class="panel-head" id="tests-bdd-head"></div>
+        <div id="tests-bdd-doc" class="doc empty">Not produced yet.</div>
       </div>
     </section>
     <section class="panel" id="panel-steps"><h2>Steps</h2><div id="steps"></div><div id="no-steps" class="empty">No steps yet.</div></section>
@@ -147,6 +202,7 @@
   <aside id="activity">
     <section>
       <h2>Activity</h2>
+      <div id="annotations"></div>
       <ol id="activity-log"></ol>
       <div id="no-activity" class="empty">No activity yet.</div>
     </section>
@@ -231,6 +287,79 @@
     ).join("");
   }
 
+  // Renders a mermaid `sequenceDiagram` (participants plus ->> / -->> message
+  // arrows) as an inline SVG so journey-test flows display as diagrams without
+  // bundling a diagram library. Unrecognized lines are skipped; if no messages
+  // parse, the caller falls back to a plain code block.
+  function renderSequenceDiagram(code) {
+    const participants = []; // {id, label} in declaration/first-use order
+    const order = {};        // participant id -> column index
+    const addParticipant = (id, label) => {
+      if (!(id in order)) { order[id] = participants.length; participants.push({ id, label: label || id }); }
+    };
+    const messages = [];
+    for (const raw of code.split("\n")) {
+      const line = raw.trim();
+      let match = line.match(/^(?:participant|actor)\s+(\S+?)(?:\s+as\s+(.+))?$/);
+      if (match) { addParticipant(match[1], match[2]); continue; }
+      match = line.match(/^(.+?)(-->>|->>)(.+?):\s*(.*)$/);
+      if (match) {
+        const from = match[1].trim(), to = match[3].trim();
+        addParticipant(from); addParticipant(to);
+        messages.push({ from, to, dashed: match[2] === "-->>", label: match[4].trim() });
+      }
+    }
+    if (!messages.length) return null;
+
+    const colWidth = 170, topPad = 46, rowHeight = 44, boxHeight = 30, sidePad = 20;
+    const width = sidePad * 2 + colWidth * participants.length;
+    const height = topPad + rowHeight * messages.length + 30;
+    const x = (name) => sidePad + colWidth * order[name] + colWidth / 2;
+    const parts = [];
+    for (const participant of participants) {
+      const cx = x(participant.id);
+      parts.push('<line x1="' + cx + '" y1="' + topPad + '" x2="' + cx + '" y2="' + (height - 10) +
+        '" class="seq-lifeline"/>');
+      parts.push('<rect x="' + (cx - colWidth / 2 + 8) + '" y="8" width="' + (colWidth - 16) +
+        '" height="' + boxHeight + '" rx="5" class="seq-actor"/>');
+      parts.push('<text x="' + cx + '" y="' + (8 + boxHeight / 2) +
+        '" class="seq-actor-label" text-anchor="middle" dominant-baseline="central">' +
+        escapeHtml(participant.label) + "</text>");
+    }
+    messages.forEach((message, index) => {
+      const y = topPad + rowHeight * index + rowHeight / 2;
+      const x1 = x(message.from), x2 = x(message.to);
+      const self = x1 === x2;
+      const dash = message.dashed ? ' stroke-dasharray="5 4"' : "";
+      if (self) {
+        parts.push('<path d="M ' + x1 + " " + (y - 8) + " h 40 v 16 h -40" +
+          '" class="seq-arrow" marker-end="url(#seq-head)"' + dash + " fill=\"none\"/>");
+        parts.push('<text x="' + (x1 + 48) + '" y="' + y +
+          '" class="seq-label" dominant-baseline="central">' + escapeHtml(message.label) + "</text>");
+      } else {
+        parts.push('<line x1="' + x1 + '" y1="' + y + '" x2="' + x2 + '" y2="' + y +
+          '" class="seq-arrow" marker-end="url(#seq-head)"' + dash + "/>");
+        parts.push('<text x="' + (x1 + x2) / 2 + '" y="' + (y - 7) +
+          '" class="seq-label" text-anchor="middle">' + escapeHtml(message.label) + "</text>");
+      }
+    });
+    return '<div class="seq-diagram"><svg viewBox="0 0 ' + width + " " + height +
+      '" width="' + width + '" role="img">' +
+      '<defs><marker id="seq-head" markerWidth="9" markerHeight="8" refX="8" refY="4" orient="auto">' +
+      '<path d="M0,0 L9,4 L0,8 z" class="seq-arrowhead"/></marker></defs>' +
+      parts.join("") + "</svg></div>";
+  }
+
+  // Fenced-block dispatcher: mermaid sequence diagrams render as SVG,
+  // everything else as highlighted code.
+  function renderFence(code, language) {
+    if (language === "mermaid" && /^\s*sequenceDiagram/.test(code)) {
+      const svg = renderSequenceDiagram(code.replace(/^\s*sequenceDiagram\s*/, ""));
+      if (svg) return svg;
+    }
+    return "<pre><code>" + highlightCode(code, language) + "</code></pre>";
+  }
+
   // Renders inline markdown. Code spans are extracted first — before any
   // other replacement and before HTML in them could be mangled — so emphasis
   // and link rules never fire inside code. Handles, in order: fenced blocks
@@ -240,7 +369,7 @@
     const spans = [];
     const stash = (html) => { spans.push(html); return "\u0000" + (spans.length - 1) + "\u0000"; };
     let out = text.replace(/```(\w*)\s([\s\S]*?)```/g, (m, language, code) =>
-      stash("<pre><code>" + highlightCode(code.trim(), language.toLowerCase()) + "</code></pre>"));
+      stash(renderFence(code.trim(), language.toLowerCase())));
     out = out.replace(/``([^`](?:[^`]|`(?!`))*)``/g, (m, code) =>
       stash("<code>" + escapeHtml(code.trim()) + "</code>"));
     out = out.replace(/`([^`\n]+)`/g, (m, code) =>
@@ -295,7 +424,7 @@
         index++;
         while (index < lines.length && !lines[index].startsWith("```")) code.push(lines[index++]);
         index++; // closing fence
-        out.push("<pre><code>" + highlightCode(code.join("\n"), language) + "</code></pre>");
+        out.push(renderFence(code.join("\n"), language));
       } else if (/^#{1,6}\s+/.test(line)) {
         const level = line.match(/^#+/)[0].length;
         out.push("<h" + level + ">" + renderInline(line.replace(/^#+\s+/, "")) + "</h" + level + ">");
@@ -369,22 +498,122 @@
 
   function tabFromPath() {
     const name = window.location.pathname.replace(/^\//, "");
-    return ["goal", "plan", "steps", "log"].includes(name) ? name : "goal";
+    return ["goal", "plan", "tests", "steps", "log"].includes(name) ? name : "goal";
   }
   window.addEventListener("popstate", () => selectTab(tabFromPath()));
   selectTab(tabFromPath());
+
+  function selectTestsTab(name) {
+    for (const button of document.querySelectorAll("#tests-tabs button")) {
+      button.classList.toggle("active", button.dataset.testsTab === name);
+    }
+    el("tests-journey").classList.toggle("active", name === "journey");
+    el("tests-bdd").classList.toggle("active", name === "bdd");
+  }
+  for (const button of document.querySelectorAll("#tests-tabs button")) {
+    button.addEventListener("click", () => selectTestsTab(button.dataset.testsTab));
+  }
+
+  // The recommended tests document is one markdown blob whose sections each
+  // carry a "**Type:**" line. Split it into journey tests and BDD tests by
+  // that marker so each sub-tab shows only its kind.
+  function splitTests(text) {
+    if (!text) return { journey: "", bdd: "" };
+    const sections = text.split(/\n(?=#{2,4}\s)/);
+    const journey = [], bdd = [], untyped = [];
+    for (const section of sections) {
+      const type = (section.match(/\*\*Type:\*\*\s*([^\n]+)/i) || [])[1] || "";
+      if (/bdd|gherkin/i.test(type)) bdd.push(section);
+      else if (/journey|end.to.end|e2e/i.test(type)) journey.push(section);
+      else untyped.push(section);
+    }
+    // Sections with no Type marker (title, preamble) lead the journey tab so
+    // context is never lost; if nothing was typed at all, show everything there.
+    return {
+      journey: untyped.concat(journey).join("\n").trim(),
+      bdd: bdd.join("\n").trim(),
+    };
+  }
+
+  // Builds one annotate button + comment form pair. The comment posts to
+  // /annotate with the section and target so the AI tool knows exactly which
+  // part of which document the feedback refers to.
+  function annotationControls(section, targetOf) {
+    const button = document.createElement("button");
+    button.className = "annotate-btn";
+    button.textContent = "✎ Annotate";
+    const form = document.createElement("div");
+    form.className = "annotate-form";
+    const textarea = document.createElement("textarea");
+    textarea.placeholder = "Describe the adjustment you want made to this section…";
+    const actions = document.createElement("div");
+    actions.className = "annotate-actions";
+    const send = document.createElement("button");
+    send.className = "send";
+    send.textContent = "Send";
+    const cancel = document.createElement("button");
+    cancel.textContent = "Cancel";
+    actions.append(send, cancel);
+    form.append(textarea, actions);
+
+    button.addEventListener("click", () => {
+      form.classList.toggle("open");
+      if (form.classList.contains("open")) textarea.focus();
+    });
+    cancel.addEventListener("click", () => form.classList.remove("open"));
+    send.addEventListener("click", () => {
+      const comment = textarea.value.trim();
+      if (!comment) return;
+      fetch("/annotate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ section, target: targetOf(), comment }),
+      }).then(() => {
+        textarea.value = "";
+        form.classList.remove("open");
+      });
+    });
+    return { button, form };
+  }
+
+  // Mounts annotate controls on a static panel: button in the head row, form
+  // directly above the document body.
+  function mountAnnotation(headId, docId, section, target) {
+    const controls = annotationControls(section, () => target);
+    el(headId).append(controls.button);
+    el(docId).before(controls.form);
+  }
+  mountAnnotation("goal-head", "goal", "goal", "");
+  mountAnnotation("plan-head", "plan", "plan", "");
+  mountAnnotation("tests-journey-head", "tests-journey-doc", "tests", "Journey tests");
+  mountAnnotation("tests-bdd-head", "tests-bdd-doc", "tests", "BDD tests");
+
+  function renderAnnotations(annotations) {
+    const list = el("annotations");
+    list.replaceChildren();
+    for (const a of annotations) {
+      const chip = document.createElement("span");
+      chip.className = "annotation-chip";
+      const where = a.target ? a.section + " · " + a.target : a.section;
+      chip.textContent = "⏳ annotation queued (" + where + "): " + a.comment;
+      list.append(chip);
+    }
+  }
 
   function render(status) {
     setText(el("remote"), status.git.remote, "no remote");
     setText(el("branch"), status.git.branch, "no branch");
     setDoc(el("goal"), status.goal, "Not written yet.");
     setDoc(el("plan"), status.plan, "Not produced yet.");
-    setDoc(el("tests"), status.tests, "Not produced yet.");
+    const tests = splitTests(status.tests);
+    setDoc(el("tests-journey-doc"), tests.journey, "Not produced yet.");
+    setDoc(el("tests-bdd-doc"), tests.bdd, "Not produced yet.");
     el("waiting").classList.toggle("on", !!status.waitingForInput);
 
     renderSteps(status.taskSteps || []);
     renderLog(status.log || []);
     renderActivity(status.steps || []);
+    renderAnnotations(status.pendingAnnotations || []);
     renderBanner(status);
   }
 
@@ -439,7 +668,8 @@
       const badge = document.createElement("span");
       badge.className = "badge " + (step.completed ? "done" : "pending");
       badge.textContent = step.completed ? "✓ Done" : "Pending";
-      head.append(num, badge);
+      const controls = annotationControls("steps", () => stepTarget(step, index));
+      head.append(num, controls.button, badge);
 
       const text = document.createElement("div");
       text.className = "step-text doc";
@@ -476,9 +706,18 @@
         }
         card.append(doneWhen);
       }
+      card.append(controls.form);
       list.append(card);
     });
     el("no-steps").style.display = steps.length ? "none" : "block";
+  }
+
+  // stepTarget names one step for an annotation: its number plus the first
+  // line of its text, truncated, so the tool can find it in STEPS.md.
+  function stepTarget(step, index) {
+    const firstLine = (step.text || "").split("\n")[0].trim();
+    const summary = firstLine.length > 80 ? firstLine.slice(0, 80) + "…" : firstLine;
+    return "Step " + (index + 1) + (summary ? ": " + summary : "");
   }
 
   function renderActivity(steps) {

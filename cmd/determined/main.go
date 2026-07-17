@@ -326,6 +326,7 @@ func runPlan(ctx context.Context, tool models.Tool, goal string, mode models.Pla
 		AssessInvocation:       tool.Invocation(prompts.Assess),
 		RefineInvocation:       tool.Invocation(prompts.Refine),
 		TestsInvocation:        tool.Invocation(prompts.Tests),
+		AnnotateInvocation:     tool.Invocation(prompts.Annotate),
 		MaxRefinePasses:        refinePasses(mode, maxStepPasses),
 		MaxConsecutiveFailures: maxFailures,
 		GoalFile:               "GOAL.md",
@@ -335,6 +336,7 @@ func runPlan(ctx context.Context, tool models.Tool, goal string, mode models.Pla
 		StepsFile:              "STEPS.md",
 		TestsFile:              "TESTS.md",
 		AssessmentFile:         "REFINEMENTS.md",
+		AnnotationFile:         "ANNOTATION.md",
 	}
 	orchestrator := services.NewPlanOrchestrator(
 		clients.NewExecCommandRunner(),
@@ -357,7 +359,7 @@ func runPlan(ctx context.Context, tool models.Tool, goal string, mode models.Pla
 // interrupts, so the completion banner remains viewable.
 func runInteractivePlan(ctx context.Context, orchestrator *services.PlanOrchestrator, holdPage bool, clock services.Clock) models.Outcome {
 	status := services.NewPlanStatusService(clock, clients.NewGitContextReader().Read(ctx))
-	server := clients.NewPlanStatusServer(status)
+	server := clients.NewPlanStatusServer(status, status, clock)
 	if err := server.Start(); err != nil {
 		fmt.Fprintf(os.Stderr, "determined: %v\n", err)
 		return models.OutcomeDroidFailed
@@ -367,8 +369,10 @@ func runInteractivePlan(ctx context.Context, orchestrator *services.PlanOrchestr
 	outcome := orchestrator.WithStatusReporter(status).Run(ctx)
 
 	if holdPage && ctx.Err() == nil {
-		fmt.Fprintf(os.Stdout, "determined: status page still serving at %s — press Enter to exit\n", server.URL())
-		waitForDismissal(ctx)
+		fmt.Fprintf(os.Stdout,
+			"determined: status page still serving at %s — annotate sections there to refine the plan, or press Enter to exit\n",
+			server.URL())
+		orchestrator.ServeAnnotations(ctx, dismissalChannel())
 	}
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
@@ -376,19 +380,16 @@ func runInteractivePlan(ctx context.Context, orchestrator *services.PlanOrchestr
 	return outcome
 }
 
-// waitForDismissal blocks until the user presses Enter or the run is
-// interrupted, keeping the status page available for reading.
-func waitForDismissal(ctx context.Context) {
+// dismissalChannel returns a channel closed when the user presses Enter,
+// letting the annotation loop keep the status page interactive until then.
+func dismissalChannel() <-chan struct{} {
 	dismissed := make(chan struct{})
 	go func() {
 		buf := make([]byte, 1)
 		os.Stdin.Read(buf) //nolint:errcheck // any read result dismisses
 		close(dismissed)
 	}()
-	select {
-	case <-ctx.Done():
-	case <-dismissed:
-	}
+	return dismissed
 }
 
 // runCriteria runs the attended criteria session, capturing user-approved BDD

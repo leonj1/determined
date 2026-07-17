@@ -38,6 +38,20 @@ func (f *fakePlanStatusSource) publish(snapshot models.PlanSessionStatus) {
 	f.updates <- snapshot
 }
 
+// fakeAnnotationSink records annotations the server accepts, in order.
+type fakeAnnotationSink struct {
+	annotations []models.Annotation
+}
+
+func (f *fakeAnnotationSink) SubmitAnnotation(a models.Annotation) {
+	f.annotations = append(f.annotations, a)
+}
+
+// serverClock is a fixed fake clock for deterministic annotation stamps.
+type serverClock struct{ t time.Time }
+
+func (c serverClock) Now() time.Time { return c.t }
+
 // TestPlanStatusServerContract exercises the production server end to end:
 // bind, serve the page, stream SSE snapshots, and shut down cleanly.
 func TestPlanStatusServerContract(t *testing.T) {
@@ -46,7 +60,8 @@ func TestPlanStatusServerContract(t *testing.T) {
 		Goal:  "build a todo CLI",
 		Phase: models.PlanPhaseRunning,
 	})
-	server := clients.NewPlanStatusServer(source)
+	sink := &fakeAnnotationSink{}
+	server := clients.NewPlanStatusServer(source, sink, serverClock{t: time.Date(2026, 7, 16, 10, 0, 0, 0, time.UTC)})
 	if err := server.Start(); err != nil {
 		t.Fatalf("start: %v", err)
 	}
@@ -81,7 +96,10 @@ func assertPageServed(t *testing.T, url string) {
 		"step-card", "taskSteps", "Done when: ",
 		"log-entry", "renderLog", `data-tab="log"`,
 		"renderTable", "unflattenTables", "isSeparatorRow",
-		"plan-columns", `id="tests"`, "status.tests",
+		`data-tab="tests"`, `data-tests-tab="journey"`, `data-tests-tab="bdd"`,
+		"splitTests", "status.tests",
+		"renderSequenceDiagram", "seq-diagram",
+		"annotationControls", "/annotate", "pendingAnnotations", "annotate-btn",
 	} {
 		if !strings.Contains(page, marker) {
 			t.Errorf("page missing %q", marker)
@@ -132,6 +150,102 @@ func readEventData(t *testing.T, reader *bufio.Reader) string {
 		if strings.HasPrefix(line, "data: ") {
 			return strings.TrimSpace(strings.TrimPrefix(line, "data: "))
 		}
+	}
+}
+
+// startAnnotateServer boots the production server over fakes for exercising
+// the /annotate endpoint.
+func startAnnotateServer(t *testing.T) (string, *fakeAnnotationSink, func()) {
+	t.Helper()
+	source := newFakePlanStatusSource(models.PlanSessionStatus{})
+	sink := &fakeAnnotationSink{}
+	server := clients.NewPlanStatusServer(source, sink, serverClock{t: time.Date(2026, 7, 16, 10, 0, 0, 0, time.UTC)})
+	if err := server.Start(); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	return server.URL(), sink, func() { shutdown(t, server) }
+}
+
+func postAnnotation(t *testing.T, url, body string) *http.Response {
+	t.Helper()
+	resp, err := http.Post(url+"annotate", "application/json", strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("post annotation: %v", err)
+	}
+	resp.Body.Close()
+	return resp
+}
+
+func TestPlanStatusServerAcceptsValidAnnotation(t *testing.T) {
+	url, sink, stop := startAnnotateServer(t)
+	defer stop()
+
+	resp := postAnnotation(t, url, `{"section":"steps","target":"Step 2: add the store","comment":"split this step"}`)
+
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202", resp.StatusCode)
+	}
+	if len(sink.annotations) != 1 {
+		t.Fatalf("sink annotations = %+v, want exactly 1", sink.annotations)
+	}
+	got := sink.annotations[0]
+	want := models.Annotation{
+		At:      time.Date(2026, 7, 16, 10, 0, 0, 0, time.UTC),
+		Section: models.AnnotationSectionSteps,
+		Target:  "Step 2: add the store",
+		Comment: "split this step",
+	}
+	if got != want {
+		t.Errorf("annotation = %+v, want %+v", got, want)
+	}
+}
+
+func TestPlanStatusServerRejectsBadAnnotations(t *testing.T) {
+	url, sink, stop := startAnnotateServer(t)
+	defer stop()
+
+	for name, body := range map[string]string{
+		"invalid JSON":    `{not json`,
+		"unknown section": `{"section":"banner","comment":"hello"}`,
+		"blank comment":   `{"section":"plan","comment":"   "}`,
+	} {
+		if resp := postAnnotation(t, url, body); resp.StatusCode != http.StatusBadRequest {
+			t.Errorf("%s: status = %d, want 400", name, resp.StatusCode)
+		}
+	}
+	if len(sink.annotations) != 0 {
+		t.Errorf("sink received %+v, want nothing", sink.annotations)
+	}
+}
+
+func TestPlanStatusServerRejectsAnnotationGet(t *testing.T) {
+	url, sink, stop := startAnnotateServer(t)
+	defer stop()
+
+	resp, err := http.Get(url + "annotate")
+	if err != nil {
+		t.Fatalf("get annotate: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusMethodNotAllowed {
+		t.Errorf("status = %d, want 405", resp.StatusCode)
+	}
+	if len(sink.annotations) != 0 {
+		t.Errorf("sink received %+v, want nothing", sink.annotations)
+	}
+}
+
+func TestPlanStatusServerServesTestsPath(t *testing.T) {
+	url, _, stop := startAnnotateServer(t)
+	defer stop()
+
+	resp, err := http.Get(url + "tests")
+	if err != nil {
+		t.Fatalf("get /tests: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("/tests status = %d, want 200", resp.StatusCode)
 	}
 }
 

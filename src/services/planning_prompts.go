@@ -5,11 +5,23 @@ import "determined/src/models"
 const testsRequirement = "TESTS.md must list exactly 3 recommended tests that validate the goal is implemented: at least one " +
 	"end-to-end journey test and at least one BDD test written as a Gherkin `Scenario` with Given/When/Then " +
 	"steps. Format TESTS.md with one `### Test N: <name>` heading per test followed by its journey " +
-	"narrative or its Gherkin scenario in a fenced ```gherkin block. "
+	"narrative or its Gherkin scenario in a fenced ```gherkin block. " +
+	"Every journey test must also include a mermaid sequence diagram of its flow in a fenced ```mermaid " +
+	"block starting with `sequenceDiagram`, using only `participant` declarations and `->>` / `-->>` " +
+	"message arrows between participants. "
 
 const testsProtocol = "Read GOAL.md if it exists, PLAN.md, and STEPS.md. Write only TESTS.md. " +
 	testsRequirement +
 	"Do not modify PLAN.md or STEPS.md, implement anything, or create STOP.md."
+
+const annotateProtocol = "Read ANNOTATION.md. It contains the user's feedback on one section of the plan " +
+	"documents, naming the section (goal/plan/steps/tests), the specific target within it when there is one, " +
+	"and the requested adjustment. Apply the adjustment to the referenced file only — GOAL.md, PLAN.md, " +
+	"STEPS.md, or TESTS.md — keeping all other content and files unchanged. Preserve each file's required " +
+	"format: STEPS.md stays an ordered `- [ ]` checkbox list where every step has a `Purpose:` line and ends " +
+	"with `Done when:` and a concrete acceptance condition; TESTS.md keeps one `### Test N: <name>` heading " +
+	"per test with journey narratives, their mermaid sequence diagrams, and Gherkin scenarios in fenced " +
+	"blocks. Do not modify ANNOTATION.md, implement anything, or create STOP.md."
 
 const planProtocol = "Read GOAL.md and ANSWERS.md if it exists. Treat GOAL.md as authoritative. " +
 	"If essential information is missing, write only high-impact clarifying questions to QUESTIONS.md " +
@@ -54,10 +66,11 @@ func PlanningPrompts(mode models.PlanMode) models.PlanningPrompts {
 		quality = prototypeQuality
 	}
 	return models.PlanningPrompts{
-		Plan:   "You are planning software before implementation. " + planProtocol + quality,
-		Assess: assessmentPrompt(mode),
-		Refine: refinementPrompt(mode),
-		Tests:  testsProtocol,
+		Plan:     "You are planning software before implementation. " + planProtocol + quality,
+		Assess:   assessmentPrompt(mode),
+		Refine:   refinementPrompt(mode),
+		Tests:    testsProtocol,
+		Annotate: annotateProtocol,
 	}
 }
 

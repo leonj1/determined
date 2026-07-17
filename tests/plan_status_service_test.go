@@ -205,3 +205,76 @@ func TestPlanStatusServiceWaitForInputSetsFlagAndVisibleStep(t *testing.T) {
 		t.Error("waitingForInput still true after next step")
 	}
 }
+
+func pageAnnotation(comment string) models.Annotation {
+	return models.Annotation{
+		At:      planStart(),
+		Section: models.AnnotationSectionPlan,
+		Target:  "Step 1",
+		Comment: comment,
+	}
+}
+
+func TestPlanStatusServiceQueuesAnnotationsInOrder(t *testing.T) {
+	service := services.NewPlanStatusService(newSteppingClock(planStart()), models.GitContext{})
+
+	service.SubmitAnnotation(pageAnnotation("first"))
+	service.SubmitAnnotation(pageAnnotation("second"))
+
+	pending := service.Snapshot().PendingAnnotations
+	if len(pending) != 2 || pending[0].Comment != "first" || pending[1].Comment != "second" {
+		t.Fatalf("pending = %+v, want first then second", pending)
+	}
+
+	taken, ok := service.TakeAnnotation()
+	if !ok || taken.Comment != "first" {
+		t.Fatalf("take = %+v ok=%v, want first", taken, ok)
+	}
+	if remaining := service.Snapshot().PendingAnnotations; len(remaining) != 1 || remaining[0].Comment != "second" {
+		t.Errorf("remaining = %+v, want only second", remaining)
+	}
+}
+
+func TestPlanStatusServiceTakeAnnotationOnEmptyQueueReportsNone(t *testing.T) {
+	service := services.NewPlanStatusService(newSteppingClock(planStart()), models.GitContext{})
+	if _, ok := service.TakeAnnotation(); ok {
+		t.Error("take on empty queue reported an annotation")
+	}
+}
+
+func TestPlanStatusServiceSubmitSignalsOncePerBurst(t *testing.T) {
+	service := services.NewPlanStatusService(newSteppingClock(planStart()), models.GitContext{})
+
+	service.SubmitAnnotation(pageAnnotation("first"))
+	service.SubmitAnnotation(pageAnnotation("second"))
+
+	select {
+	case <-service.AnnotationSignal():
+	default:
+		t.Fatal("signal channel empty after submissions")
+	}
+	select {
+	case <-service.AnnotationSignal():
+		t.Fatal("signal fired twice for one burst; drain loops would spin")
+	default:
+	}
+}
+
+func TestPlanStatusServiceBroadcastsAnnotationQueueChanges(t *testing.T) {
+	service := services.NewPlanStatusService(newSteppingClock(planStart()), models.GitContext{})
+	updates, cancel := service.Subscribe()
+	defer cancel()
+	<-updates // initial snapshot
+
+	service.SubmitAnnotation(pageAnnotation("first"))
+	snapshot := <-updates
+	if len(snapshot.PendingAnnotations) != 1 {
+		t.Fatalf("broadcast pending = %+v, want 1 entry", snapshot.PendingAnnotations)
+	}
+
+	service.TakeAnnotation()
+	snapshot = <-updates
+	if len(snapshot.PendingAnnotations) != 0 {
+		t.Errorf("broadcast pending after take = %+v, want empty", snapshot.PendingAnnotations)
+	}
+}

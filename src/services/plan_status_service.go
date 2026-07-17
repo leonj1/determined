@@ -17,6 +17,7 @@ type PlanStatusService struct {
 	mu          sync.Mutex
 	status      models.PlanSessionStatus
 	subscribers []chan models.PlanSessionStatus
+	annotations chan struct{}
 }
 
 // NewPlanStatusService wires a PlanStatusService with the session's git
@@ -29,6 +30,7 @@ func NewPlanStatusService(clock Clock, git models.GitContext) *PlanStatusService
 			Phase: models.PlanPhaseRunning,
 			Steps: []models.PlanStep{},
 		},
+		annotations: make(chan struct{}, 1),
 	}
 }
 
@@ -146,6 +148,41 @@ func (s *PlanStatusService) Finish(succeeded bool) {
 		}
 		return st
 	})
+}
+
+// SubmitAnnotation queues user feedback from the status page and signals the
+// annotation channel so a waiting orchestrator can apply it.
+func (s *PlanStatusService) SubmitAnnotation(a models.Annotation) {
+	s.update(func(st models.PlanSessionStatus) models.PlanSessionStatus {
+		st.PendingAnnotations = append(append([]models.Annotation{}, st.PendingAnnotations...), a)
+		return st
+	})
+	select {
+	case s.annotations <- struct{}{}:
+	default: // already signalled; the drain loop empties the whole queue
+	}
+}
+
+// TakeAnnotation pops the oldest pending annotation, reporting whether one
+// existed. The updated queue is broadcast so the page reflects the drain.
+func (s *PlanStatusService) TakeAnnotation() (models.Annotation, bool) {
+	var taken models.Annotation
+	var ok bool
+	s.update(func(st models.PlanSessionStatus) models.PlanSessionStatus {
+		if len(st.PendingAnnotations) == 0 {
+			return st
+		}
+		taken, ok = st.PendingAnnotations[0], true
+		st.PendingAnnotations = append([]models.Annotation{}, st.PendingAnnotations[1:]...)
+		return st
+	})
+	return taken, ok
+}
+
+// AnnotationSignal reports annotation arrivals: the channel receives one value
+// per burst of submissions.
+func (s *PlanStatusService) AnnotationSignal() <-chan struct{} {
+	return s.annotations
 }
 
 // Progress implements ProgressSink so orchestrator progress messages appear as

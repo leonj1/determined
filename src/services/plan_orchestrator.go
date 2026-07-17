@@ -41,6 +41,8 @@ type PlanStatusReporter interface {
 	SetTaskSteps(steps []models.TaskStep)
 	WaitForInput()
 	Finish(succeeded bool)
+	TakeAnnotation() (models.Annotation, bool)
+	AnnotationSignal() <-chan struct{}
 }
 
 // PlanOrchestrator runs the attended planning loop: it seeds the goal, runs the
@@ -482,6 +484,70 @@ func (o *PlanOrchestrator) ensureTests(ctx context.Context) (models.Outcome, boo
 		return models.OutcomePlanStalled, true
 	}
 	return models.OutcomePlanReady, false
+}
+
+// ServeAnnotations keeps the finished session responsive to page feedback: it
+// applies queued annotations as they arrive until the user dismisses the page
+// (Enter on the terminal) or the run is interrupted. Each annotation triggers
+// one tool invocation that adjusts the referenced plan document.
+func (o *PlanOrchestrator) ServeAnnotations(ctx context.Context, dismissed <-chan struct{}) {
+	if o.status == nil {
+		return
+	}
+	o.drainAnnotations(ctx)
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-dismissed:
+			return
+		case <-o.status.AnnotationSignal():
+			o.drainAnnotations(ctx)
+		}
+	}
+}
+
+// drainAnnotations applies every queued annotation in arrival order.
+func (o *PlanOrchestrator) drainAnnotations(ctx context.Context) {
+	for {
+		if ctx.Err() != nil {
+			return
+		}
+		annotation, ok := o.status.TakeAnnotation()
+		if !ok {
+			return
+		}
+		o.applyAnnotation(ctx, annotation)
+	}
+}
+
+// applyAnnotation stages one annotation for the tool, runs the annotate
+// invocation, and republishes the plan documents so the page shows the result.
+func (o *PlanOrchestrator) applyAnnotation(ctx context.Context, annotation models.Annotation) {
+	if err := o.files.Write(o.cfg.AnnotationFile, annotationDocument(annotation, o.cfg)); err != nil {
+		fmt.Fprintf(o.terminal, "determined: could not write %s: %v\n", o.cfg.AnnotationFile, err)
+		return
+	}
+	if _, stop := o.runInvocation(ctx, o.cfg.AnnotateInvocation, "applying annotation"); stop {
+		return
+	}
+	o.files.Remove(o.cfg.AnnotationFile)
+	o.reportGoal()
+	o.reportPlan()
+}
+
+// annotationDocument renders one annotation as the markdown the annotate
+// prompt expects, naming the section, its file, the finer target, and the
+// user's requested adjustment.
+func annotationDocument(annotation models.Annotation, cfg models.PlanConfig) string {
+	var doc strings.Builder
+	fmt.Fprintf(&doc, "# Annotation\n\n")
+	fmt.Fprintf(&doc, "**Section:** %s (%s)\n\n", annotation.Section, annotation.Section.File(cfg))
+	if annotation.Target != "" {
+		fmt.Fprintf(&doc, "**Target:** %s\n\n", annotation.Target)
+	}
+	fmt.Fprintf(&doc, "**Requested adjustment:**\n\n%s\n", strings.TrimSpace(annotation.Comment))
+	return doc.String()
 }
 
 // deadline returns the instant the run must stop by, or the zero time when the
