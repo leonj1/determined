@@ -43,6 +43,7 @@ type PlanStatusReporter interface {
 	Finish(succeeded bool)
 	TakeAnnotation() (models.Annotation, bool)
 	AnnotationSignal() <-chan struct{}
+	ImplementSignal() <-chan struct{}
 }
 
 // PlanOrchestrator runs the attended planning loop: it seeds the goal, runs the
@@ -541,6 +542,29 @@ func (o *PlanOrchestrator) ServeAnnotations(ctx context.Context, dismissed <-cha
 			return
 		case <-dismissed:
 			return
+		case <-o.status.AnnotationSignal():
+			o.drainAnnotations(ctx)
+		}
+	}
+}
+
+// ServeFeedback keeps the finished session responsive like ServeAnnotations,
+// and additionally returns true the moment the page's Implement button
+// requests execution, letting the caller start the execute loop. Dismissal,
+// interruption, or a missing reporter return false.
+func (o *PlanOrchestrator) ServeFeedback(ctx context.Context, dismissed <-chan struct{}) bool {
+	if o.status == nil {
+		return false
+	}
+	o.drainAnnotations(ctx)
+	for {
+		select {
+		case <-ctx.Done():
+			return false
+		case <-dismissed:
+			return false
+		case <-o.status.ImplementSignal():
+			return true
 		case <-o.status.AnnotationSignal():
 			o.drainAnnotations(ctx)
 		}

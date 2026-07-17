@@ -73,7 +73,37 @@ func TestUserCannotApplyCreationModesToReview(t *testing.T) {
 
 func TestUserMustRequestPlanReviewOrExecution(t *testing.T) {
 	if operationRequested(false, false, false, false) {
-		t.Fatal("no flags should leave no operation requested, showing usage instead")
+		t.Fatal("no flags should leave no operation requested")
+	}
+}
+
+func TestUserGetsExecutionByDefault(t *testing.T) {
+	if !executeRequested(false, false, false, false) {
+		t.Fatal("no flags should default to the execute loop")
+	}
+}
+
+func TestUserExecFlagStillRequestsExecution(t *testing.T) {
+	if !executeRequested(true, false, false, false) {
+		t.Fatal("-exec alone should request the execute loop")
+	}
+}
+
+func TestUserPlanAloneDoesNotDefaultToExecution(t *testing.T) {
+	if executeRequested(false, true, false, false) {
+		t.Fatal("-plan alone should not enter the execute loop")
+	}
+}
+
+func TestUserReviewAloneDoesNotDefaultToExecution(t *testing.T) {
+	if executeRequested(false, false, true, false) {
+		t.Fatal("-review-plan alone should not enter the execute loop")
+	}
+}
+
+func TestUserCriteriaAloneDoesNotDefaultToExecution(t *testing.T) {
+	if executeRequested(false, false, false, true) {
+		t.Fatal("-criteria alone should not enter the execute loop")
 	}
 }
 

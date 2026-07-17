@@ -260,6 +260,132 @@ func TestPlanStatusServiceSubmitSignalsOncePerBurst(t *testing.T) {
 	}
 }
 
+// implementReadyService returns a service whose session succeeded with the
+// Implement button offered, the state a plan-only interactive run holds in.
+func implementReadyService(clock *steppingClock) *services.PlanStatusService {
+	service := services.NewPlanStatusService(clock, models.GitContext{})
+	service.Start()
+	service.Finish(true)
+	service.OfferImplement()
+	return service
+}
+
+func TestPlanStatusServiceOfferImplementIsVisibleInSnapshot(t *testing.T) {
+	service := services.NewPlanStatusService(newSteppingClock(planStart()), models.GitContext{})
+	if service.Snapshot().ImplementOffered {
+		t.Fatal("implementOffered = true before the offer")
+	}
+	service.OfferImplement()
+	if !service.Snapshot().ImplementOffered {
+		t.Error("implementOffered = false after the offer")
+	}
+}
+
+func TestPlanStatusServiceImplementRequestSignalsOnce(t *testing.T) {
+	service := implementReadyService(newSteppingClock(planStart()))
+
+	service.RequestImplement()
+	service.RequestImplement() // double click
+
+	if phase := service.Snapshot().ExecPhase; phase != models.ExecPhaseRequested {
+		t.Fatalf("execPhase = %q, want requested", phase)
+	}
+	select {
+	case <-service.ImplementSignal():
+	default:
+		t.Fatal("implement signal empty after a request")
+	}
+	select {
+	case <-service.ImplementSignal():
+		t.Fatal("implement signal fired twice; two execute runs would start")
+	default:
+	}
+}
+
+func TestPlanStatusServiceImplementRequestIgnoredUntilOfferedAndSucceeded(t *testing.T) {
+	unoffered := services.NewPlanStatusService(newSteppingClock(planStart()), models.GitContext{})
+	unoffered.Start()
+	unoffered.Finish(true)
+	unoffered.RequestImplement()
+	if phase := unoffered.Snapshot().ExecPhase; phase != "" {
+		t.Errorf("execPhase without an offer = %q, want empty", phase)
+	}
+
+	failed := services.NewPlanStatusService(newSteppingClock(planStart()), models.GitContext{})
+	failed.OfferImplement()
+	failed.Start()
+	failed.Finish(false)
+	failed.RequestImplement()
+	if phase := failed.Snapshot().ExecPhase; phase != "" {
+		t.Errorf("execPhase after failed planning = %q, want empty", phase)
+	}
+	select {
+	case <-failed.ImplementSignal():
+		t.Error("implement signal fired for an ignored request")
+	default:
+	}
+}
+
+func TestPlanStatusServiceExecutionLifecycleRecordsPhaseAndTiming(t *testing.T) {
+	clock := newSteppingClock(planStart())
+	service := implementReadyService(clock)
+	service.RequestImplement()
+
+	clock.advance(time.Minute)
+	service.StartExecution()
+	clock.advance(10 * time.Minute)
+	service.FinishExecution(true)
+
+	snapshot := service.Snapshot()
+	if snapshot.ExecPhase != models.ExecPhaseSucceeded {
+		t.Errorf("execPhase = %q, want succeeded", snapshot.ExecPhase)
+	}
+	if !snapshot.ExecStartedAt.Equal(planStart().Add(time.Minute)) {
+		t.Errorf("execStartedAt = %v, want start+1m", snapshot.ExecStartedAt)
+	}
+	if !snapshot.ExecEndedAt.Equal(planStart().Add(11 * time.Minute)) {
+		t.Errorf("execEndedAt = %v, want start+11m", snapshot.ExecEndedAt)
+	}
+}
+
+func TestPlanStatusServiceExecutionFailureMarksFailedPhase(t *testing.T) {
+	service := implementReadyService(newSteppingClock(planStart()))
+	service.StartExecution()
+	service.FinishExecution(false)
+
+	if phase := service.Snapshot().ExecPhase; phase != models.ExecPhaseFailed {
+		t.Errorf("execPhase = %q, want failed", phase)
+	}
+}
+
+func TestPlanStatusServiceExecLogAccumulatesSeparatelyFromPlanLog(t *testing.T) {
+	clock := newSteppingClock(planStart())
+	service := services.NewPlanStatusService(clock, models.GitContext{})
+	service.BeginLogEntry("planning project")
+	service.AppendLogOutput("plan output\n")
+
+	service.BeginExecLogEntry("executing step 1: add the widget")
+	service.AppendExecLogOutput("widget built\n")
+	service.AppendExecLogOutput("tests pass\n")
+
+	snapshot := service.Snapshot()
+	want := models.LogEntry{At: planStart(), Message: "executing step 1: add the widget", Body: "widget built\ntests pass\n"}
+	if len(snapshot.ExecLog) != 1 || snapshot.ExecLog[0] != want {
+		t.Errorf("execLog = %+v, want exactly %+v", snapshot.ExecLog, want)
+	}
+	if len(snapshot.Log) != 1 || snapshot.Log[0].Body != "plan output\n" {
+		t.Errorf("plan log = %+v, want it untouched by exec output", snapshot.Log)
+	}
+}
+
+func TestPlanStatusServiceExecOutputWithoutEntryIsDropped(t *testing.T) {
+	service := services.NewPlanStatusService(newSteppingClock(planStart()), models.GitContext{})
+	service.AppendExecLogOutput("stray output\n")
+	if log := service.Snapshot().ExecLog; len(log) != 0 {
+		t.Errorf("execLog = %+v, want empty when no entry is open", log)
+	}
+}
+
 func TestPlanStatusServiceBroadcastsAnnotationQueueChanges(t *testing.T) {
 	service := services.NewPlanStatusService(newSteppingClock(planStart()), models.GitContext{})
 	updates, cancel := service.Subscribe()

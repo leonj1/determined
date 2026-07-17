@@ -18,6 +18,7 @@ type PlanStatusService struct {
 	status      models.PlanSessionStatus
 	subscribers []chan models.PlanSessionStatus
 	annotations chan struct{}
+	implement   chan struct{}
 }
 
 // NewPlanStatusService wires a PlanStatusService with the session's git
@@ -31,6 +32,7 @@ func NewPlanStatusService(clock Clock, git models.GitContext) *PlanStatusService
 			Steps: []models.PlanStep{},
 		},
 		annotations: make(chan struct{}, 1),
+		implement:   make(chan struct{}, 1),
 	}
 }
 
@@ -183,6 +185,81 @@ func (s *PlanStatusService) TakeAnnotation() (models.Annotation, bool) {
 // per burst of submissions.
 func (s *PlanStatusService) AnnotationSignal() <-chan struct{} {
 	return s.annotations
+}
+
+// OfferImplement marks the session as accepting an Implement request from the
+// page, which shows the button once planning succeeds.
+func (s *PlanStatusService) OfferImplement() {
+	s.update(func(st models.PlanSessionStatus) models.PlanSessionStatus {
+		st.ImplementOffered = true
+		return st
+	})
+}
+
+// RequestImplement queues one execution request from the page's Implement
+// button. Requests are ignored unless implementation was offered, planning
+// succeeded, and execution has not already been requested, so repeated clicks
+// start at most one execute run.
+func (s *PlanStatusService) RequestImplement() {
+	requested := false
+	s.update(func(st models.PlanSessionStatus) models.PlanSessionStatus {
+		if !st.ImplementOffered || st.Phase != models.PlanPhaseSucceeded || st.ExecPhase != "" {
+			return st
+		}
+		st.ExecPhase = models.ExecPhaseRequested
+		requested = true
+		return st
+	})
+	if !requested {
+		return
+	}
+	select {
+	case s.implement <- struct{}{}:
+	default: // already signalled
+	}
+}
+
+// ImplementSignal reports Implement requests: the channel receives one value
+// per accepted request.
+func (s *PlanStatusService) ImplementSignal() <-chan struct{} {
+	return s.implement
+}
+
+// StartExecution records the execute loop's start.
+func (s *PlanStatusService) StartExecution() {
+	s.update(func(st models.PlanSessionStatus) models.PlanSessionStatus {
+		st.ExecPhase = models.ExecPhaseRunning
+		st.ExecStartedAt = s.clock.Now()
+		return st
+	})
+}
+
+// FinishExecution records the end of the execute loop as succeeded or failed.
+func (s *PlanStatusService) FinishExecution(succeeded bool) {
+	s.update(func(st models.PlanSessionStatus) models.PlanSessionStatus {
+		st.ExecEndedAt = s.clock.Now()
+		if succeeded {
+			st.ExecPhase = models.ExecPhaseSucceeded
+		} else {
+			st.ExecPhase = models.ExecPhaseFailed
+		}
+		return st
+	})
+}
+
+// BeginExecLogEntry opens a new execution log entry for a tool invocation,
+// mirroring the terminal's "==> [time] message" header.
+func (s *PlanStatusService) BeginExecLogEntry(message string) {
+	s.update(func(st models.PlanSessionStatus) models.PlanSessionStatus {
+		return st.WithExecLogEntry(models.LogEntry{At: s.clock.Now(), Message: message})
+	})
+}
+
+// AppendExecLogOutput streams tool output into the current execution log entry.
+func (s *PlanStatusService) AppendExecLogOutput(text string) {
+	s.update(func(st models.PlanSessionStatus) models.PlanSessionStatus {
+		return st.WithExecLogOutput(text)
+	})
 }
 
 // Progress implements ProgressSink so orchestrator progress messages appear as

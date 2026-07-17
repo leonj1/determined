@@ -28,6 +28,13 @@
     position: sticky; top: 0; z-index: 1;
   }
   header .title { font-weight: 700; }
+  #implement {
+    display: none; appearance: none; border: none; border-radius: 0.5rem;
+    padding: 0.45rem 1.4rem; font: inherit; font-weight: 700; cursor: pointer;
+    background: var(--accent); color: #fff; margin-right: auto; white-space: nowrap;
+  }
+  #implement.on { display: inline-block; }
+  #implement:hover { filter: brightness(1.12); }
   header .git { color: var(--muted); font-family: ui-monospace, monospace; font-size: 0.85rem; overflow-wrap: anywhere; text-align: right; }
   header .git .branch { color: var(--accent); font-weight: 600; }
   nav#tabs {
@@ -108,7 +115,11 @@
   .step-card .done-when, .step-card .purpose { margin: 0.5rem 0 0; font-size: 0.85rem; color: var(--muted); overflow-wrap: anywhere; }
   .step-card .done-when p, .step-card .purpose p { display: inline; margin: 0; }
   .step-card .done-when strong, .step-card .purpose strong { color: var(--fg); }
-  #log { display: grid; gap: 0.75rem; }
+  #log, #exec-log { display: grid; gap: 0.75rem; }
+  #exec-state { margin-bottom: 0.75rem; font-weight: 600; }
+  #exec-state.empty { font-weight: 400; }
+  #exec-state.succeeded { color: var(--ok-fg); }
+  #exec-state.failed { color: var(--bad-fg); }
   .log-entry { border: 1px solid var(--border); border-radius: 0.6rem; background: var(--bg); }
   .log-entry .log-head {
     display: flex; align-items: baseline; gap: 0.5rem; padding: 0.5rem 1rem;
@@ -159,6 +170,7 @@
 <body>
 <header>
   <div class="title">determined — planning</div>
+  <button id="implement">▶ Implement</button>
   <div class="git"><span id="remote">…</span> · <span id="branch" class="branch">…</span></div>
 </header>
 <nav id="tabs">
@@ -167,6 +179,7 @@
   <button data-tab="tests">Tests</button>
   <button data-tab="steps">Steps</button>
   <button data-tab="log">Log</button>
+  <button data-tab="exec">Execution</button>
 </nav>
 <main>
   <div id="content">
@@ -198,6 +211,11 @@
     </section>
     <section class="panel" id="panel-steps"><h2>Steps</h2><div id="steps"></div><div id="no-steps" class="empty">No steps yet.</div></section>
     <section class="panel" id="panel-log"><h2>Log</h2><div id="log"></div><div id="no-log" class="empty">No log output yet.</div></section>
+    <section class="panel" id="panel-exec">
+      <h2>Execution</h2>
+      <div id="exec-state" class="empty">Not started — the Implement button appears once planning completes.</div>
+      <div id="exec-log"></div>
+    </section>
   </div>
   <aside id="activity">
     <section>
@@ -498,7 +516,7 @@
 
   function tabFromPath() {
     const name = window.location.pathname.replace(/^\//, "").split("/")[0];
-    return ["goal", "plan", "tests", "steps", "log"].includes(name) ? name : "goal";
+    return ["goal", "plan", "tests", "steps", "log", "exec"].includes(name) ? name : "goal";
   }
   function testsTabFromPath() {
     const parts = window.location.pathname.replace(/^\//, "").split("/");
@@ -616,6 +634,15 @@
     }
   }
 
+  // The Implement button posts one execution request and jumps to the
+  // Execution tab, where the run streams in.
+  el("implement").addEventListener("click", () => {
+    fetch("/implement", { method: "POST" }).then(() => {
+      history.pushState(null, "", "/exec");
+      selectTab("exec");
+    });
+  });
+
   function render(status) {
     setText(el("remote"), status.git.remote, "no remote");
     setText(el("branch"), status.git.branch, "no branch");
@@ -628,15 +655,46 @@
 
     renderSteps(status.taskSteps || []);
     renderLog(status.log || []);
+    renderExec(status);
     renderActivity(status.steps || []);
     renderAnnotations(status.pendingAnnotations || []);
     renderBanner(status);
+    el("implement").classList.toggle("on",
+      !!status.implementOffered && status.phase === "succeeded" && !status.execPhase);
   }
 
   function renderLog(entries) {
-    const list = el("log");
-    const logTabActive = el("panel-log").classList.contains("active");
-    const stickToBottom = logTabActive &&
+    renderLogInto("log", "panel-log", entries);
+    el("no-log").style.display = entries.length ? "none" : "block";
+  }
+
+  // Shows where the execute run stands and streams its per-invocation log,
+  // mirroring the Log tab's rendering.
+  function renderExec(status) {
+    renderLogInto("exec-log", "panel-exec", status.execLog || []);
+    const state = el("exec-state");
+    const phase = status.execPhase || "";
+    state.classList.remove("empty", "succeeded", "failed");
+    if (phase === "") {
+      state.classList.add("empty");
+      state.textContent = "Not started — the Implement button appears once planning completes.";
+    } else if (phase === "requested") {
+      state.textContent = "Execution requested — starting…";
+    } else if (phase === "running") {
+      state.textContent = "⚙ Executing since " + fmtTime(status.execStartedAt) + "…";
+    } else {
+      state.classList.add(phase);
+      state.textContent = (phase === "succeeded"
+        ? "✓ Execution completed"
+        : "✗ Execution ended without completing the plan") +
+        " · Duration " + fmtDuration(status.execStartedAt, status.execEndedAt);
+    }
+  }
+
+  function renderLogInto(listId, panelId, entries) {
+    const list = el(listId);
+    const tabActive = el(panelId).classList.contains("active");
+    const stickToBottom = tabActive &&
       window.innerHeight + window.scrollY >= document.body.scrollHeight - 40;
     list.replaceChildren();
     for (const entry of entries) {
@@ -665,7 +723,6 @@
       }
       list.append(article);
     }
-    el("no-log").style.display = entries.length ? "none" : "block";
     if (stickToBottom) window.scrollTo(0, document.body.scrollHeight);
   }
 

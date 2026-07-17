@@ -26,6 +26,7 @@ type fakeStatusReporter struct {
 	mu          sync.Mutex
 	annotations []models.Annotation
 	signal      chan struct{}
+	implement   chan struct{}
 }
 
 func (r *fakeStatusReporter) Progress(message string) {
@@ -68,6 +69,9 @@ func (r *fakeStatusReporter) AnnotationSignal() <-chan struct{} {
 		r.signal = make(chan struct{}, 1)
 	}
 	return r.signal
+}
+func (r *fakeStatusReporter) ImplementSignal() <-chan struct{} {
+	return r.implement // nil unless a test arms it; a nil channel never fires
 }
 func (r *fakeStatusReporter) Finish(succeeded bool) {
 	if succeeded {

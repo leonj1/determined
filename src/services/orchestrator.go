@@ -26,6 +26,24 @@ type LogSink interface {
 	OpenIteration(iteration int) (io.WriteCloser, error)
 }
 
+// ExecStatusReporter receives the execute loop's observable events for the
+// interactive status page's Execution tab. The real implementation is
+// PlanStatusService; a nil reporter disables reporting.
+type ExecStatusReporter interface {
+	ProgressSink
+	StartExecution()
+	BeginExecLogEntry(message string)
+	AppendExecLogOutput(text string)
+	SetTaskSteps(steps []models.TaskStep)
+	FinishExecution(succeeded bool)
+}
+
+// execOutputSink adapts an ExecStatusReporter onto LogOutputSink so
+// logEntryWriter can stream tool output into the execution log.
+type execOutputSink struct{ status ExecStatusReporter }
+
+func (s execOutputSink) AppendLogOutput(text string) { s.status.AppendExecLogOutput(text) }
+
 // Orchestrator runs the AI coding tool until every step and enabled review
 // gate passes, too many invocations fail, the budget expires, progress stalls,
 // or a signal interrupts it. Each iteration targets the next unchecked step.
@@ -37,6 +55,7 @@ type Orchestrator struct {
 	clock    Clock
 	logs     LogSink
 	terminal io.Writer
+	status   ExecStatusReporter
 	cfg      models.Config
 
 	iteration int
@@ -76,11 +95,26 @@ func NewOrchestrator(
 	}
 }
 
+// WithStatusReporter attaches the interactive status reporter and returns the
+// orchestrator for chaining. Without one the run is terminal-only.
+func (o *Orchestrator) WithStatusReporter(status ExecStatusReporter) *Orchestrator {
+	o.status = status
+	return o
+}
+
 // Run executes the loop and returns the terminal outcome.
 func (o *Orchestrator) Run(ctx context.Context) models.Outcome {
 	if !o.protocolFilesPresent() {
 		return models.OutcomeMissingFiles
 	}
+	o.reportStart()
+	outcome := o.loop(ctx)
+	o.reportFinish(outcome)
+	return outcome
+}
+
+// loop is the iteration cycle Run wraps with start/finish status reporting.
+func (o *Orchestrator) loop(ctx context.Context) models.Outcome {
 	deadline := o.deadline()
 	for {
 		if outcome, stop := o.preIteration(ctx, deadline); stop {
@@ -94,6 +128,7 @@ func (o *Orchestrator) Run(ctx context.Context) models.Outcome {
 			return outcome
 		}
 		o.checkpointNewSteps(ctx, before)
+		o.reportTaskSteps()
 		if o.stalledOut(CompletedStepCount(before)) {
 			fmt.Fprintf(o.terminal,
 				"determined: no step checked in %d consecutive iterations; stopping\n",
@@ -261,6 +296,13 @@ func (o *Orchestrator) invoke(
 	defer log.Close()
 	out := io.MultiWriter(o.terminal, log)
 	writeProgress(out, o.clock, progress)
+	notifyProgress(o.status, progress)
+	if o.status != nil {
+		o.status.BeginExecLogEntry(string(progress))
+		statusLog := newLogEntryWriter(execOutputSink{o.status})
+		defer statusLog.Flush()
+		out = io.MultiWriter(out, statusLog)
+	}
 	runCtx, cancel := o.iterationContext(ctx)
 	defer cancel()
 	if err := o.runner.Run(runCtx, o.cfg.Tool.Invocation(prompt), out); err != nil {
@@ -559,4 +601,32 @@ func (o *Orchestrator) budgetExceeded(deadline time.Time) bool {
 		return false
 	}
 	return !o.clock.Now().Before(deadline)
+}
+
+// reportStart marks the execution phase start on the status page and publishes
+// the step list's initial state.
+func (o *Orchestrator) reportStart() {
+	if o.status == nil {
+		return
+	}
+	o.status.StartExecution()
+	o.reportTaskSteps()
+}
+
+// reportTaskSteps publishes STEPS.md as parsed checkbox items so the status
+// page shows step progress as boxes get checked.
+func (o *Orchestrator) reportTaskSteps() {
+	if o.status == nil {
+		return
+	}
+	o.status.SetTaskSteps(taskSteps(o.parsedSteps()))
+}
+
+// reportFinish records the execution phase end and success state.
+func (o *Orchestrator) reportFinish(outcome models.Outcome) {
+	if o.status == nil {
+		return
+	}
+	o.reportTaskSteps()
+	o.status.FinishExecution(outcome == models.OutcomeStopped)
 }

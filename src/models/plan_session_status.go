@@ -14,6 +14,22 @@ const (
 	PlanPhaseFailed PlanPhase = "failed"
 )
 
+// ExecPhase describes where the follow-on execution run stands. The empty
+// value means execution has not been requested.
+type ExecPhase string
+
+const (
+	// ExecPhaseRequested means the page's Implement button fired and the
+	// execute loop is about to start.
+	ExecPhaseRequested ExecPhase = "requested"
+	// ExecPhaseRunning means the execute loop is working through the steps.
+	ExecPhaseRunning ExecPhase = "running"
+	// ExecPhaseSucceeded means the execute loop finished with an approved run.
+	ExecPhaseSucceeded ExecPhase = "succeeded"
+	// ExecPhaseFailed means the execute loop ended without completing the plan.
+	ExecPhaseFailed ExecPhase = "failed"
+)
+
 // GitContext identifies the repository a planning session runs inside. Missing
 // values carry explicit placeholders rather than empty strings so the status
 // page never renders blanks.
@@ -69,6 +85,17 @@ type PlanSessionStatus struct {
 	// PendingAnnotations is the queue of user feedback submitted from the page
 	// and not yet applied by the AI tool.
 	PendingAnnotations []Annotation `json:"pendingAnnotations"`
+
+	// ImplementOffered reports whether the session accepts an Implement request
+	// from the page once planning succeeds.
+	ImplementOffered bool `json:"implementOffered"`
+	// ExecPhase, ExecLog, and the execution timestamps describe the follow-on
+	// execute run the Implement button starts; the page's Execution tab
+	// renders them.
+	ExecPhase     ExecPhase  `json:"execPhase"`
+	ExecLog       []LogEntry `json:"execLog"`
+	ExecStartedAt time.Time  `json:"execStartedAt"`
+	ExecEndedAt   time.Time  `json:"execEndedAt"`
 }
 
 // Duration returns the elapsed planning time: zero until the session starts,
@@ -102,6 +129,29 @@ func (s PlanSessionStatus) WithLogOutput(text string) PlanSessionStatus {
 	copy(log, s.Log)
 	log[len(log)-1] = log[len(log)-1].WithBody(text)
 	s.Log = log
+	return s
+}
+
+// WithExecLogEntry returns a copy of the status with a new execution log
+// entry appended.
+func (s PlanSessionStatus) WithExecLogEntry(entry LogEntry) PlanSessionStatus {
+	log := make([]LogEntry, len(s.ExecLog), len(s.ExecLog)+1)
+	copy(log, s.ExecLog)
+	s.ExecLog = append(log, entry)
+	return s
+}
+
+// WithExecLogOutput returns a copy of the status with text appended to the
+// last execution log entry's body. With no entries yet the text is dropped:
+// output only makes sense under an invocation header.
+func (s PlanSessionStatus) WithExecLogOutput(text string) PlanSessionStatus {
+	if len(s.ExecLog) == 0 {
+		return s
+	}
+	log := make([]LogEntry, len(s.ExecLog))
+	copy(log, s.ExecLog)
+	log[len(log)-1] = log[len(log)-1].WithBody(text)
+	s.ExecLog = log
 	return s
 }
 

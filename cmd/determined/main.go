@@ -87,10 +87,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "determined: %v\n", err)
 		os.Exit(2)
 	}
-	if !operationRequested(*plan != "", *reviewPlan, *exec, *criteria) {
-		flag.Usage()
-		os.Exit(2)
-	}
+	executing := executeRequested(*exec, *plan != "", *reviewPlan, *criteria)
 
 	selected, err := models.SelectTool(
 		models.ToolName(*tool),
@@ -118,12 +115,15 @@ func main() {
 		if *reviewPlan {
 			outcome = runReviewPlan(ctx, selected, *budget, *maxStepPasses, *maxFailures, clock, logs)
 		} else if *plan != "" {
-			outcome = runPlan(ctx, selected, planInput(*plan, flag.Args()), planMode, *budget, *maxStepPasses, *maxFailures, *interactive, !*exec, clock, logs)
-			if shouldExecuteAfterPlan(*exec, outcome) {
-				outcome = runLoop(ctx, selected, *budget, *maxStalled, *maxFailures, *maxIterationDuration, *verify, *specializedReviews, *gitCheckpoint, clock, logs)
+			executor := func(ctx context.Context, status services.ExecStatusReporter) models.Outcome {
+				return runLoop(ctx, selected, *budget, *maxStalled, *maxFailures, *maxIterationDuration, *verify, *specializedReviews, *gitCheckpoint, status, clock, logs)
+			}
+			outcome = runPlan(ctx, selected, planInput(*plan, flag.Args()), planMode, *budget, *maxStepPasses, *maxFailures, *interactive, !executing, executor, clock, logs)
+			if shouldExecuteAfterPlan(executing, outcome) {
+				outcome = runLoop(ctx, selected, *budget, *maxStalled, *maxFailures, *maxIterationDuration, *verify, *specializedReviews, *gitCheckpoint, nil, clock, logs)
 			}
 		} else {
-			outcome = runLoop(ctx, selected, *budget, *maxStalled, *maxFailures, *maxIterationDuration, *verify, *specializedReviews, *gitCheckpoint, clock, logs)
+			outcome = runLoop(ctx, selected, *budget, *maxStalled, *maxFailures, *maxIterationDuration, *verify, *specializedReviews, *gitCheckpoint, nil, clock, logs)
 		}
 	}
 
@@ -192,11 +192,16 @@ func validateExecFlag(reviewing, executing bool) error {
 	return nil
 }
 
-// operationRequested reports whether the flags select any run operation. When
-// none is selected, main shows the usage screen instead of defaulting to a
-// mode.
+// operationRequested reports whether the flags select any run operation.
 func operationRequested(planning, reviewing, executing, criteria bool) bool {
 	return planning || reviewing || executing || criteria
+}
+
+// executeRequested reports whether the run should enter the execute loop:
+// either -exec was given, or no operation flag selected one, in which case
+// execution is the default.
+func executeRequested(executing, planning, reviewing, criteria bool) bool {
+	return executing || !operationRequested(planning, reviewing, executing, criteria)
 }
 
 // validateCriteriaFlag rejects -criteria alongside -review-plan: the review
@@ -238,8 +243,13 @@ func refinePasses(mode models.PlanMode, configured int) int {
 	return configured
 }
 
-// runLoop runs the unattended execute loop against PLAN.md / STEPS.md.
-func runLoop(ctx context.Context, tool models.Tool, budget time.Duration, maxStalled, maxFailures int, maxIterationDuration time.Duration, verify, specializedReviews, gitCheckpoint bool, clock services.Clock, logs services.LogSink) models.Outcome {
+// planExecutor starts the execute loop for a planned session, streaming its
+// events to the given status reporter (nil disables reporting).
+type planExecutor func(ctx context.Context, status services.ExecStatusReporter) models.Outcome
+
+// runLoop runs the unattended execute loop against PLAN.md / STEPS.md. A
+// non-nil status reporter streams the run to the interactive status page.
+func runLoop(ctx context.Context, tool models.Tool, budget time.Duration, maxStalled, maxFailures int, maxIterationDuration time.Duration, verify, specializedReviews, gitCheckpoint bool, status services.ExecStatusReporter, clock services.Clock, logs services.LogSink) models.Outcome {
 	cfg := models.Config{
 		StopFile:               "STOP.md",
 		PlanFile:               "PLAN.md",
@@ -260,7 +270,7 @@ func runLoop(ctx context.Context, tool models.Tool, budget time.Duration, maxSta
 		logs,
 		os.Stdout,
 		cfg,
-	)
+	).WithStatusReporter(status)
 	return orchestrator.Run(ctx)
 }
 
@@ -315,8 +325,9 @@ func runUpdateCommand() {
 // runPlan runs the attended planning loop, relaying the tool's clarifying
 // questions to the user until a plan is produced. With interactive set, a
 // local web server shows the session live; holdPage keeps it serving after
-// completion (plan-only mode) until the user dismisses it.
-func runPlan(ctx context.Context, tool models.Tool, goal string, mode models.PlanMode, budget time.Duration, maxStepPasses, maxFailures int, interactive, holdPage bool, clock services.Clock, logs services.LogSink) models.Outcome {
+// completion (plan-only mode) until the user dismisses it, during which the
+// page's Implement button starts the execute loop via execute.
+func runPlan(ctx context.Context, tool models.Tool, goal string, mode models.PlanMode, budget time.Duration, maxStepPasses, maxFailures int, interactive, holdPage bool, execute planExecutor, clock services.Clock, logs services.LogSink) models.Outcome {
 	prompts := services.PlanningPrompts(mode)
 	cfg := models.PlanConfig{
 		Operation:              models.PlanOperationCreate,
@@ -350,16 +361,17 @@ func runPlan(ctx context.Context, tool models.Tool, goal string, mode models.Pla
 	if !interactive {
 		return orchestrator.Run(ctx)
 	}
-	return runInteractivePlan(ctx, orchestrator, holdPage, clock)
+	return runInteractivePlan(ctx, orchestrator, holdPage, execute, clock)
 }
 
 // runInteractivePlan wraps a planning run with the live status web server. A
 // bind failure aborts before the AI tool is ever invoked; in plan-only mode
 // the page stays served after completion until the user presses Enter or
-// interrupts, so the completion banner remains viewable.
-func runInteractivePlan(ctx context.Context, orchestrator *services.PlanOrchestrator, holdPage bool, clock services.Clock) models.Outcome {
+// interrupts, so the completion banner remains viewable and the Implement
+// button can start execution.
+func runInteractivePlan(ctx context.Context, orchestrator *services.PlanOrchestrator, holdPage bool, execute planExecutor, clock services.Clock) models.Outcome {
 	status := services.NewPlanStatusService(clock, clients.NewGitContextReader().Read(ctx))
-	server := clients.NewPlanStatusServer(status, status, clock)
+	server := clients.NewPlanStatusServer(status, status, status, clock)
 	if err := server.Start(); err != nil {
 		fmt.Fprintf(os.Stderr, "determined: %v\n", err)
 		return models.OutcomeDroidFailed
@@ -369,14 +381,30 @@ func runInteractivePlan(ctx context.Context, orchestrator *services.PlanOrchestr
 	outcome := orchestrator.WithStatusReporter(status).Run(ctx)
 
 	if holdPage && ctx.Err() == nil {
-		fmt.Fprintf(os.Stdout,
-			"determined: status page still serving at %s — annotate sections there to refine the plan, or press Enter to exit\n",
-			server.URL())
-		orchestrator.ServeAnnotations(ctx, dismissalChannel())
+		outcome = holdStatusPage(ctx, orchestrator, status, server.URL(), execute, outcome)
 	}
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	server.Shutdown(shutdownCtx) //nolint:errcheck // best-effort shutdown on exit
+	return outcome
+}
+
+// holdStatusPage keeps the finished session interactive: annotations refine
+// the plan documents, and — when planning succeeded — the page's Implement
+// button starts the execute loop, streaming it to the Execution tab. Pressing
+// Enter on the terminal dismisses the page. The returned outcome is the
+// execute loop's when the user implemented the plan, else the planning one.
+func holdStatusPage(ctx context.Context, orchestrator *services.PlanOrchestrator, status *services.PlanStatusService, url string, execute planExecutor, outcome models.Outcome) models.Outcome {
+	if outcome == models.OutcomePlanReady {
+		status.OfferImplement()
+	}
+	fmt.Fprintf(os.Stdout,
+		"determined: status page still serving at %s — annotate sections to refine the plan, click Implement to execute it, or press Enter to exit\n",
+		url)
+	dismissed := dismissalChannel()
+	for orchestrator.ServeFeedback(ctx, dismissed) {
+		outcome = execute(ctx, status)
+	}
 	return outcome
 }
 

@@ -160,3 +160,56 @@ func TestServeAnnotationsWithoutReporterReturnsImmediately(t *testing.T) {
 	o := services.NewPlanOrchestrator(&fakeRunner{}, newFakeFileStore(), &fakePrompter{}, &fakeClock{now: time.Now()}, &fakeLogSink{}, io.Discard, planConfig(0))
 	o.ServeAnnotations(context.Background(), make(chan struct{}))
 }
+
+func TestServeFeedbackReturnsTrueOnImplementRequest(t *testing.T) {
+	fs := newFakeFileStore()
+	reporter := &fakeStatusReporter{
+		signal:    make(chan struct{}, 1),
+		implement: make(chan struct{}, 1),
+	}
+	o := services.NewPlanOrchestrator(&fakeRunner{}, fs, &fakePrompter{}, &fakeClock{now: time.Now()}, &fakeLogSink{}, io.Discard, planConfig(0)).
+		WithStatusReporter(reporter)
+
+	result := make(chan bool, 1)
+	go func() { result <- o.ServeFeedback(context.Background(), make(chan struct{})) }()
+	reporter.implement <- struct{}{}
+
+	select {
+	case implement := <-result:
+		if !implement {
+			t.Fatal("ServeFeedback = false on implement request, want true")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("ServeFeedback did not return on implement request")
+	}
+}
+
+func TestServeFeedbackAppliesAnnotationsAndReturnsFalseOnDismissal(t *testing.T) {
+	fs := newFakeFileStore()
+	fs.Write("PLAN.md", "the plan")
+	fs.Write("STEPS.md", "- [ ] a step\n")
+	runner := &fakeRunner{}
+	reporter := &fakeStatusReporter{
+		signal:    make(chan struct{}, 1),
+		implement: make(chan struct{}, 1),
+		annotations: []models.Annotation{
+			annotation(models.AnnotationSectionPlan, "", "tighten the scope"),
+		},
+	}
+	o := services.NewPlanOrchestrator(runner, fs, &fakePrompter{}, &fakeClock{now: time.Now()}, &fakeLogSink{}, io.Discard, planConfig(0)).
+		WithStatusReporter(reporter)
+
+	if o.ServeFeedback(context.Background(), closedChannel()) {
+		t.Fatal("ServeFeedback = true on dismissal, want false")
+	}
+	if runner.calls != 1 {
+		t.Errorf("annotate invocations = %d, want the queued annotation applied", runner.calls)
+	}
+}
+
+func TestServeFeedbackWithoutReporterReturnsFalse(t *testing.T) {
+	o := services.NewPlanOrchestrator(&fakeRunner{}, newFakeFileStore(), &fakePrompter{}, &fakeClock{now: time.Now()}, &fakeLogSink{}, io.Discard, planConfig(0))
+	if o.ServeFeedback(context.Background(), make(chan struct{})) {
+		t.Fatal("ServeFeedback without a reporter = true, want false")
+	}
+}

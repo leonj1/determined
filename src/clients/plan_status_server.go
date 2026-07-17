@@ -29,27 +29,35 @@ type AnnotationSink interface {
 	SubmitAnnotation(models.Annotation)
 }
 
+// ImplementSink receives the page's request to execute the completed plan. The
+// real implementation is services.PlanStatusService.
+type ImplementSink interface {
+	RequestImplement()
+}
+
 // PlanStatusServer serves the interactive planning status page on loopback:
 // the embedded HTML at /, a server-sent-events stream of full status snapshots
 // at /events, and an annotation intake at /annotate.
 type PlanStatusServer struct {
 	source      PlanStatusSource
 	annotations AnnotationSink
+	implement   ImplementSink
 	clock       clock
 	listener    net.Listener
 	server      *http.Server
 }
 
-// NewPlanStatusServer constructs a PlanStatusServer over a status source and
-// an annotation sink.
-func NewPlanStatusServer(source PlanStatusSource, annotations AnnotationSink, clock clock) *PlanStatusServer {
-	return &PlanStatusServer{source: source, annotations: annotations, clock: clock}
+// NewPlanStatusServer constructs a PlanStatusServer over a status source, an
+// annotation sink, and an implement sink.
+func NewPlanStatusServer(source PlanStatusSource, annotations AnnotationSink, implement ImplementSink, clock clock) *PlanStatusServer {
+	return &PlanStatusServer{source: source, annotations: annotations, implement: implement, clock: clock}
 }
 
-// Start binds an ephemeral loopback port and begins serving. It returns an
-// error when the port cannot be bound; the caller treats that as fatal.
+// Start binds an ephemeral port on all interfaces and begins serving. It
+// returns an error when the port cannot be bound; the caller treats that as
+// fatal.
 func (s *PlanStatusServer) Start() error {
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	listener, err := net.Listen("tcp", "0.0.0.0:0")
 	if err != nil {
 		return fmt.Errorf("could not bind status server: %w", err)
 	}
@@ -59,15 +67,19 @@ func (s *PlanStatusServer) Start() error {
 	mux.HandleFunc("/", s.servePage)
 	mux.HandleFunc("/events", s.serveEvents)
 	mux.HandleFunc("/annotate", s.serveAnnotate)
+	mux.HandleFunc("/implement", s.serveImplement)
 	s.server = &http.Server{Handler: mux}
 	go s.server.Serve(listener) //nolint:errcheck // Serve always returns on Shutdown/Close
 
 	return nil
 }
 
-// URL returns the address browsers should open. Valid only after Start.
+// URL returns the address browsers should open. The server listens on all
+// interfaces, so the printed host is localhost; remote users substitute the
+// machine's external IP with the same port. Valid only after Start.
 func (s *PlanStatusServer) URL() string {
-	return fmt.Sprintf("http://%s/", s.listener.Addr().String())
+	port := s.listener.Addr().(*net.TCPAddr).Port
+	return fmt.Sprintf("http://localhost:%d/", port)
 }
 
 // Shutdown stops the server, releasing the port.
@@ -80,7 +92,7 @@ func (s *PlanStatusServer) Shutdown(ctx context.Context) error {
 
 func (s *PlanStatusServer) servePage(w http.ResponseWriter, r *http.Request) {
 	switch r.URL.Path {
-	case "/", "/goal", "/plan", "/tests", "/tests/journey", "/tests/bdd", "/steps", "/log":
+	case "/", "/goal", "/plan", "/tests", "/tests/journey", "/tests/bdd", "/steps", "/log", "/exec":
 	default:
 		http.NotFound(w, r)
 		return
@@ -142,6 +154,17 @@ func (s *PlanStatusServer) serveAnnotate(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	s.annotations.SubmitAnnotation(annotation)
+	w.WriteHeader(http.StatusAccepted)
+}
+
+// serveImplement accepts the page's request to execute the completed plan and
+// queues it on the sink; the sink ignores requests the session cannot honour.
+func (s *PlanStatusServer) serveImplement(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	s.implement.RequestImplement()
 	w.WriteHeader(http.StatusAccepted)
 }
 
