@@ -61,6 +61,23 @@ func TestParseSteps(t *testing.T) {
 			}},
 		},
 		{
+			name: "fenced code keeps its own indentation beyond the fence's",
+			in: "- [ ] Add the function:\n" +
+				"  ```js\n" +
+				"  function f() {\n" +
+				"    if (x) {\n" +
+				"      return 1;\n" +
+				"    }\n" +
+				"  }\n" +
+				"  ```\n" +
+				"  Done when: it renders indented.\n",
+			want: []services.Step{{
+				Text: "Add the function:\n```js\nfunction f() {\n  if (x) {\n" +
+					"    return 1;\n  }\n}\n```",
+				DoneWhen: "it renders indented.",
+			}},
+		},
+		{
 			name: "done-when prefix matches case-insensitively",
 			in:   "- [ ] Step.\n  done when: tests pass.",
 			want: []services.Step{{Text: "Step.", DoneWhen: "tests pass."}},

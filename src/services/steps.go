@@ -27,6 +27,7 @@ func ParseSteps(content string) []Step {
 	var steps []Step
 	var cur *Step
 	inFence := false
+	fenceIndent := ""
 	for _, line := range strings.Split(content, "\n") {
 		if !inFence {
 			if step, ok := checkboxItem(line); ok {
@@ -43,7 +44,9 @@ func ParseSteps(content string) []Step {
 		case inFence:
 			// Inside a fenced code block every line — blank, unindented, or
 			// otherwise — belongs to the step, with line breaks preserved.
-			cur.Text += "\n" + trimmed
+			// Strip only the fence opener's indentation so the code's own
+			// relative indentation survives.
+			cur.Text += "\n" + strings.TrimPrefix(line, fenceIndent)
 			if strings.HasPrefix(trimmed, "```") {
 				inFence = false
 			}
@@ -53,6 +56,7 @@ func ParseSteps(content string) []Step {
 			cur.DoneWhen = strings.TrimSpace(trimmed[len(doneWhenPrefix):])
 		case strings.HasPrefix(trimmed, "```"):
 			inFence = true
+			fenceIndent = line[:len(line)-len(strings.TrimLeft(line, " \t"))]
 			cur.Text += "\n" + trimmed
 		case isIndented(line):
 			cur.Text += " " + trimmed
