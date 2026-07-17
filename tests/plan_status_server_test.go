@@ -79,6 +79,7 @@ func assertPageServed(t *testing.T, url string) {
 	for _, marker := range []string{
 		"determined — planning", "EventSource", "banner",
 		"step-card", "taskSteps", "Done when: ",
+		"log-entry", "renderLog", `data-tab="log"`,
 	} {
 		if !strings.Contains(page, marker) {
 			t.Errorf("page missing %q", marker)

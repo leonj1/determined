@@ -70,7 +70,7 @@ func (s *PlanStatusServer) Shutdown(ctx context.Context) error {
 
 func (s *PlanStatusServer) servePage(w http.ResponseWriter, r *http.Request) {
 	switch r.URL.Path {
-	case "/", "/goal", "/plan", "/steps":
+	case "/", "/goal", "/plan", "/steps", "/log":
 	default:
 		http.NotFound(w, r)
 		return

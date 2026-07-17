@@ -11,8 +11,8 @@ import (
 // steppingClock is a controllable clock that advances on demand.
 type steppingClock struct{ now time.Time }
 
-func (c *steppingClock) Now() time.Time             { return c.now }
-func (c *steppingClock) advance(d time.Duration)    { c.now = c.now.Add(d) }
+func (c *steppingClock) Now() time.Time               { return c.now }
+func (c *steppingClock) advance(d time.Duration)      { c.now = c.now.Add(d) }
 func newSteppingClock(start time.Time) *steppingClock { return &steppingClock{now: start} }
 
 func planStart() time.Time { return time.Date(2026, 7, 16, 10, 0, 0, 0, time.UTC) }
@@ -136,6 +136,41 @@ func TestPlanStatusServiceFinishFailureMarksFailedPhase(t *testing.T) {
 
 	if phase := service.Snapshot().Phase; phase != models.PlanPhaseFailed {
 		t.Errorf("phase = %q, want failed", phase)
+	}
+}
+
+func TestPlanStatusServiceLogEntriesAccumulateStreamedOutput(t *testing.T) {
+	clock := newSteppingClock(planStart())
+	service := services.NewPlanStatusService(clock, models.GitContext{})
+
+	service.BeginLogEntry("planning project")
+	service.AppendLogOutput("first line\n")
+	service.AppendLogOutput("second line\n")
+	clock.advance(time.Minute)
+	service.BeginLogEntry("assessing plan")
+	service.AppendLogOutput("findings written\n")
+
+	log := service.Snapshot().Log
+	if len(log) != 2 {
+		t.Fatalf("log = %+v, want 2 entries", log)
+	}
+	first := models.LogEntry{At: planStart(), Message: "planning project", Body: "first line\nsecond line\n"}
+	second := models.LogEntry{At: planStart().Add(time.Minute), Message: "assessing plan", Body: "findings written\n"}
+	if log[0] != first {
+		t.Errorf("log[0] = %+v, want %+v", log[0], first)
+	}
+	if log[1] != second {
+		t.Errorf("log[1] = %+v, want %+v", log[1], second)
+	}
+}
+
+func TestPlanStatusServiceLogOutputWithoutEntryIsDropped(t *testing.T) {
+	service := services.NewPlanStatusService(newSteppingClock(planStart()), models.GitContext{})
+
+	service.AppendLogOutput("stray output\n")
+
+	if log := service.Snapshot().Log; len(log) != 0 {
+		t.Errorf("log = %+v, want empty when no entry is open", log)
 	}
 }
 

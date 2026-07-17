@@ -33,6 +33,8 @@ type FileStore interface {
 type PlanStatusReporter interface {
 	ProgressSink
 	Start()
+	BeginLogEntry(message string)
+	AppendLogOutput(text string)
 	SetGoal(goal string)
 	SetPlan(plan string)
 	SetTaskSteps(steps []models.TaskStep)
@@ -332,6 +334,12 @@ func (o *PlanOrchestrator) runInvocation(
 	out := io.MultiWriter(o.terminal, log)
 	writeProgress(out, o.clock, progress)
 	notifyProgress(o.status, progress)
+	if o.status != nil {
+		o.status.BeginLogEntry(string(progress))
+		statusLog := newLogEntryWriter(o.status)
+		defer statusLog.Flush()
+		out = io.MultiWriter(out, statusLog)
+	}
 	if err := o.runner.Run(ctx, inv, out); err != nil {
 		if ctx.Err() != nil {
 			return models.OutcomeInterrupted, true

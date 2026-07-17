@@ -101,6 +101,21 @@ func (s *PlanStatusService) AddStep(message string) {
 	})
 }
 
+// BeginLogEntry opens a new log entry for a tool invocation, mirroring the
+// terminal's "==> [time] message" header.
+func (s *PlanStatusService) BeginLogEntry(message string) {
+	s.update(func(st models.PlanSessionStatus) models.PlanSessionStatus {
+		return st.WithLogEntry(models.LogEntry{At: s.clock.Now(), Message: message})
+	})
+}
+
+// AppendLogOutput streams tool output into the current log entry.
+func (s *PlanStatusService) AppendLogOutput(text string) {
+	s.update(func(st models.PlanSessionStatus) models.PlanSessionStatus {
+		return st.WithLogOutput(text)
+	})
+}
+
 // WaitForInput marks the session as blocked on terminal input, adding a
 // visible step so the browser user knows to return to the terminal.
 func (s *PlanStatusService) WaitForInput() {

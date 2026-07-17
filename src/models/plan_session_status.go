@@ -36,6 +36,20 @@ type TaskStep struct {
 	Completed bool   `json:"completed"`
 }
 
+// LogEntry is one tool invocation's terminal output: the progress header the
+// terminal shows as "==> [time] message" plus the tool's streamed output body.
+type LogEntry struct {
+	At      time.Time `json:"at"`
+	Message string    `json:"message"`
+	Body    string    `json:"body"`
+}
+
+// WithBody returns a copy of the entry with more output appended.
+func (e LogEntry) WithBody(text string) LogEntry {
+	e.Body += text
+	return e
+}
+
 // PlanSessionStatus is the full snapshot the interactive status page renders.
 // Each broadcast carries the whole snapshot; browsers re-render on receipt.
 type PlanSessionStatus struct {
@@ -46,6 +60,7 @@ type PlanSessionStatus struct {
 	WaitingForInput bool       `json:"waitingForInput"`
 	Steps           []PlanStep `json:"steps"`
 	TaskSteps       []TaskStep `json:"taskSteps"`
+	Log             []LogEntry `json:"log"`
 	StartedAt       time.Time  `json:"startedAt"`
 	EndedAt         time.Time  `json:"endedAt"`
 }
@@ -60,6 +75,28 @@ func (s PlanSessionStatus) Duration(now time.Time) time.Duration {
 		return now.Sub(s.StartedAt)
 	}
 	return s.EndedAt.Sub(s.StartedAt)
+}
+
+// WithLogEntry returns a copy of the status with a new log entry appended.
+func (s PlanSessionStatus) WithLogEntry(entry LogEntry) PlanSessionStatus {
+	log := make([]LogEntry, len(s.Log), len(s.Log)+1)
+	copy(log, s.Log)
+	s.Log = append(log, entry)
+	return s
+}
+
+// WithLogOutput returns a copy of the status with text appended to the last
+// log entry's body. With no entries yet the text is dropped: output only makes
+// sense under an invocation header.
+func (s PlanSessionStatus) WithLogOutput(text string) PlanSessionStatus {
+	if len(s.Log) == 0 {
+		return s
+	}
+	log := make([]LogEntry, len(s.Log))
+	copy(log, s.Log)
+	log[len(log)-1] = log[len(log)-1].WithBody(text)
+	s.Log = log
+	return s
 }
 
 // WithStep returns a copy of the status with one more step appended.

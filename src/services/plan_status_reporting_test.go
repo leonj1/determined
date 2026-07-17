@@ -17,12 +17,17 @@ type fakeStatusReporter struct {
 	goal      string
 	plan      string
 	taskSteps []models.TaskStep
+	logOutput string
 }
 
 func (r *fakeStatusReporter) Progress(message string) {
 	r.events = append(r.events, "progress: "+message)
 }
 func (r *fakeStatusReporter) Start() { r.events = append(r.events, "start") }
+func (r *fakeStatusReporter) BeginLogEntry(message string) {
+	r.events = append(r.events, "log-entry: "+message)
+}
+func (r *fakeStatusReporter) AppendLogOutput(text string) { r.logOutput += text }
 func (r *fakeStatusReporter) SetGoal(goal string) {
 	r.goal = goal
 	r.events = append(r.events, "goal")
@@ -47,11 +52,13 @@ func (r *fakeStatusReporter) Finish(succeeded bool) {
 func TestSuccessfulPlanReportsFullStatusSequence(t *testing.T) {
 	fs := newFakeFileStore()
 	prompter := &fakePrompter{answers: []string{"SQLite"}}
-	runner := &fakeRunner{script: func(call int, _ io.Writer) error {
+	runner := &fakeRunner{script: func(call int, out io.Writer) error {
 		switch call {
 		case 1:
+			io.WriteString(out, "asking about storage\n")
 			fs.Write("QUESTIONS.md", "1. What database?\n")
 		case 2:
+			io.WriteString(out, "plan written\n")
 			fs.Write("PLAN.md", "the plan")
 			fs.Write("STEPS.md", "- [x] scaffold the CLI\n  Done when: `go build` passes.\n\n- [ ] add the todo store\n")
 		}
@@ -71,8 +78,10 @@ func TestSuccessfulPlanReportsFullStatusSequence(t *testing.T) {
 		"progress: writing planning goal",
 		"goal",
 		"progress: planning project",
+		"log-entry: planning project",
 		"wait-for-input",
 		"progress: planning project",
+		"log-entry: planning project",
 		"plan",       // refine entry publishes the finished plan
 		"task-steps", // ...and the parsed STEPS.md items
 		"plan",       // reportFinish re-publishes the final plan text
@@ -93,6 +102,9 @@ func TestSuccessfulPlanReportsFullStatusSequence(t *testing.T) {
 	if reporter.plan != "the plan" {
 		t.Errorf("reported plan = %q, want PLAN.md contents", reporter.plan)
 	}
+	if reporter.logOutput != "asking about storage\nplan written\n" {
+		t.Errorf("log output = %q, want both invocations' streamed output", reporter.logOutput)
+	}
 	wantSteps := []models.TaskStep{
 		{Text: "scaffold the CLI", DoneWhen: "`go build` passes.", Completed: true},
 		{Text: "add the todo store"},
@@ -104,6 +116,26 @@ func TestSuccessfulPlanReportsFullStatusSequence(t *testing.T) {
 		if reporter.taskSteps[i] != want {
 			t.Errorf("task steps[%d] = %+v, want %+v", i, reporter.taskSteps[i], want)
 		}
+	}
+}
+
+func TestToolOutputWithoutTrailingNewlineIsFlushedToLog(t *testing.T) {
+	fs := newFakeFileStore()
+	runner := &fakeRunner{script: func(_ int, out io.Writer) error {
+		io.WriteString(out, "partial line without newline")
+		fs.Write("PLAN.md", "the plan")
+		fs.Write("STEPS.md", "the steps")
+		return nil
+	}}
+	reporter := &fakeStatusReporter{}
+	o := services.NewPlanOrchestrator(runner, fs, &fakePrompter{}, &fakeClock{now: time.Now()}, &fakeLogSink{}, io.Discard, planConfig(0)).
+		WithStatusReporter(reporter)
+
+	if outcome := o.Run(context.Background()); outcome != models.OutcomePlanReady {
+		t.Fatalf("outcome = %v, want plan ready", outcome)
+	}
+	if reporter.logOutput != "partial line without newline" {
+		t.Errorf("log output = %q, want the flushed partial line", reporter.logOutput)
 	}
 }
 
