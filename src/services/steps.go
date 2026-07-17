@@ -7,6 +7,10 @@ type Step struct {
 	// Text is the step's description without the checkbox marker, with any
 	// indented continuation lines folded in.
 	Text string
+	// Purpose is the functional intent from the step's "Purpose:" line —
+	// why the step exists in user or system terms — empty when the step
+	// has none.
+	Purpose string
 	// DoneWhen is the acceptance criterion from the step's "Done when:"
 	// line, empty when the step has none.
 	DoneWhen string
@@ -17,6 +21,10 @@ type Step struct {
 // doneWhenPrefix marks a step's acceptance-criterion line, per the format the
 // planning prompts enforce.
 const doneWhenPrefix = "Done when:"
+
+// purposePrefix marks a step's functional-intent line, per the format the
+// planning prompts enforce.
+const purposePrefix = "Purpose:"
 
 // ParseSteps parses checkbox-format STEPS.md content into its steps. The
 // protocol asks the planning tool for one `- [ ]` item per step, each ending
@@ -52,6 +60,8 @@ func ParseSteps(content string) []Step {
 			}
 		case trimmed == "":
 			cur = nil // a blank line ends the current item
+		case hasFoldPrefix(trimmed, purposePrefix):
+			cur.Purpose = strings.TrimSpace(trimmed[len(purposePrefix):])
 		case hasFoldPrefix(trimmed, doneWhenPrefix):
 			cur.DoneWhen = strings.TrimSpace(trimmed[len(doneWhenPrefix):])
 		case strings.HasPrefix(trimmed, "```"):

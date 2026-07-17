@@ -4,8 +4,12 @@ Execute mode (`./determined -exec`) runs against a `PLAN.md` / `STEPS.md` pair
 in the current working directory. Combined with `--plan`, it starts as soon as
 planning succeeds; invoking `determined` with neither flag prints the usage
 screen instead. `STEPS.md` must be a markdown checkbox list — one `- [ ]` item per
-step, each ending with a `Done when:` line stating a checkable acceptance
-condition (the format `--plan` produces). The orchestrator parses this file
+step, each carrying a `Purpose:` line stating the step's functional intent
+(the outcome it exists to achieve, e.g. "Email messages are throttled to
+prevent DDOS", not "Add message payloads to a queue") and ending with a
+`Done when:` line stating a checkable acceptance condition (the format
+`--plan` produces). A missing `Purpose:` line is tolerated at execution
+time — the step still runs — but planning enforces one per step. The orchestrator parses this file
 itself every iteration; it never trusts the tool's own claim of completion.
 
 ## Startup
@@ -28,7 +32,8 @@ itself every iteration; it never trusts the tool's own claim of completion.
    budget is checked *between* iterations, so an in-flight tool run always
    finishes first.
 3. **Prompt construction** — the orchestrator re-reads `STEPS.md` and aims the
-   tool at exactly the next unchecked step, injecting the step text and its
+   tool at exactly the next unchecked step, injecting the step text, its
+   `Purpose:` intent when present, and its
    `Done when:` criterion, plus the `NOTES.md` read/append instructions (see
    below). When every box is checked, the iteration runs the specialist review
    sequence and then the whole-plan audit. If `STEPS.md` contains no parseable

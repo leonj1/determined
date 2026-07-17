@@ -499,6 +499,41 @@ func TestEachIterationTargetsTheNextIncompleteStep(t *testing.T) {
 	}
 }
 
+func TestStepPurposeIsCarriedIntoWorkAndVerifyPrompts(t *testing.T) {
+	cfg := config(0)
+	cfg.Verify = true
+	steps := "- [ ] 1. Add message payloads to a queue.\n" +
+		"  Purpose: Email messages are throttled to prevent DDOS.\n" +
+		"  Done when: burst of 100 sends drains at the configured rate.\n"
+	checked := strings.Replace(steps, "- [ ]", "- [x]", 1)
+	fs := plannedFileStore(steps)
+	runner := &fakeRunner{script: func(call int, _ io.Writer) error {
+		switch call {
+		case 1: // work: check the step
+			fs.Write("STEPS.md", checked)
+		case 2: // verifier approves
+		case 3: // audit approves
+			fs.Write("STOP.md", "audit: plan satisfied")
+		}
+		return nil
+	}}
+	o := services.NewOrchestrator(runner, fs, &fakeClock{now: time.Now()}, &fakeLogSink{}, io.Discard, cfg)
+
+	outcome := o.Run(context.Background())
+
+	if outcome != models.OutcomeStopped {
+		t.Fatalf("expected a clean completion, got %v", outcome)
+	}
+	work := runner.prompt(1)
+	if !strings.Contains(work, "Its purpose: Email messages are throttled to prevent DDOS.") {
+		t.Fatalf("expected the work prompt to carry the step's purpose, got:\n%s", work)
+	}
+	verify := runner.prompt(2)
+	if !strings.Contains(verify, "Its purpose: Email messages are throttled to prevent DDOS.") {
+		t.Fatalf("expected the verifier prompt to carry the step's purpose, got:\n%s", verify)
+	}
+}
+
 func TestStepsFileWithoutCheckboxesFallsBackToStopSentinel(t *testing.T) {
 	fs := plannedFileStore("1. Prose steps only, nothing the parser can track.\n")
 	runner := &fakeRunner{script: func(int, io.Writer) error {

@@ -358,6 +358,10 @@ func specializedReviewPrompt(review specializedReview) string {
 func verifyPrompt(n int, step Step) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "Step %d claims complete: %s", n, sentence(step.Text))
+	if step.Purpose != "" {
+		b.WriteString(" Its purpose: ")
+		b.WriteString(sentence(step.Purpose))
+	}
 	if step.DoneWhen != "" {
 		b.WriteString(" Acceptance criterion: ")
 		b.WriteString(sentence(step.DoneWhen))
@@ -422,7 +426,8 @@ func (o *Orchestrator) gitCommit(ctx context.Context, n int, step Step) {
 // restores a parseable step list or confirms the work is done with STOP.md.
 const noParsableStepsPrompt = "Read STEPS.md. It contains no checkbox-format steps " +
 	"(`- [ ]` items), so progress cannot be tracked. If work remains, rewrite STEPS.md " +
-	"as a markdown checkbox list, one `- [ ]` item per remaining step, each ending with " +
+	"as a markdown checkbox list, one `- [ ]` item per remaining step, each with a " +
+	"`Purpose:` line stating the step's functional intent and ending with " +
 	"a `Done when:` line stating a checkable acceptance condition. " +
 	"If the work is genuinely finished, create STOP.md. Do not start new work."
 
@@ -483,6 +488,10 @@ func stepPrompt(step Step) string {
 	b.WriteString("Read NOTES.md if it exists before starting. ")
 	b.WriteString("Work on exactly this step and no other: ")
 	b.WriteString(sentence(step.Text))
+	if step.Purpose != "" {
+		b.WriteString(" Its purpose: ")
+		b.WriteString(sentence(step.Purpose))
+	}
 	if step.DoneWhen != "" {
 		b.WriteString(" Its acceptance criterion: ")
 		b.WriteString(sentence(step.DoneWhen))

@@ -36,6 +36,26 @@ func TestParseSteps(t *testing.T) {
 			want: []services.Step{{Text: "Just do it.", Completed: false}},
 		},
 		{
+			name: "purpose line is captured, not folded into text",
+			in: "- [ ] Add message payloads to a queue.\n" +
+				"  Purpose: Email messages are throttled to prevent DDOS.\n" +
+				"  Done when: burst of 100 sends drains at the configured rate.\n",
+			want: []services.Step{{
+				Text:     "Add message payloads to a queue.",
+				Purpose:  "Email messages are throttled to prevent DDOS.",
+				DoneWhen: "burst of 100 sends drains at the configured rate.",
+			}},
+		},
+		{
+			name: "purpose prefix matches case-insensitively",
+			in: "- [ ] Do the thing.\n" +
+				"  purpose: users see progress without refreshing.\n",
+			want: []services.Step{{
+				Text:    "Do the thing.",
+				Purpose: "users see progress without refreshing.",
+			}},
+		},
+		{
 			name: "indented continuation lines fold into the text",
 			in: "- [ ] A step whose description\n" +
 				"  spills onto a second line.\n" +
