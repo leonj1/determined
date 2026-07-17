@@ -80,6 +80,7 @@ func assertPageServed(t *testing.T, url string) {
 		"determined — planning", "EventSource", "banner",
 		"step-card", "taskSteps", "Done when: ",
 		"log-entry", "renderLog", `data-tab="log"`,
+		"renderTable", "unflattenTables", "isSeparatorRow",
 	} {
 		if !strings.Contains(page, marker) {
 			t.Errorf("page missing %q", marker)

@@ -171,7 +171,8 @@
       /^```/m,                  // fenced code
       /^>\s+\S/m,               // blockquote
       /\*\*[^*\n]+\*\*/,        // bold
-      /\[[^\]\n]+\]\([^)\n]+\)/ // link
+      /\[[^\]\n]+\]\([^)\n]+\)/, // link
+      /\|[^|\n]+\|.*\|-{3,}/s   // table (header row followed by |---| separator)
     ].some((pattern) => pattern.test(text));
   }
 
@@ -222,8 +223,39 @@
     return html;
   }
 
+  // Split one table row into trimmed cell strings, dropping the outer pipes.
+  function splitRow(line) {
+    return line.trim().replace(/^\|/, "").replace(/\|$/, "").split("|").map((cell) => cell.trim());
+  }
+  function isTableRow(line) {
+    return /^\s*\|.*\|\s*$/.test(line);
+  }
+  function isSeparatorRow(line) {
+    return isTableRow(line) && splitRow(line).every((cell) => /^:?-{3,}:?$/.test(cell));
+  }
+  function renderTable(rows) {
+    const header = splitRow(rows[0]);
+    const body = rows.slice(2).map(splitRow);
+    const head = "<tr>" + header.map((cell) => "<th>" + renderInline(cell) + "</th>").join("") + "</tr>";
+    const rowsHtml = body.map((cells) =>
+      "<tr>" + cells.map((cell) => "<td>" + renderInline(cell) + "</td>").join("") + "</tr>"
+    ).join("");
+    return "<table><thead>" + head + "</thead><tbody>" + rowsHtml + "</tbody></table>";
+  }
+  // Some sources flatten a markdown table onto one line, joining rows with a
+  // space ("| a | b | |---|---| | 1 | 2 |"). Re-split "| |" boundaries into
+  // newlines so the block parser sees one row per line.
+  function unflattenTables(text) {
+    let inFence = false;
+    return text.split("\n").map((line) => {
+      if (line.startsWith("```")) { inFence = !inFence; return line; }
+      if (inFence || !/\|\s*\|\s*:?-{3,}/.test(line)) return line;
+      return line.replace(/\|\s+\|/g, "|\n|");
+    }).join("\n");
+  }
+
   function markdownToHtml(text) {
-    const lines = text.split("\n");
+    const lines = unflattenTables(text).split("\n");
     const out = [];
     let index = 0;
     while (index < lines.length) {
@@ -255,6 +287,10 @@
           index++;
         }
         out.push("<blockquote>" + markdownToHtml(quoted.join("\n")) + "</blockquote>");
+      } else if (isTableRow(line) && index + 1 < lines.length && isSeparatorRow(lines[index + 1])) {
+        const rows = [];
+        while (index < lines.length && isTableRow(lines[index])) rows.push(lines[index++]);
+        out.push(renderTable(rows));
       } else if (/^\s*(---+|\*\*\*+)\s*$/.test(line)) {
         out.push("<hr>");
         index++;
@@ -263,7 +299,8 @@
       } else {
         const paragraph = [];
         while (index < lines.length && lines[index].trim() !== "" &&
-               !/^(#{1,6}\s|```|>\s?|\s*([-*+]|\d+\.)\s)/.test(lines[index])) {
+               !/^(#{1,6}\s|```|>\s?|\s*([-*+]|\d+\.)\s)/.test(lines[index]) &&
+               !(isTableRow(lines[index]) && index + 1 < lines.length && isSeparatorRow(lines[index + 1]))) {
           paragraph.push(lines[index]);
           index++;
         }
