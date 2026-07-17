@@ -471,8 +471,38 @@ func (o *PlanOrchestrator) planDrafted() bool {
 
 // ensureTests backfills the recommended journey/BDD tests when the plan and
 // steps exist but the tests file is missing, so planning never completes
-// without them. It reports whether the loop should stop.
+// without them. Every journey test must carry a mermaid sequence diagram; a
+// tests file missing one triggers one regeneration pass before stalling.
+// It reports whether the loop should stop.
 func (o *PlanOrchestrator) ensureTests(ctx context.Context) (models.Outcome, bool) {
+	for pass := 0; pass < 2; pass++ {
+		if outcome, stop := o.produceTests(ctx); stop {
+			return outcome, stop
+		}
+		missing, err := o.journeyTestsMissingDiagrams()
+		if err != nil {
+			fmt.Fprintf(o.terminal, "determined: could not read %s: %v\n", o.cfg.TestsFile, err)
+			return models.OutcomePlanStalled, true
+		}
+		if len(missing) == 0 {
+			return models.OutcomePlanReady, false
+		}
+		if pass+1 >= 2 {
+			break
+		}
+		fmt.Fprintf(o.terminal,
+			"determined: %d journey test(s) missing a sequence diagram in %s; regenerating\n",
+			len(missing), o.cfg.TestsFile)
+		o.files.Remove(o.cfg.TestsFile)
+	}
+	fmt.Fprintf(o.terminal,
+		"determined: journey tests in %s still lack sequence diagrams\n", o.cfg.TestsFile)
+	return models.OutcomePlanStalled, true
+}
+
+// produceTests runs the tests invocation when the tests file is absent and
+// verifies the tool produced it. It reports whether the loop should stop.
+func (o *PlanOrchestrator) produceTests(ctx context.Context) (models.Outcome, bool) {
 	if o.files.Exists(o.cfg.TestsFile) {
 		return models.OutcomePlanReady, false
 	}
@@ -484,6 +514,16 @@ func (o *PlanOrchestrator) ensureTests(ctx context.Context) (models.Outcome, boo
 		return models.OutcomePlanStalled, true
 	}
 	return models.OutcomePlanReady, false
+}
+
+// journeyTestsMissingDiagrams lists journey tests in the tests file that lack
+// a mermaid sequence diagram.
+func (o *PlanOrchestrator) journeyTestsMissingDiagrams() ([]string, error) {
+	content, err := o.files.Read(o.cfg.TestsFile)
+	if err != nil {
+		return nil, err
+	}
+	return NewTestsDocument(content).JourneyTestsMissingDiagrams(), nil
 }
 
 // ServeAnnotations keeps the finished session responsive to page feedback: it

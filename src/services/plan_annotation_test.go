@@ -31,7 +31,7 @@ func TestServeAnnotationsAppliesQueuedFeedbackInOrder(t *testing.T) {
 	fs := newFakeFileStore()
 	fs.Write("PLAN.md", "the plan")
 	fs.Write("STEPS.md", "- [ ] first step\n")
-	fs.Write("TESTS.md", "### Test 1: journey")
+	fs.Write("TESTS.md", validTestsDoc)
 	fs.Write("GOAL.md", "the goal")
 	var staged []string
 	runner := &fakeRunner{script: func(call int, _ io.Writer) error {

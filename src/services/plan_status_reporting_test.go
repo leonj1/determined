@@ -88,7 +88,7 @@ func TestSuccessfulPlanReportsFullStatusSequence(t *testing.T) {
 		case 2:
 			io.WriteString(out, "plan written\n")
 			fs.Write("PLAN.md", "the plan")
-			fs.Write("TESTS.md", "### Test 1: journey")
+			fs.Write("TESTS.md", validTestsDoc)
 			fs.Write("STEPS.md", "- [x] scaffold the CLI\n  Done when: `go build` passes.\n\n- [ ] add the todo store\n")
 		}
 		return nil
@@ -133,7 +133,7 @@ func TestSuccessfulPlanReportsFullStatusSequence(t *testing.T) {
 	if reporter.plan != "the plan" {
 		t.Errorf("reported plan = %q, want PLAN.md contents", reporter.plan)
 	}
-	if reporter.tests != "### Test 1: journey" {
+	if reporter.tests != validTestsDoc {
 		t.Errorf("reported tests = %q, want TESTS.md contents", reporter.tests)
 	}
 	if reporter.logOutput != "asking about storage\nplan written\n" {
@@ -159,7 +159,7 @@ func TestToolOutputWithoutTrailingNewlineIsFlushedToLog(t *testing.T) {
 		io.WriteString(out, "partial line without newline")
 		fs.Write("PLAN.md", "the plan")
 		fs.Write("STEPS.md", "the steps")
-		fs.Write("TESTS.md", "### Test 1: journey")
+		fs.Write("TESTS.md", validTestsDoc)
 		return nil
 	}}
 	reporter := &fakeStatusReporter{}
@@ -197,7 +197,7 @@ func TestPlanWithoutReporterRunsTerminalOnly(t *testing.T) {
 	runner := &fakeRunner{script: func(int, io.Writer) error {
 		fs.Write("PLAN.md", "the plan")
 		fs.Write("STEPS.md", "the steps")
-		fs.Write("TESTS.md", "### Test 1: journey")
+		fs.Write("TESTS.md", validTestsDoc)
 		return nil
 	}}
 	o := services.NewPlanOrchestrator(runner, fs, &fakePrompter{}, &fakeClock{now: time.Now()}, &fakeLogSink{}, io.Discard, planConfig(0))
