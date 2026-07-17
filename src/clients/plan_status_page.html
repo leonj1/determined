@@ -497,11 +497,13 @@
   }
 
   function tabFromPath() {
-    const name = window.location.pathname.replace(/^\//, "");
+    const name = window.location.pathname.replace(/^\//, "").split("/")[0];
     return ["goal", "plan", "tests", "steps", "log"].includes(name) ? name : "goal";
   }
-  window.addEventListener("popstate", () => selectTab(tabFromPath()));
-  selectTab(tabFromPath());
+  function testsTabFromPath() {
+    const parts = window.location.pathname.replace(/^\//, "").split("/");
+    return parts[0] === "tests" && parts[1] === "bdd" ? "bdd" : "journey";
+  }
 
   function selectTestsTab(name) {
     for (const button of document.querySelectorAll("#tests-tabs button")) {
@@ -511,8 +513,18 @@
     el("tests-bdd").classList.toggle("active", name === "bdd");
   }
   for (const button of document.querySelectorAll("#tests-tabs button")) {
-    button.addEventListener("click", () => selectTestsTab(button.dataset.testsTab));
+    button.addEventListener("click", () => {
+      history.pushState(null, "", "/tests/" + button.dataset.testsTab);
+      selectTestsTab(button.dataset.testsTab);
+    });
   }
+
+  window.addEventListener("popstate", () => {
+    selectTab(tabFromPath());
+    selectTestsTab(testsTabFromPath());
+  });
+  selectTab(tabFromPath());
+  selectTestsTab(testsTabFromPath());
 
   // The recommended tests document is one markdown blob whose sections each
   // carry a "**Type:**" line. Split it into journey tests and BDD tests by

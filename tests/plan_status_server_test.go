@@ -239,13 +239,15 @@ func TestPlanStatusServerServesTestsPath(t *testing.T) {
 	url, _, stop := startAnnotateServer(t)
 	defer stop()
 
-	resp, err := http.Get(url + "tests")
-	if err != nil {
-		t.Fatalf("get /tests: %v", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		t.Errorf("/tests status = %d, want 200", resp.StatusCode)
+	for _, path := range []string{"tests", "tests/journey", "tests/bdd"} {
+		resp, err := http.Get(url + path)
+		if err != nil {
+			t.Fatalf("get /%s: %v", path, err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Errorf("/%s status = %d, want 200", path, resp.StatusCode)
+		}
 	}
 }
 
