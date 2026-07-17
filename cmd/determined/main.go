@@ -116,9 +116,9 @@ func main() {
 	}
 	if proceed {
 		if *reviewPlan {
-			outcome = runReviewPlan(ctx, selected, *budget, *maxStepPasses, clock, logs)
+			outcome = runReviewPlan(ctx, selected, *budget, *maxStepPasses, *maxFailures, clock, logs)
 		} else if *plan != "" {
-			outcome = runPlan(ctx, selected, planInput(*plan, flag.Args()), planMode, *budget, *maxStepPasses, *interactive, !*exec, clock, logs)
+			outcome = runPlan(ctx, selected, planInput(*plan, flag.Args()), planMode, *budget, *maxStepPasses, *maxFailures, *interactive, !*exec, clock, logs)
 			if shouldExecuteAfterPlan(*exec, outcome) {
 				outcome = runLoop(ctx, selected, *budget, *maxStalled, *maxFailures, *maxIterationDuration, *verify, *specializedReviews, *gitCheckpoint, clock, logs)
 			}
@@ -316,22 +316,23 @@ func runUpdateCommand() {
 // questions to the user until a plan is produced. With interactive set, a
 // local web server shows the session live; holdPage keeps it serving after
 // completion (plan-only mode) until the user dismisses it.
-func runPlan(ctx context.Context, tool models.Tool, goal string, mode models.PlanMode, budget time.Duration, maxStepPasses int, interactive, holdPage bool, clock services.Clock, logs services.LogSink) models.Outcome {
+func runPlan(ctx context.Context, tool models.Tool, goal string, mode models.PlanMode, budget time.Duration, maxStepPasses, maxFailures int, interactive, holdPage bool, clock services.Clock, logs services.LogSink) models.Outcome {
 	prompts := services.PlanningPrompts(mode)
 	cfg := models.PlanConfig{
-		Operation:        models.PlanOperationCreate,
-		Goal:             goal,
-		Invocation:       tool.Invocation(prompts.Plan),
-		Budget:           budget,
-		AssessInvocation: tool.Invocation(prompts.Assess),
-		RefineInvocation: tool.Invocation(prompts.Refine),
-		MaxRefinePasses:  refinePasses(mode, maxStepPasses),
-		GoalFile:         "GOAL.md",
-		QuestionsFile:    "QUESTIONS.md",
-		AnswersFile:      "ANSWERS.md",
-		PlanFile:         "PLAN.md",
-		StepsFile:        "STEPS.md",
-		AssessmentFile:   "REFINEMENTS.md",
+		Operation:              models.PlanOperationCreate,
+		Goal:                   goal,
+		Invocation:             tool.Invocation(prompts.Plan),
+		Budget:                 budget,
+		AssessInvocation:       tool.Invocation(prompts.Assess),
+		RefineInvocation:       tool.Invocation(prompts.Refine),
+		MaxRefinePasses:        refinePasses(mode, maxStepPasses),
+		MaxConsecutiveFailures: maxFailures,
+		GoalFile:               "GOAL.md",
+		QuestionsFile:          "QUESTIONS.md",
+		AnswersFile:            "ANSWERS.md",
+		PlanFile:               "PLAN.md",
+		StepsFile:              "STEPS.md",
+		AssessmentFile:         "REFINEMENTS.md",
 	}
 	orchestrator := services.NewPlanOrchestrator(
 		clients.NewExecCommandRunner(),
@@ -412,20 +413,21 @@ func runCriteria(ctx context.Context, tool models.Tool, budget time.Duration, cl
 
 // runReviewPlan critiques an existing plan, interviews the user about
 // consequential choices, and applies revisions without entering execute mode.
-func runReviewPlan(ctx context.Context, tool models.Tool, budget time.Duration, maxStepPasses int, clock services.Clock, logs services.LogSink) models.Outcome {
+func runReviewPlan(ctx context.Context, tool models.Tool, budget time.Duration, maxStepPasses, maxFailures int, clock services.Clock, logs services.LogSink) models.Outcome {
 	prompts := services.ReviewPrompts()
 	cfg := models.PlanConfig{
-		Operation:        models.PlanOperationReview,
-		Budget:           budget,
-		AssessInvocation: tool.Invocation(prompts.Assess),
-		RefineInvocation: tool.Invocation(prompts.Refine),
-		MaxRefinePasses:  maxStepPasses,
-		GoalFile:         "GOAL.md",
-		QuestionsFile:    "REVIEW_QUESTIONS.md",
-		AnswersFile:      "REVIEW_ANSWERS.md",
-		PlanFile:         "PLAN.md",
-		StepsFile:        "STEPS.md",
-		AssessmentFile:   "REFINEMENTS.md",
+		Operation:              models.PlanOperationReview,
+		Budget:                 budget,
+		AssessInvocation:       tool.Invocation(prompts.Assess),
+		RefineInvocation:       tool.Invocation(prompts.Refine),
+		MaxRefinePasses:        maxStepPasses,
+		MaxConsecutiveFailures: maxFailures,
+		GoalFile:               "GOAL.md",
+		QuestionsFile:          "REVIEW_QUESTIONS.md",
+		AnswersFile:            "REVIEW_ANSWERS.md",
+		PlanFile:               "PLAN.md",
+		StepsFile:              "STEPS.md",
+		AssessmentFile:         "REFINEMENTS.md",
 	}
 	orchestrator := services.NewPlanOrchestrator(
 		clients.NewExecCommandRunner(),

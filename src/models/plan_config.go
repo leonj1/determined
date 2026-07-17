@@ -18,6 +18,11 @@ type PlanConfig struct {
 	RefineInvocation Invocation // resolves assessment findings in PlanFile and StepsFile
 	MaxRefinePasses  int        // cap on assess/refine rounds; 0 disables refinement
 
+	// MaxConsecutiveFailures aborts the run after this many consecutive failed
+	// tool invocations; a success resets the count. Values below 1 mean a single
+	// failure aborts immediately (no retry).
+	MaxConsecutiveFailures int
+
 	GoalFile       string // where the goal is written (GOAL.md)
 	QuestionsFile  string // where the tool writes clarifying questions (QUESTIONS.md)
 	AnswersFile    string // where determined appends the Q&A history (ANSWERS.md)

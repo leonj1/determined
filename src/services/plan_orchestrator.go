@@ -57,6 +57,7 @@ type PlanOrchestrator struct {
 
 	iteration  int
 	goalSeeded bool
+	failures   int
 }
 
 // NewPlanOrchestrator wires a PlanOrchestrator from its dependencies.
@@ -318,17 +319,37 @@ func (o *PlanOrchestrator) refine(ctx context.Context, deadline time.Time) model
 	}
 }
 
-// runInvocation runs a single tool invocation, teeing its output to the terminal
-// and a per-iteration log. It reports whether the loop should stop.
+// runInvocation runs a tool invocation, retrying transient failures until the
+// consecutive-failure cap is hit. It reports whether the loop should stop.
 func (o *PlanOrchestrator) runInvocation(
 	ctx context.Context,
 	inv models.Invocation,
 	progress progressMessage,
 ) (models.Outcome, bool) {
+	for {
+		err := o.attemptInvocation(ctx, inv, progress)
+		if err == nil {
+			o.failures = 0
+			return models.OutcomePlanReady, false // outcome ignored when stop is false
+		}
+		if outcome, stop := o.recordFailure(ctx, err); stop {
+			return outcome, stop
+		}
+	}
+}
+
+// attemptInvocation runs one tool invocation, teeing its output to the
+// terminal, a per-iteration log, and the status page. A failure is written to
+// all three so the reason survives in the iteration log and on the page.
+func (o *PlanOrchestrator) attemptInvocation(
+	ctx context.Context,
+	inv models.Invocation,
+	progress progressMessage,
+) error {
 	o.iteration++
 	log, err := o.logs.OpenIteration(o.iteration)
 	if err != nil {
-		return models.OutcomeDroidFailed, true
+		return err
 	}
 	defer log.Close()
 	out := io.MultiWriter(o.terminal, log)
@@ -341,12 +362,32 @@ func (o *PlanOrchestrator) runInvocation(
 		out = io.MultiWriter(out, statusLog)
 	}
 	if err := o.runner.Run(ctx, inv, out); err != nil {
-		if ctx.Err() != nil {
-			return models.OutcomeInterrupted, true
-		}
+		fmt.Fprintf(out, "determined: tool invocation failed: %v\n", err)
+		return err
+	}
+	return nil
+}
+
+// recordFailure decides what a failed invocation means for the run. An
+// interruption stops immediately, since a cancelled context kills the child
+// and surfaces as an error too. A genuine tool failure (rate limit, crash) is
+// often transient, so the same invocation is retried until
+// cfg.MaxConsecutiveFailures failures occur with no success in between.
+func (o *PlanOrchestrator) recordFailure(ctx context.Context, err error) (models.Outcome, bool) {
+	if ctx.Err() != nil {
+		return models.OutcomeInterrupted, true
+	}
+	o.failures++
+	if o.failures >= o.cfg.MaxConsecutiveFailures {
+		fmt.Fprintf(o.terminal,
+			"determined: tool invocation failed %d consecutive time(s); stopping: %v\n",
+			o.failures, err)
 		return models.OutcomeDroidFailed, true
 	}
-	return models.OutcomePlanReady, false // outcome ignored when stop is false
+	fmt.Fprintf(o.terminal,
+		"determined: tool invocation failed (%d of %d consecutive before aborting): %v; retrying\n",
+		o.failures, o.cfg.MaxConsecutiveFailures, err)
+	return models.OutcomeStopped, false // outcome ignored when stop is false
 }
 
 // relayQuestions reads the tool's questions, asks the user each one, appends the

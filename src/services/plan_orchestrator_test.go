@@ -631,6 +631,77 @@ func TestPlanAbortsWhenToolFails(t *testing.T) {
 	if outcome != models.OutcomeDroidFailed || outcome.ExitCode() != 1 {
 		t.Fatalf("expected an abort (exit 1), got %v (exit %d)", outcome, outcome.ExitCode())
 	}
+	if runner.calls != 1 {
+		t.Fatalf("expected no retries with a zero failure cap, got %d calls", runner.calls)
+	}
+}
+
+func TestPlanRetriesTransientToolFailure(t *testing.T) {
+	fs := newFakeFileStore()
+	runner := &fakeRunner{script: func(call int, _ io.Writer) error {
+		if call == 1 {
+			return errors.New("droid: rate limited")
+		}
+		fs.Write("PLAN.md", "the plan")
+		fs.Write("STEPS.md", "the steps")
+		return nil
+	}}
+	terminal := &strings.Builder{}
+	cfg := planConfig(0)
+	cfg.MaxConsecutiveFailures = 3
+	o := services.NewPlanOrchestrator(runner, fs, &fakePrompter{}, &fakeClock{now: time.Now()}, &fakeLogSink{}, terminal, cfg)
+
+	outcome := o.Run(context.Background())
+
+	if outcome != models.OutcomePlanReady || outcome.ExitCode() != 0 {
+		t.Fatalf("expected a retried run to succeed, got %v (exit %d)", outcome, outcome.ExitCode())
+	}
+	if runner.calls != 2 {
+		t.Fatalf("expected the failed invocation to be retried once (2 calls), got %d", runner.calls)
+	}
+	for _, want := range []string{"droid: rate limited", "retrying", "(1 of 3 consecutive before aborting)"} {
+		if !strings.Contains(terminal.String(), want) {
+			t.Fatalf("expected the terminal to report %q, got:\n%s", want, terminal.String())
+		}
+	}
+}
+
+func TestPlanAbortsAfterConsecutiveFailureCap(t *testing.T) {
+	fs := newFakeFileStore()
+	runner := &fakeRunner{script: func(int, io.Writer) error { return errors.New("droid: crashed") }}
+	terminal := &strings.Builder{}
+	cfg := planConfig(0)
+	cfg.MaxConsecutiveFailures = 3
+	o := services.NewPlanOrchestrator(runner, fs, &fakePrompter{}, &fakeClock{now: time.Now()}, &fakeLogSink{}, terminal, cfg)
+
+	outcome := o.Run(context.Background())
+
+	if outcome != models.OutcomeDroidFailed || outcome.ExitCode() != 1 {
+		t.Fatalf("expected an abort (exit 1), got %v (exit %d)", outcome, outcome.ExitCode())
+	}
+	if runner.calls != 3 {
+		t.Fatalf("expected exactly 3 attempts before aborting, got %d", runner.calls)
+	}
+	if !strings.Contains(terminal.String(), "failed 3 consecutive time(s); stopping: droid: crashed") {
+		t.Fatalf("expected the terminal to report the final failure, got:\n%s", terminal.String())
+	}
+}
+
+func TestPlanWritesFailureReasonToIterationLog(t *testing.T) {
+	fs := newFakeFileStore()
+	runner := &fakeRunner{script: func(int, io.Writer) error { return errors.New("droid: exit status 1") }}
+	logs := &fakeLogSink{}
+	o := services.NewPlanOrchestrator(runner, fs, &fakePrompter{}, &fakeClock{now: time.Now()}, logs, io.Discard, planConfig(0))
+
+	o.Run(context.Background())
+
+	if len(logs.opened) != 1 {
+		t.Fatalf("expected 1 iteration log, got %d", len(logs.opened))
+	}
+	got := logs.opened[0].buf.String()
+	if !strings.Contains(got, "determined: tool invocation failed: droid: exit status 1") {
+		t.Fatalf("expected the iteration log to record the failure reason, got:\n%s", got)
+	}
 }
 
 func TestPlanStopsWhenBudgetExhausted(t *testing.T) {
