@@ -171,6 +171,7 @@
       /^```/m,                  // fenced code
       /^>\s+\S/m,               // blockquote
       /\*\*[^*\n]+\*\*/,        // bold
+      /`[^`\n]+`/,              // inline code
       /\[[^\]\n]+\]\([^)\n]+\)/, // link
       /\|[^|\n]+\|.*\|-{3,}/s   // table (header row followed by |---| separator)
     ].some((pattern) => pattern.test(text));
@@ -184,8 +185,13 @@
   // numbers, and keywords. Escapes first, then wraps tokens in spans.
   function highlightCode(code, language) {
     const keywords = "\\b(func|function|return|if|else|for|while|switch|case|default|break|continue|const|let|var|type|struct|interface|class|import|package|from|export|def|elif|try|catch|except|finally|raise|throw|new|nil|null|None|true|false|True|False|go|defer|chan|select|range|map|async|await|public|private|static|void|int|string|bool|float|double|match|impl|fn|pub|mut|use|enum)\\b";
+    // CSS uses # for colors and // never starts a comment there, so its
+    // comment rule matches only /* */ blocks.
+    const comment = language === "css"
+      ? /(\/\*[\s\S]*?\*\/)/g
+      : /(\/\/[^\n]*|#[^\n]*|\/\*[\s\S]*?\*\/)/g;
     const rules = [
-      { pattern: /(\/\/[^\n]*|#[^\n]*|\/\*[\s\S]*?\*\/)/g, cls: "tok-comment" },
+      { pattern: comment, cls: "tok-comment" },
       { pattern: /("(?:[^"\\\n]|\\.)*"|'(?:[^'\\\n]|\\.)*'|`[^`]*`)/g, cls: "tok-string" },
       { pattern: new RegExp(keywords, "g"), cls: "tok-keyword" },
       { pattern: /\b(\d+(?:\.\d+)?)\b/g, cls: "tok-number" },
@@ -214,13 +220,25 @@
     ).join("");
   }
 
+  // Renders inline markdown. Code spans are extracted first — before any
+  // other replacement and before HTML in them could be mangled — so emphasis
+  // and link rules never fire inside code. Handles, in order: fenced blocks
+  // flattened onto one line (```lang … ```), double-backtick spans
+  // (``code with ` inside``), then single-backtick spans.
   function renderInline(text) {
-    let html = escapeHtml(text);
-    html = html.replace(/`([^`]+)`/g, "<code>$1</code>");
+    const spans = [];
+    const stash = (html) => { spans.push(html); return "\u0000" + (spans.length - 1) + "\u0000"; };
+    let out = text.replace(/```(\w*)\s([\s\S]*?)```/g, (m, language, code) =>
+      stash("<pre><code>" + highlightCode(code.trim(), language.toLowerCase()) + "</code></pre>"));
+    out = out.replace(/``([^`](?:[^`]|`(?!`))*)``/g, (m, code) =>
+      stash("<code>" + escapeHtml(code.trim()) + "</code>"));
+    out = out.replace(/`([^`\n]+)`/g, (m, code) =>
+      stash("<code>" + escapeHtml(code) + "</code>"));
+    let html = escapeHtml(out);
     html = html.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
     html = html.replace(/(^|[^*])\*([^*\n]+)\*/g, "$1<em>$2</em>");
     html = html.replace(/\[([^\]]+)\]\((https?:[^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
-    return html;
+    return html.replace(/\u0000(\d+)\u0000/g, (m, i) => spans[+i]);
   }
 
   // Split one table row into trimmed cell strings, dropping the outer pipes.

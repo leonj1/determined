@@ -26,21 +26,34 @@ const doneWhenPrefix = "Done when:"
 func ParseSteps(content string) []Step {
 	var steps []Step
 	var cur *Step
+	inFence := false
 	for _, line := range strings.Split(content, "\n") {
-		if step, ok := checkboxItem(line); ok {
-			steps = append(steps, step)
-			cur = &steps[len(steps)-1]
-			continue
+		if !inFence {
+			if step, ok := checkboxItem(line); ok {
+				steps = append(steps, step)
+				cur = &steps[len(steps)-1]
+				continue
+			}
 		}
 		if cur == nil {
 			continue
 		}
 		trimmed := strings.TrimSpace(line)
 		switch {
+		case inFence:
+			// Inside a fenced code block every line — blank, unindented, or
+			// otherwise — belongs to the step, with line breaks preserved.
+			cur.Text += "\n" + trimmed
+			if strings.HasPrefix(trimmed, "```") {
+				inFence = false
+			}
 		case trimmed == "":
 			cur = nil // a blank line ends the current item
 		case hasFoldPrefix(trimmed, doneWhenPrefix):
 			cur.DoneWhen = strings.TrimSpace(trimmed[len(doneWhenPrefix):])
+		case strings.HasPrefix(trimmed, "```"):
+			inFence = true
+			cur.Text += "\n" + trimmed
 		case isIndented(line):
 			cur.Text += " " + trimmed
 		default:

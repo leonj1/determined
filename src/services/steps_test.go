@@ -46,6 +46,21 @@ func TestParseSteps(t *testing.T) {
 			}},
 		},
 		{
+			name: "fenced code block keeps line breaks and survives blank lines",
+			in: "- [ ] Add the CSS block:\n" +
+				"  ```css\n" +
+				"  :root { --bg: #101418; }\n" +
+				"\n" +
+				"  .card { color: var(--fg); }\n" +
+				"  ```\n" +
+				"  Done when: `go build` passes.\n",
+			want: []services.Step{{
+				Text: "Add the CSS block:\n```css\n:root { --bg: #101418; }\n\n" +
+					".card { color: var(--fg); }\n```",
+				DoneWhen: "`go build` passes.",
+			}},
+		},
+		{
 			name: "done-when prefix matches case-insensitively",
 			in:   "- [ ] Step.\n  done when: tests pass.",
 			want: []services.Step{{Text: "Step.", DoneWhen: "tests pass."}},
