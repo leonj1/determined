@@ -867,6 +867,15 @@
   function renderBanner(status) {
     const banner = el("banner");
     banner.classList.remove("succeeded", "failed");
+    if (status.execPhase === "requested" || status.execPhase === "running") {
+      banner.classList.add("succeeded");
+      el("banner-text").textContent = "⚙ Execution phase in progress";
+      el("banner-timing").textContent =
+        "Started " + fmtStamp(status.startedAt) +
+        " · Ended " + fmtStamp(status.endedAt) +
+        " · Duration " + fmtDuration(status.startedAt, status.endedAt);
+      return;
+    }
     if (status.phase !== "succeeded" && status.phase !== "failed") return;
     banner.classList.add(status.phase);
     el("banner-text").textContent = status.phase === "succeeded"
