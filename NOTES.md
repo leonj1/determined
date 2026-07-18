@@ -49,3 +49,7 @@
 ## Quality gate: absence greps (done 2026-07-17)
 
 - `! grep -q 'effectiveTheme'` and `! grep -q 'darkQuery'` on `src/clients/plan_status_page.html` both exit zero. Verification only — no code changes; two-state code stays gone since Step 1.
+
+## Quality gate: catch-count grep (done 2026-07-17)
+
+- `[ "$(grep -c '} catch (e) {}' src/clients/plan_status_page.html)" = "2" ]` exits zero. Verification only — no code changes. Exact count 2 (anti-flash IIFE + toggle click handler), matching Step 1 note; any new `} catch (e) {}` breaks this gate.
