@@ -104,6 +104,17 @@ func main() {
 	clock := clients.NewSystemClock()
 	logs := clients.NewFileLogSink(*logDir, clock)
 
+	isolation := services.NewBranchIsolation(
+		clients.NewExecGitWorkspace(), clients.NewOsFileStore(), clock, os.Stdout)
+	branch := models.BranchState{}
+	if *plan != "" || executing {
+		branch, err = isolation.Begin(ctx)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "determined: %v\n", err)
+			os.Exit(1)
+		}
+	}
+
 	var outcome models.Outcome
 	proceed := true
 	if *criteria {
@@ -124,6 +135,12 @@ func main() {
 			}
 		} else {
 			outcome = runLoop(ctx, selected, *budget, *maxStalled, *maxFailures, *maxIterationDuration, *verify, *specializedReviews, *gitCheckpoint, nil, clock, logs)
+		}
+	}
+
+	if outcome == models.OutcomeStopped {
+		if err := isolation.Finish(ctx, branch); err != nil {
+			fmt.Fprintf(os.Stderr, "determined: %v\n", err)
 		}
 	}
 
