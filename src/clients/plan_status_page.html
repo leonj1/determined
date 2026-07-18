@@ -183,6 +183,18 @@
     border: 1px dashed var(--accent); border-radius: 0.4rem; color: var(--accent);
     overflow-wrap: anywhere;
   }
+  aside#activity li.active { display: flex; align-items: baseline; gap: 0.5rem; }
+  aside#activity li.active .active-body { flex: 1; }
+  aside#activity .spinner {
+    flex: none; width: 0.8rem; height: 0.8rem; margin-top: 0.15rem;
+    border: 2px solid var(--border); border-top-color: var(--accent);
+    border-radius: 50%; animation: activity-spin 0.8s linear infinite;
+  }
+  aside#activity .elapsed {
+    color: var(--accent); font-family: ui-monospace, monospace; font-size: 0.75rem;
+    font-variant-numeric: tabular-nums;
+  }
+  @keyframes activity-spin { to { transform: rotate(360deg); } }
 </style>
 <script>
   // Apply the saved theme before first paint so the page never flashes the
@@ -713,7 +725,7 @@
     renderSteps(status.taskSteps || []);
     renderLog(status.log || []);
     renderExec(status);
-    renderActivity(status.steps || []);
+    renderActivity(status.steps || [], activityIsRunning(status));
     renderAnnotations(status.pendingAnnotations || []);
     renderBanner(status);
     el("implement").classList.toggle("on",
@@ -850,19 +862,56 @@
     return "Step " + (index + 1) + (summary ? ": " + summary : "");
   }
 
-  function renderActivity(steps) {
+  // activityIsRunning is true while the session is still working, so the most
+  // recent activity step is the one currently in progress. Once planning has
+  // finished (or execution has ended), nothing is active and the counter stops.
+  function activityIsRunning(status) {
+    if (status.execPhase === "requested" || status.execPhase === "running") return true;
+    if (status.execEndedAt && new Date(status.execEndedAt) > new Date(0)) return false;
+    return status.phase !== "succeeded" && status.phase !== "failed";
+  }
+
+  // The iso timestamp of the active activity step, or null when nothing runs.
+  // The ticker reads this to update the counter once a second between renders.
+  let activeStartIso = null;
+
+  function renderActivity(steps, running) {
     const list = el("activity-log");
     list.replaceChildren();
-    for (const step of steps) {
+    const lastIndex = steps.length - 1;
+    activeStartIso = null;
+    steps.forEach((step, index) => {
       const li = document.createElement("li");
       const t = document.createElement("time");
       t.textContent = fmtTime(step.at);
-      li.append(t, step.message);
+      if (running && index === lastIndex) {
+        activeStartIso = step.at;
+        li.classList.add("active");
+        const spinner = document.createElement("span");
+        spinner.className = "spinner";
+        const body = document.createElement("span");
+        body.className = "active-body";
+        body.append(t, step.message);
+        const elapsed = document.createElement("span");
+        elapsed.className = "elapsed";
+        elapsed.id = "activity-elapsed";
+        elapsed.textContent = fmtDuration(step.at, new Date().toISOString());
+        li.append(spinner, body, elapsed);
+      } else {
+        li.append(t, step.message);
+      }
       list.append(li);
-    }
+    });
     el("no-activity").style.display = steps.length ? "none" : "block";
     list.scrollTop = list.scrollHeight;
   }
+
+  // Tick the active counter every second so it climbs between server updates.
+  setInterval(() => {
+    if (!activeStartIso) return;
+    const node = el("activity-elapsed");
+    if (node) node.textContent = fmtDuration(activeStartIso, new Date().toISOString());
+  }, 1000);
 
   function renderBanner(status) {
     const banner = el("banner");
