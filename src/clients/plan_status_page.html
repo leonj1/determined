@@ -261,29 +261,30 @@
   "use strict";
   const el = (id) => document.getElementById(id);
 
-  // Header theme toggle: flips between light and dark, persists the choice,
-  // and shows the icon of the theme it switches to. With no stored choice the
-  // page follows the system preference, so the icon tracks that too.
-  const darkQuery = window.matchMedia("(prefers-color-scheme: dark)");
-  function effectiveTheme() {
-    const forced = document.documentElement.dataset.theme;
-    if (forced === "dark" || forced === "light") return forced;
-    return darkQuery.matches ? "dark" : "light";
-  }
+  // Header theme toggle: cycles auto → light → dark → auto. A forced choice
+  // is stored under the "theme" key; auto removes it and the page follows
+  // the system preference. The icon shows the active state.
   function renderThemeToggle() {
-    const dark = effectiveTheme() === "dark";
+    const state = document.documentElement.dataset.theme;
     const toggle = el("theme-toggle");
-    toggle.textContent = dark ? "☀" : "☾";
-    toggle.title = dark ? "Switch to light theme" : "Switch to dark theme";
+    if (state === "light") { toggle.textContent = "☀"; toggle.title = "Theme: light — click for dark"; }
+    else if (state === "dark") { toggle.textContent = "☾"; toggle.title = "Theme: dark — click for auto"; }
+    else { toggle.textContent = "◐"; toggle.title = "Theme: auto — click for light"; }
     toggle.setAttribute("aria-label", toggle.title);
   }
   el("theme-toggle").addEventListener("click", () => {
-    const next = effectiveTheme() === "dark" ? "light" : "dark";
-    document.documentElement.dataset.theme = next;
-    try { localStorage.setItem("theme", next); } catch (e) {}
+    const state = document.documentElement.dataset.theme;
+    let next = null;
+    if (state === "light") next = "dark";
+    else if (state !== "dark") next = "light";
+    if (next) document.documentElement.dataset.theme = next;
+    else delete document.documentElement.dataset.theme;
+    try {
+      if (next) localStorage.setItem("theme", next);
+      else localStorage.removeItem("theme");
+    } catch (e) {}
     renderThemeToggle();
   });
-  darkQuery.addEventListener("change", renderThemeToggle);
   renderThemeToggle();
 
   function fmtTime(iso) {
