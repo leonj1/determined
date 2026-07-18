@@ -21,3 +21,15 @@
 
 - `go test -count=1 ./...` exits zero. All 5 packages pass: cmd/determined, src/clients, src/models, src/services, tests (includes TestPlanStatusServerContract).
 - No pre-existing failures anywhere; nothing to report out of scope.
+
+## Step 4: browser smoke test (done 2026-07-17)
+
+- Ran via agent-browser (Chromium) against `./bin/determined -plan "test" -interactive` at http://localhost:59841/. All criteria (a)–(g) pass; automated in-browser verification stood in for the manual gate per CLAUDE.md's agent-browser rule.
+- (a) No stored key: ◐, no `data-theme`, `colorScheme` follows emulated `prefers-color-scheme` both ways (`agent-browser set media light|dark`): light bg rgb(246,247,249), dark bg rgb(16,20,24).
+- (b) Clicks cycle ◐ → ☀ → ☾ → ◐ with immediate restyle; titles: "Theme: light — click for dark", "Theme: dark — click for auto", "Theme: auto — click for light".
+- (c) Reload at ☀: loads light, `theme`=`light`; one click lands ☾ (not ◐).
+- (d) Reload at ☾: loads dark; one click lands ◐, key removed, `data-theme` attribute gone.
+- (e) `theme`=`bogus` + reload: auto ◐, zero page errors; one click lands ☀.
+- (f) `colorScheme` = "light" forced light, "dark" forced dark, OS value in auto.
+- (g) SSE content renders throughout: plan panel shows PLAN.md content, activity log populates ("assessing plan"), survives reloads/toggles.
+- Gotcha: killing the server via pkill exits 144 — expected shutdown, not a crash. Second engine (Firefox) not run; bonus only, not a gate.
