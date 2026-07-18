@@ -33,3 +33,7 @@
 - (f) `colorScheme` = "light" forced light, "dark" forced dark, OS value in auto.
 - (g) SSE content renders throughout: plan panel shows PLAN.md content, activity log populates ("assessing plan"), survives reloads/toggles.
 - Gotcha: killing the server via pkill exits 144 — expected shutdown, not a crash. Second engine (Firefox) not run; bonus only, not a gate.
+
+## Quality gate: build check (done 2026-07-17)
+
+- `go build -o ./bin/determined ./cmd/determined` exits zero from repo root. No code changes needed; binary at `./bin/determined` is fresh.
