@@ -9,3 +9,10 @@
 - Exactly two `} catch (e) {}` in file: anti-flash IIFE in `<head>` (lines ~188-196, untouched) and click handler. Later steps must not add a third without updating any grep-count checks.
 - CSS, header markup (`#theme-toggle` button, initial ☾ glyph), anti-flash script all byte-identical to before.
 - Verified: `go build -o ./bin/determined ./cmd/determined` passes.
+
+## Step 2: theme contract in assertPageServed (done 2026-07-17)
+
+- Appended theme assertions to end of `assertPageServed` in `tests/plan_status_server_test.go`, after 30-marker loop. No import change (`strings` already there).
+- Contract locks in: 7 presence markers, absence of `effectiveTheme`/`darkQuery`, anti-flash `localStorage.getItem("theme")` index before `<body>` index, `} catch (e) {}` count ≥ 2, 13 dark declarations each count == 2 (dark block + media query), 12 light declarations present.
+- Dark declarations use exact-count-2 checks — adding a third dark palette block or any inline duplicate of these strings breaks the test. Light `color-scheme: light;` is presence-only (page has exactly one).
+- `go test -count=1 ./tests/ -run TestPlanStatusServerContract` passes.

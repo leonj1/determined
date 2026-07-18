@@ -114,6 +114,67 @@ func assertPageServed(t *testing.T, url string) {
 			t.Errorf("page missing %q", marker)
 		}
 	}
+
+	// --- theme contract: presence markers (byte-identical to the page source) ---
+	for _, marker := range []string{
+		`id="theme-toggle"`,
+		`:root[data-theme="dark"]`,
+		`:root:not([data-theme="light"])`,
+		`localStorage.getItem("theme")`,
+		`localStorage.setItem("theme", next)`,
+		`localStorage.removeItem("theme")`,
+		"renderThemeToggle",
+	} {
+		if !strings.Contains(page, marker) {
+			t.Errorf("page missing theme marker %q", marker)
+		}
+	}
+
+	// --- theme contract: the two-state implementation must be gone ---
+	for _, gone := range []string{"effectiveTheme", "darkQuery"} {
+		if strings.Contains(page, gone) {
+			t.Errorf("page still contains removed two-state code %q", gone)
+		}
+	}
+
+	// --- anti-flash script must run before the body renders ---
+	flashIdx := strings.Index(page, `localStorage.getItem("theme")`)
+	bodyIdx := strings.Index(page, "<body>")
+	if flashIdx == -1 || bodyIdx == -1 || flashIdx >= bodyIdx {
+		t.Errorf("anti-flash script at byte %d, <body> at byte %d — want script before body", flashIdx, bodyIdx)
+	}
+
+	// --- storage access must be exception-safe in both scripts ---
+	if n := strings.Count(page, "} catch (e) {}"); n < 2 {
+		t.Errorf("} catch (e) {} count = %d, want at least 2 (anti-flash IIFE + toggle handler)", n)
+	}
+
+	// --- dark palette sync: every declaration must appear in exactly the
+	// two dark blocks (:root[data-theme="dark"] and the media query) ---
+	for _, decl := range []string{
+		"--bg: #101418;", "--fg: #e6e8eb;", "--card: #1a1f26;",
+		"--muted: #98a2b3;", "--border: #2b323c;", "--accent: #60a5fa;",
+		"--ok-bg: #0b2a1c;", "--ok-fg: #75e0a7;", "--ok-border: #14532d;",
+		"--bad-bg: #2a1211;", "--bad-fg: #f97066;", "--bad-border: #7f1d1d;",
+		"color-scheme: dark;",
+	} {
+		if n := strings.Count(page, decl); n != 2 {
+			t.Errorf("dark declaration %q count = %d, want exactly 2", decl, n)
+		}
+	}
+
+	// --- light :root palette unchanged ---
+	for _, decl := range []string{
+		"color-scheme: light;",
+		"--bg: #f6f7f9;", "--fg: #1c1e21;", "--card: #ffffff;",
+		"--muted: #667085;", "--border: #e4e7ec;", "--accent: #2563eb;",
+		"--ok-bg: #ecfdf3;", "--ok-fg: #067647;", "--ok-border: #abefc6;",
+		"--bad-bg: #fef3f2;", "--bad-fg: #b42318;", "--bad-border: #fecdca;",
+	} {
+		if !strings.Contains(page, decl) {
+			t.Errorf(":root light declaration missing or changed: %s", decl)
+		}
+	}
 }
 
 func assertEventStream(t *testing.T, url string, source *fakePlanStatusSource) {
