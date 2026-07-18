@@ -45,3 +45,7 @@
 ## Quality gate: full test suite (done 2026-07-17)
 
 - `go test -count=1 ./...` exits zero: cmd/determined, src/clients, src/models, src/services, tests all `ok`. No code changes — verification only.
+
+## Quality gate: absence greps (done 2026-07-17)
+
+- `! grep -q 'effectiveTheme'` and `! grep -q 'darkQuery'` on `src/clients/plan_status_page.html` both exit zero. Verification only — no code changes; two-state code stays gone since Step 1.
