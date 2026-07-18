@@ -53,3 +53,7 @@
 ## Quality gate: catch-count grep (done 2026-07-17)
 
 - `[ "$(grep -c '} catch (e) {}' src/clients/plan_status_page.html)" = "2" ]` exits zero. Verification only — no code changes. Exact count 2 (anti-flash IIFE + toggle click handler), matching Step 1 note; any new `} catch (e) {}` breaks this gate.
+
+## Quality gate: Step 4 smoke (done 2026-07-17)
+
+- Final gate marked `[x]` in STEPS.md. No re-run needed: Step 4 smoke already passed same day via agent-browser (Chromium), all criteria (a)–(g) — see "Step 4: browser smoke test" note above. No code changes since (later gates were verification-only). All STEPS.md checkboxes now complete; feature done.
