@@ -6,14 +6,25 @@
 <title>determined — planning</title>
 <style>
   :root {
-    color-scheme: light dark;
+    color-scheme: light;
     --bg: #f6f7f9; --fg: #1c1e21; --card: #ffffff; --muted: #667085;
     --border: #e4e7ec; --accent: #2563eb;
     --ok-bg: #ecfdf3; --ok-fg: #067647; --ok-border: #abefc6;
     --bad-bg: #fef3f2; --bad-fg: #b42318; --bad-border: #fecdca;
   }
+  /* Dark palette applies on an explicit dark choice, or by system preference
+     unless the user has explicitly forced light. The header toggle sets
+     data-theme; without it, prefers-color-scheme decides. */
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --bg: #101418; --fg: #e6e8eb; --card: #1a1f26; --muted: #98a2b3;
+    --border: #2b323c; --accent: #60a5fa;
+    --ok-bg: #0b2a1c; --ok-fg: #75e0a7; --ok-border: #14532d;
+    --bad-bg: #2a1211; --bad-fg: #f97066; --bad-border: #7f1d1d;
+  }
   @media (prefers-color-scheme: dark) {
-    :root {
+    :root:not([data-theme="light"]) {
+      color-scheme: dark;
       --bg: #101418; --fg: #e6e8eb; --card: #1a1f26; --muted: #98a2b3;
       --border: #2b323c; --accent: #60a5fa;
       --ok-bg: #0b2a1c; --ok-fg: #75e0a7; --ok-border: #14532d;
@@ -37,6 +48,13 @@
   #implement:hover { filter: brightness(1.12); }
   header .git { color: var(--muted); font-family: ui-monospace, monospace; font-size: 0.85rem; overflow-wrap: anywhere; text-align: right; }
   header .git .branch { color: var(--accent); font-weight: 600; }
+  header .right { display: flex; align-items: center; gap: 0.75rem; }
+  #theme-toggle {
+    appearance: none; background: none; border: 1px solid var(--border); border-radius: 0.5rem;
+    width: 2rem; height: 2rem; padding: 0; flex: none; font-size: 1rem; line-height: 1;
+    color: var(--fg); cursor: pointer; display: inline-flex; align-items: center; justify-content: center;
+  }
+  #theme-toggle:hover { border-color: var(--accent); color: var(--accent); }
   nav#tabs {
     display: flex; gap: 0.25rem; padding: 0 1.25rem; background: var(--card);
     border-bottom: 1px solid var(--border); position: sticky; top: 3.1rem; z-index: 1;
@@ -166,12 +184,25 @@
     overflow-wrap: anywhere;
   }
 </style>
+<script>
+  // Apply the saved theme before first paint so the page never flashes the
+  // wrong palette; absent a saved choice, prefers-color-scheme decides.
+  (function () {
+    try {
+      var saved = localStorage.getItem("theme");
+      if (saved === "dark" || saved === "light") document.documentElement.dataset.theme = saved;
+    } catch (e) {}
+  })();
+</script>
 </head>
 <body>
 <header>
   <div class="title">determined — planning</div>
   <button id="implement">▶ Implement</button>
-  <div class="git"><span id="remote">…</span> · <span id="branch" class="branch">…</span></div>
+  <div class="right">
+    <div class="git"><span id="remote">…</span> · <span id="branch" class="branch">…</span></div>
+    <button id="theme-toggle" type="button" aria-label="Toggle theme">☾</button>
+  </div>
 </header>
 <nav id="tabs">
   <button data-tab="goal" class="active">Goal</button>
@@ -229,6 +260,31 @@
 <script>
   "use strict";
   const el = (id) => document.getElementById(id);
+
+  // Header theme toggle: flips between light and dark, persists the choice,
+  // and shows the icon of the theme it switches to. With no stored choice the
+  // page follows the system preference, so the icon tracks that too.
+  const darkQuery = window.matchMedia("(prefers-color-scheme: dark)");
+  function effectiveTheme() {
+    const forced = document.documentElement.dataset.theme;
+    if (forced === "dark" || forced === "light") return forced;
+    return darkQuery.matches ? "dark" : "light";
+  }
+  function renderThemeToggle() {
+    const dark = effectiveTheme() === "dark";
+    const toggle = el("theme-toggle");
+    toggle.textContent = dark ? "☀" : "☾";
+    toggle.title = dark ? "Switch to light theme" : "Switch to dark theme";
+    toggle.setAttribute("aria-label", toggle.title);
+  }
+  el("theme-toggle").addEventListener("click", () => {
+    const next = effectiveTheme() === "dark" ? "light" : "dark";
+    document.documentElement.dataset.theme = next;
+    try { localStorage.setItem("theme", next); } catch (e) {}
+    renderThemeToggle();
+  });
+  darkQuery.addEventListener("change", renderThemeToggle);
+  renderThemeToggle();
 
   function fmtTime(iso) {
     return new Date(iso).toLocaleTimeString([], { hour12: false });
