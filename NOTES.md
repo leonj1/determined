@@ -41,3 +41,7 @@
 ## Quality gate: contract test (done 2026-07-17)
 
 - `go test -count=1 ./tests/ -run TestPlanStatusServerContract` exits zero (`ok determined/tests 0.222s`). All Step 2 assertions active: 30 pre-existing + 7 theme presence markers (37 total), 2 absence checks (`effectiveTheme`, `darkQuery`), anti-flash-before-`<body>` position, `} catch (e) {}` count ≥ 2, 13 dark declarations exact-count-2, 12 light declarations present. No code changes needed — verification only.
+
+## Quality gate: full test suite (done 2026-07-17)
+
+- `go test -count=1 ./...` exits zero: cmd/determined, src/clients, src/models, src/services, tests all `ok`. No code changes — verification only.
