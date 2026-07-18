@@ -16,3 +16,8 @@
 - Contract locks in: 7 presence markers, absence of `effectiveTheme`/`darkQuery`, anti-flash `localStorage.getItem("theme")` index before `<body>` index, `} catch (e) {}` count ≥ 2, 13 dark declarations each count == 2 (dark block + media query), 12 light declarations present.
 - Dark declarations use exact-count-2 checks — adding a third dark palette block or any inline duplicate of these strings breaks the test. Light `color-scheme: light;` is presence-only (page has exactly one).
 - `go test -count=1 ./tests/ -run TestPlanStatusServerContract` passes.
+
+## Step 3: full test suite (done 2026-07-17)
+
+- `go test -count=1 ./...` exits zero. All 5 packages pass: cmd/determined, src/clients, src/models, src/services, tests (includes TestPlanStatusServerContract).
+- No pre-existing failures anywhere; nothing to report out of scope.
