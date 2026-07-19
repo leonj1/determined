@@ -94,6 +94,10 @@ satisfies the plan:
   requires each of its BDD journey tests to exist as an automated test and
   pass; a missing or failing test adds a new unchecked remediation step and a
   `FIXES.md` entry.
+- If `TESTS.md` exists, the audit requires each recommended journey/BDD test
+  to exist as an automated test and pass; a missing or failing test adds a
+  new unchecked remediation step with a `Done when:` requiring that test to
+  be implemented and passing, plus a `FIXES.md` entry.
 - If everything is satisfied, the audit creates `STOP.md`.
 
 Only *all steps checked + `STOP.md` present* ends the run with exit **0**.
@@ -108,6 +112,7 @@ Only *all steps checked + `STOP.md` present* ends the run with exit **0**.
 | `NOTES.md` | Cross-iteration memory (see below); created by the tool on first use. |
 | `FIXES.md` | Why a verifier, specialist, or audit reopened/added a step; appended by reviewer invocations. |
 | `CRITERIA.md` | Optional user-approved BDD journey tests from a `--criteria` session; enforced by the final audit. |
+| `TESTS.md` | Recommended journey/BDD tests from planning; enforced by the final audit. |
 
 ## NOTES.md
 

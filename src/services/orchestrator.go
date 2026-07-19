@@ -381,8 +381,9 @@ type specializedReview struct {
 }
 
 // runCompletionReviews runs every enabled specialist before the general
-// whole-plan audit. A failure or a reviewer-created remediation step prevents
-// later gates from running until the next outer iteration.
+// whole-plan audit, which also enforces the CRITERIA.md and TESTS.md test gates.
+// A failure or a reviewer-created remediation step prevents later gates from
+// running until the next outer iteration.
 func (o *Orchestrator) runCompletionReviews(ctx context.Context) (models.Outcome, bool) {
 	if o.cfg.SpecializedReviews {
 		result := o.runSpecializedReviews(ctx)
@@ -506,15 +507,17 @@ const noParsableStepsPrompt = "Read STEPS.md. It contains no checkbox-format ste
 	"If the work is genuinely finished, create STOP.md. Do not start new work."
 
 // auditPrompt is the final whole-plan review run once every step is checked.
-// The audit either confirms the implementation satisfies the plan by creating
-// STOP.md — the only thing that lets an all-checked run end successfully — or
-// reopens the steps that fall short, sending the loop back to step execution.
+// It enforces the plan plus CRITERIA.md and TESTS.md test existence and passing.
+// The audit either creates STOP.md — the only thing that lets an all-checked
+// run end successfully — or sends remediation back to step execution.
 const auditPrompt = "All steps in STEPS.md are checked complete. Read PLAN.md and STEPS.md. " +
 	"Audit whether the implementation genuinely satisfies the plan. " +
 	"If CRITERIA.md exists, also audit that each of its BDD journey tests exists as an automated test and passes. " +
+	"If TESTS.md exists, also audit that each of its journey and BDD tests exists as an automated test and passes. " +
 	"If a step is not actually satisfied, change its `[x]` back to `[ ]` in STEPS.md " +
-	"and append the reason to FIXES.md. If a required BDD test is missing or failing, append a new `- [ ]` step " +
-	"with a `Done when:` requiring that test to pass to STEPS.md, and append the reason to FIXES.md. " +
+	"and append the reason to FIXES.md. If a required CRITERIA.md or TESTS.md test is missing or failing, " +
+	"append a new `- [ ]` step to STEPS.md with a `Done when:` requiring that test to be implemented and passing, " +
+	"and append the reason to FIXES.md. " +
 	"If everything is satisfied, create STOP.md. " +
 	"Do not start work beyond this audit."
 

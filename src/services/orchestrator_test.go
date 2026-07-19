@@ -908,6 +908,9 @@ func TestAuditApprovalEndsTheRunSuccessfully(t *testing.T) {
 	for _, want := range []string{
 		"Read PLAN.md and STEPS.md.",
 		"Audit whether the implementation genuinely satisfies the plan.",
+		"If TESTS.md exists, also audit that each of its journey and BDD tests exists as an automated test and passes.",
+		"If a required CRITERIA.md or TESTS.md test is missing or failing",
+		"append a new `- [ ]` step to STEPS.md with a `Done when:` requiring that test to be implemented and passing",
 		"append the reason to FIXES.md",
 		"create STOP.md",
 	} {
@@ -955,6 +958,33 @@ func TestAuditReopeningAStepResumesTheLoop(t *testing.T) {
 	}
 	if !fixesAtRerun {
 		t.Fatal("expected FIXES.md to exist when the reopened step is re-run")
+	}
+}
+
+func TestAuditAddedTestsRemediationStepResumesTheLoop(t *testing.T) {
+	fs := plannedFileStore(twoStepsAllChecked)
+	remediation := "- [ ] 3. Implement TESTS.md Test 1.\n  Done when: Test 1 is implemented and passing.\n"
+	runner := &fakeRunner{script: func(call int, _ io.Writer) error {
+		switch call {
+		case 1: // audit adds the missing TESTS.md test
+			fs.Write("STEPS.md", twoStepsAllChecked+"\n"+remediation)
+			fs.Write("FIXES.md", "TESTS.md Test 1 is missing\n")
+		case 2: // worker implements the audit-added step
+			fs.Write("STEPS.md", twoStepsAllChecked+"\n"+strings.Replace(remediation, "[ ]", "[x]", 1))
+		case 3: // audit approves after remediation
+			fs.Write("STOP.md", "audit: required tests pass")
+		}
+		return nil
+	}}
+	o := services.NewOrchestrator(runner, fs, &fakeClock{now: time.Now()}, &fakeLogSink{}, io.Discard, config(0))
+
+	outcome := o.Run(context.Background())
+
+	if outcome != models.OutcomeStopped || outcome.ExitCode() != 0 {
+		t.Fatalf("expected audit-added test remediation to complete, got %v (exit %d)", outcome, outcome.ExitCode())
+	}
+	if runner.calls != 3 || !strings.Contains(runner.prompt(2), "3. Implement TESTS.md Test 1.") {
+		t.Fatalf("expected execution to target the audit-added test step, got %d calls and prompt:\n%s", runner.calls, runner.prompt(2))
 	}
 }
 
