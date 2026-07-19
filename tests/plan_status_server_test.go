@@ -163,27 +163,45 @@ func assertPageServed(t *testing.T, url string) {
 	// --- dark palette sync: every declaration must appear in exactly the
 	// two dark blocks (:root[data-theme="dark"] and the media query) ---
 	for _, decl := range []string{
-		"--bg: #101418;", "--fg: #e6e8eb;", "--card: #1a1f26;",
-		"--muted: #98a2b3;", "--border: #2b323c;", "--accent: #60a5fa;",
-		"--ok-bg: #0b2a1c;", "--ok-fg: #75e0a7;", "--ok-border: #14532d;",
-		"--bad-bg: #2a1211;", "--bad-fg: #f97066;", "--bad-border: #7f1d1d;",
+		"--bg: #111111;", "--fg: #eeeeee;", "--card: #111111;",
+		"--muted: #8f8f8f;", "--border: #eeeeee;", "--rule-light: #343434;",
+		"--ok-bg: #111714;", "--ok-fg: #82b995;", "--ok-border: #4f755b;",
+		"--bad-bg: #191211;", "--bad-fg: #d98d80;", "--bad-border: #87584f;",
 		"color-scheme: dark;",
 	} {
 		if n := strings.Count(page, decl); n != 2 {
 			t.Errorf("dark declaration %q count = %d, want exactly 2", decl, n)
 		}
 	}
+	if n := strings.Count(page, "--accent: #e05d38;"); n != 3 {
+		t.Errorf("shared accent declaration count = %d, want light plus two dark blocks", n)
+	}
 
-	// --- light :root palette unchanged ---
+	// --- light editorial palette ---
 	for _, decl := range []string{
 		"color-scheme: light;",
-		"--bg: #f6f7f9;", "--fg: #1c1e21;", "--card: #ffffff;",
-		"--muted: #667085;", "--border: #e4e7ec;", "--accent: #2563eb;",
-		"--ok-bg: #ecfdf3;", "--ok-fg: #067647;", "--ok-border: #abefc6;",
-		"--bad-bg: #fef3f2;", "--bad-fg: #b42318;", "--bad-border: #fecdca;",
+		"--bg: #ffffff;", "--fg: #111111;", "--card: #ffffff;",
+		"--muted: #9a9a9a;", "--border: #111111;", "--rule-light: #e5e5e5;", "--accent: #e05d38;",
+		"--ok-bg: #fbfdfb;", "--ok-fg: #39734f;", "--ok-border: #8eb99c;",
+		"--bad-bg: #fdfbfa;", "--bad-fg: #a04436;", "--bad-border: #d5a198;",
 	} {
 		if !strings.Contains(page, decl) {
 			t.Errorf(":root light declaration missing or changed: %s", decl)
+		}
+	}
+
+	// --- editorial visual contract ---
+	for _, marker := range []string{
+		"Georgia, 'Times New Roman', Times, serif",
+		"border-bottom: 1px solid var(--rule-light)",
+		"letter-spacing: 0.08em; text-transform: uppercase",
+		"border-radius: 0",
+		".doc a { color: var(--accent); }",
+		`content: "\2192"`,
+		`rx="0" class="seq-actor"`,
+	} {
+		if !strings.Contains(page, marker) {
+			t.Errorf("page missing editorial style marker %q", marker)
 		}
 	}
 }
