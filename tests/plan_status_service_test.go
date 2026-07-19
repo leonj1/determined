@@ -468,7 +468,12 @@ func TestPlanStatusServiceExecLogAccumulatesSeparatelyFromPlanLog(t *testing.T) 
 	service.AppendExecLogOutput("tests pass\n")
 
 	snapshot := service.Snapshot()
-	want := models.LogEntry{At: planStart(), Message: "executing step 1: add the widget", Body: "widget built\ntests pass\n"}
+	want := models.LogEntry{
+		At:      planStart(),
+		Message: "executing step 1: add the widget",
+		Body:    "widget built\ntests pass\n",
+		State:   models.EntryStateRunning,
+	}
 	if len(snapshot.ExecLog) != 1 || snapshot.ExecLog[0] != want {
 		t.Errorf("execLog = %+v, want exactly %+v", snapshot.ExecLog, want)
 	}

@@ -235,6 +235,9 @@ func (s *PlanStatusService) StartExecution() {
 }
 
 // FinishExecution records the end of the execute loop as succeeded or failed.
+// A still-running entry at this point belongs to an invocation the loop never
+// settled — an abort or crash — so it takes the run's own outcome rather than
+// glowing forever.
 func (s *PlanStatusService) FinishExecution(succeeded bool) {
 	s.update(func(st models.PlanSessionStatus) models.PlanSessionStatus {
 		st.ExecEndedAt = s.clock.Now()
@@ -243,8 +246,16 @@ func (s *PlanStatusService) FinishExecution(succeeded bool) {
 		} else {
 			st.ExecPhase = models.ExecPhaseFailed
 		}
-		return st
+		return st.WithoutRunningExecEntries(stateFor(succeeded))
 	})
+}
+
+// stateFor maps a run outcome onto the entry state an unsettled entry inherits.
+func stateFor(succeeded bool) models.EntryState {
+	if succeeded {
+		return models.EntryStateOK
+	}
+	return models.EntryStateError
 }
 
 // StartExplanation marks the post-execution explanation as being generated.
@@ -304,10 +315,30 @@ func (s *PlanStatusService) FinishQuiz(succeeded bool) {
 }
 
 // BeginExecLogEntry opens a new execution log entry for a tool invocation,
-// mirroring the terminal's "==> [time] message" header.
-func (s *PlanStatusService) BeginExecLogEntry(message string) {
+// mirroring the terminal's "==> [time] message" header. The entry starts in the
+// running state, which the page renders as a glow, and its index is returned so
+// the caller can settle that entry once the invocation's outcome is known.
+func (s *PlanStatusService) BeginExecLogEntry(message string) int {
+	i := -1
 	s.update(func(st models.PlanSessionStatus) models.PlanSessionStatus {
-		return st.WithExecLogEntry(models.LogEntry{At: s.clock.Now(), Message: message})
+		st = st.WithExecLogEntry(models.LogEntry{
+			At:      s.clock.Now(),
+			Message: message,
+			State:   models.EntryStateRunning,
+		})
+		i = len(st.ExecLog) - 1
+		return st
+	})
+	return i
+}
+
+// SettleExecLogEntryAt records the outcome of an execution log entry, which the
+// status page renders as the entry's background. Taking an index rather than
+// always settling the last entry lets a signal that arrives late — a verifier
+// unchecking the step it just reviewed — revise the right entry.
+func (s *PlanStatusService) SettleExecLogEntryAt(i int, state models.EntryState) {
+	s.update(func(st models.PlanSessionStatus) models.PlanSessionStatus {
+		return st.WithExecLogStateAt(i, state)
 	})
 }
 

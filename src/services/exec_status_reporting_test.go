@@ -21,14 +21,32 @@ type fakeExecReporter struct {
 	logOutput   string
 	explanation string
 	quiz        []models.QuizQuestion
+	// entries holds each opened execution log entry's message, indexed as the
+	// orchestrator indexes them, and states holds the outcome each entry was
+	// settled with, so tests can assert which entry got which state.
+	entries []string
+	states  map[int]models.EntryState
 }
+
+// stateOf reports the outcome the entry at i was settled with, or the empty
+// state when it was never settled.
+func (r *fakeExecReporter) stateOf(i int) models.EntryState { return r.states[i] }
 
 func (r *fakeExecReporter) Progress(message string) {
 	r.events = append(r.events, "progress: "+message)
 }
 func (r *fakeExecReporter) StartExecution() { r.events = append(r.events, "start-execution") }
-func (r *fakeExecReporter) BeginExecLogEntry(message string) {
+func (r *fakeExecReporter) BeginExecLogEntry(message string) int {
 	r.events = append(r.events, "exec-log-entry: "+message)
+	r.entries = append(r.entries, message)
+	return len(r.entries) - 1
+}
+func (r *fakeExecReporter) SettleExecLogEntryAt(i int, state models.EntryState) {
+	if r.states == nil {
+		r.states = map[int]models.EntryState{}
+	}
+	r.states[i] = state
+	r.events = append(r.events, fmt.Sprintf("settle-exec-log-entry %d: %s", i, state))
 }
 func (r *fakeExecReporter) AppendExecLogOutput(text string) { r.logOutput += text }
 func (r *fakeExecReporter) SetTaskSteps(steps []models.TaskStep) {
@@ -89,6 +107,122 @@ var validQuizQuestions = []models.QuizQuestion{
 
 const validQuizJSON = `{"questions":[{"question":"What was added?","choices":["A widget","A server","A queue","A cache"],"correctIndex":0,"rationale":"The diff adds the widget."},{"question":"What confirms completion?","choices":["A comment","The tests","A timer","A flag"],"correctIndex":1,"rationale":"The tests exercise the completed widget."},{"question":"Where is behavior enabled?","choices":["README","widget.go","PLAN.md","STOP.md"],"correctIndex":1,"rationale":"The implementation change is in widget.go."},{"question":"Why show a diff?","choices":["To deploy","To configure","To highlight changes","To erase history"],"correctIndex":2,"rationale":"The diff highlights the important implementation."},{"question":"What remains unchanged?","choices":["The widget","The design","The tests","The explanation"],"correctIndex":1,"rationale":"The design is preserved while behavior is enabled."}]}`
 
+// The status page paints each execution entry by the outcome the orchestrator
+// settles it with, so these tests pin the state each kind of invocation earns:
+// a clean run is ok, a failing run is error, and the two warning signals the
+// orchestrator already detects — protected-file tampering and a verifier
+// rejecting the step it reviewed — are warn rather than error, since the work
+// completed but cannot be trusted as reported.
+
+func TestFailedInvocationSettlesItsEntryAsError(t *testing.T) {
+	fs := plannedFileStore("- [ ] 1. Add the widget.\n  Done when: widget tests pass.\n")
+	cfg := execConfig()
+	cfg.MaxConsecutiveFailures = 1 // the cap ends the run after the one failure
+	runner := &fakeRunner{script: func(call int, out io.Writer) error {
+		return fmt.Errorf("tool crashed")
+	}}
+	reporter := &fakeExecReporter{}
+	o := services.NewOrchestrator(runner, fs, &fakeClock{now: time.Now()}, &fakeLogSink{}, io.Discard, cfg).
+		WithStatusReporter(reporter)
+
+	o.Run(context.Background())
+
+	if got := reporter.stateOf(0); got != models.EntryStateError {
+		t.Errorf("entry 0 state = %q, want %q for an invocation that failed to run",
+			got, models.EntryStateError)
+	}
+}
+
+func TestTamperingInvocationSettlesItsEntryAsWarn(t *testing.T) {
+	fs := plannedFileStore("- [ ] 1. Add the widget.\n  Done when: widget tests pass.\n")
+	fs.Write("CRITERIA.md", "the original criteria\n")
+	cfg := execConfig()
+	cfg.ProtectedFiles = []string{"CRITERIA.md"}
+	runner := &fakeRunner{script: func(call int, out io.Writer) error {
+		if call == 1 {
+			fs.Write("CRITERIA.md", "criteria rewritten to match the code\n")
+			fs.Write("STEPS.md", "- [x] 1. Add the widget.\n  Done when: widget tests pass.\n")
+		}
+		if call == 2 {
+			fs.Write("STOP.md", "audit: plan satisfied")
+		}
+		return nil
+	}}
+	reporter := &fakeExecReporter{}
+	o := services.NewOrchestrator(runner, fs, &fakeClock{now: time.Now()}, &fakeLogSink{}, io.Discard, cfg).
+		WithStatusReporter(reporter)
+
+	o.Run(context.Background())
+
+	if got := reporter.stateOf(0); got != models.EntryStateWarn {
+		t.Errorf("entry 0 state = %q, want %q: the step ran but rewrote a protected file",
+			got, models.EntryStateWarn)
+	}
+	// The audit that follows tampered with nothing, so it stays clean: the
+	// warning marks the offending invocation only, not the rest of the run.
+	if got := reporter.stateOf(1); got != models.EntryStateOK {
+		t.Errorf("entry 1 state = %q, want %q for the untainted audit that followed",
+			got, models.EntryStateOK)
+	}
+}
+
+func TestVerifierRejectionSettlesTheVerifyEntryAsWarn(t *testing.T) {
+	fs := plannedFileStore("- [ ] 1. Add the widget.\n  Done when: widget tests pass.\n")
+	cfg := execConfig()
+	cfg.Verify = true
+	// A rejection leaves the completed count unchanged, which the loop treats
+	// as a stalled iteration; the cap is what ends this run rather than the
+	// worker and verifier ping-ponging over the same step forever.
+	cfg.MaxStalledIterations = 1
+	checked := "- [x] 1. Add the widget.\n  Done when: widget tests pass.\n"
+	unchecked := "- [ ] 1. Add the widget.\n  Done when: widget tests pass.\n"
+	runner := &fakeRunner{script: func(call int, out io.Writer) error {
+		switch call {
+		case 1: // the worker claims the step is done
+			fs.Write("STEPS.md", checked)
+		case 2: // the verifier disagrees and unchecks it
+			fs.Write("STEPS.md", unchecked)
+		}
+		return nil
+	}}
+	reporter := &fakeExecReporter{}
+	o := services.NewOrchestrator(runner, fs, &fakeClock{now: time.Now()}, &fakeLogSink{}, io.Discard, cfg).
+		WithStatusReporter(reporter)
+
+	o.Run(context.Background())
+
+	if got := reporter.stateOf(1); got != models.EntryStateWarn {
+		t.Errorf("verify entry state = %q, want %q: the verifier rejected the step",
+			got, models.EntryStateWarn)
+	}
+}
+
+func TestVerifierApprovalLeavesTheVerifyEntryOK(t *testing.T) {
+	fs := plannedFileStore("- [ ] 1. Add the widget.\n  Done when: widget tests pass.\n")
+	cfg := execConfig()
+	cfg.Verify = true
+	runner := &fakeRunner{script: func(call int, out io.Writer) error {
+		switch call {
+		case 1:
+			fs.Write("STEPS.md", "- [x] 1. Add the widget.\n  Done when: widget tests pass.\n")
+		case 2: // the verifier approves, leaving the box checked
+		default:
+			fs.Write("STOP.md", "audit: plan satisfied")
+		}
+		return nil
+	}}
+	reporter := &fakeExecReporter{}
+	o := services.NewOrchestrator(runner, fs, &fakeClock{now: time.Now()}, &fakeLogSink{}, io.Discard, cfg).
+		WithStatusReporter(reporter)
+
+	o.Run(context.Background())
+
+	if got := reporter.stateOf(1); got != models.EntryStateOK {
+		t.Errorf("verify entry state = %q, want %q when the verifier approved",
+			got, models.EntryStateOK)
+	}
+}
+
 func TestExecuteRunReportsFullStatusSequence(t *testing.T) {
 	fs := plannedFileStore("- [ ] 1. Add the widget.\n  Done when: widget tests pass.\n")
 	runner := &fakeRunner{script: func(call int, out io.Writer) error {
@@ -119,19 +253,23 @@ func TestExecuteRunReportsFullStatusSequence(t *testing.T) {
 		"task-steps",
 		"progress: executing step 1: 1. Add the widget.",
 		"exec-log-entry: executing step 1: 1. Add the widget.",
+		"settle-exec-log-entry 0: ok",
 		"task-steps",
 		"progress: auditing the whole plan",
 		"exec-log-entry: auditing the whole plan",
+		"settle-exec-log-entry 1: ok",
 		"task-steps",
 		"finish-execution: succeeded",
 		"start-explanation",
 		"progress: explaining the changes",
 		"exec-log-entry: explaining the changes",
+		"settle-exec-log-entry 2: ok",
 		"set-explanation",
 		"finish-explanation: succeeded",
 		"start-quiz",
 		"progress: writing the quiz",
 		"exec-log-entry: writing the quiz",
+		"settle-exec-log-entry 3: ok",
 		"set-quiz",
 		"finish-quiz: succeeded",
 	})

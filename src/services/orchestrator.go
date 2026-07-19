@@ -33,8 +33,9 @@ type LogSink interface {
 type ExecStatusReporter interface {
 	ProgressSink
 	StartExecution()
-	BeginExecLogEntry(message string)
+	BeginExecLogEntry(message string) int
 	AppendExecLogOutput(text string)
+	SettleExecLogEntryAt(i int, state models.EntryState)
 	SetTaskSteps(steps []models.TaskStep)
 	FinishExecution(succeeded bool)
 	StartExplanation()
@@ -82,6 +83,9 @@ type invocationResult struct {
 	outcome   models.Outcome
 	stop      bool
 	succeeded bool
+	// entry indexes this invocation's execution log entry, so a later signal
+	// can revise its outcome. It is -1 when no status page is attached.
+	entry int
 }
 
 // NewOrchestrator wires an orchestrator from its dependencies.
@@ -306,30 +310,53 @@ func (o *Orchestrator) invoke(
 	out := io.MultiWriter(o.terminal, log)
 	writeProgress(out, o.clock, progress)
 	notifyProgress(o.status, progress)
+	entry := -1
 	if o.status != nil {
-		o.status.BeginExecLogEntry(string(progress))
+		entry = o.status.BeginExecLogEntry(string(progress))
 		statusLog := newLogEntryWriter(execOutputSink{o.status})
 		defer statusLog.Flush()
 		out = io.MultiWriter(out, statusLog)
 	}
 	runCtx, cancel := o.iterationContext(ctx)
 	defer cancel()
-	if err := o.guardedRun(runCtx, prompt, out); err != nil {
+	tampered, err := o.guardedRun(runCtx, prompt, out)
+	if err != nil {
+		o.settleEntry(entry, models.EntryStateError)
 		outcome, stop := o.recordFailure(ctx, err)
-		return invocationResult{outcome: outcome, stop: stop}
+		return invocationResult{outcome: outcome, stop: stop, entry: entry}
+	}
+	if tampered {
+		o.settleEntry(entry, models.EntryStateWarn)
+	} else {
+		o.settleEntry(entry, models.EntryStateOK)
 	}
 	o.failures = 0
-	return invocationResult{outcome: models.OutcomeStopped, succeeded: true}
+	return invocationResult{outcome: models.OutcomeStopped, succeeded: true, entry: entry}
+}
+
+// settleEntry records an invocation's outcome on its execution log entry, if
+// the run has a status page attached.
+func (o *Orchestrator) settleEntry(entry int, state models.EntryState) {
+	if o.status == nil || entry < 0 {
+		return
+	}
+	o.status.SettleExecLogEntryAt(entry, state)
 }
 
 // guardedRun runs one tool invocation with the protected files snapshotted
 // around it, reverting any the tool modified — even when the invocation itself
-// failed, since a tool can tamper and then crash.
-func (o *Orchestrator) guardedRun(ctx context.Context, prompt string, out io.Writer) error {
+// failed, since a tool can tamper and then crash. It reports whether any
+// protected file was reverted, which marks the invocation as warning-worthy.
+func (o *Orchestrator) guardedRun(
+	ctx context.Context,
+	prompt string,
+	out io.Writer,
+) (bool, error) {
 	snapshot := o.guard.Snapshot()
 	err := o.runner.Run(ctx, o.cfg.Tool.Invocation(prompt), out)
-	o.reportTampering(o.guard.RestoreTampered(snapshot))
-	return err
+	restored := o.guard.RestoreTampered(snapshot)
+	o.reportTampering(restored)
+	return len(restored) > 0, err
 }
 
 // reportTampering warns about each protected file the tool modified, on the
@@ -377,8 +404,21 @@ func (o *Orchestrator) verifyNewSteps(ctx context.Context, before []Step) (model
 		if !result.succeeded {
 			return models.OutcomeStopped, false
 		}
+		o.markRejectedStep(i, result.entry)
 	}
 	return models.OutcomeStopped, false // outcome ignored when stop is false
+}
+
+// markRejectedStep tints a verifier's own log entry yellow when that verifier
+// unchecked the step it just reviewed. A rejection means the step was reported
+// done but was not, which is a warning about the run rather than a failure of
+// the verifier invocation — that invocation did its job.
+func (o *Orchestrator) markRejectedStep(i, entry int) {
+	steps := o.parsedSteps()
+	if i >= len(steps) || steps[i].Completed {
+		return
+	}
+	o.settleEntry(entry, models.EntryStateWarn)
 }
 
 // specializedReview describes one independent whole-codebase review gate.

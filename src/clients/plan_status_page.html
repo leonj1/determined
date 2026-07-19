@@ -11,6 +11,10 @@
     --border: #111111; --rule-light: #e5e5e5; --accent: #e05d38;
     --ok-bg: #fbfdfb; --ok-fg: #39734f; --ok-border: #8eb99c;
     --bad-bg: #fdfbfa; --bad-fg: #a04436; --bad-border: #d5a198;
+    --warn-bg: #fdfcf8; --warn-fg: #8a6516; --warn-border: #cfb173;
+    /* Entry fills are deliberately stronger than the --*-bg whisper-tints
+       above, which are too faint to distinguish at a glance down a long log. */
+    --ok-tint: #eef7f1; --warn-tint: #fbf4e2; --bad-tint: #fbeeea;
   }
   /* Dark palette applies on an explicit dark choice, or by system preference
      unless the user has explicitly forced light. The header toggle sets
@@ -21,6 +25,8 @@
     --border: #eeeeee; --rule-light: #343434; --accent: #e05d38;
     --ok-bg: #111714; --ok-fg: #82b995; --ok-border: #4f755b;
     --bad-bg: #191211; --bad-fg: #d98d80; --bad-border: #87584f;
+    --warn-bg: #17150f; --warn-fg: #cbab68; --warn-border: #7a6738;
+    --ok-tint: #16211a; --warn-tint: #221d10; --bad-tint: #241614;
   }
   @media (prefers-color-scheme: dark) {
     :root:not([data-theme="light"]) {
@@ -29,6 +35,8 @@
       --border: #eeeeee; --rule-light: #343434; --accent: #e05d38;
       --ok-bg: #111714; --ok-fg: #82b995; --ok-border: #4f755b;
       --bad-bg: #191211; --bad-fg: #d98d80; --bad-border: #87584f;
+      --warn-bg: #17150f; --warn-fg: #cbab68; --warn-border: #7a6738;
+      --ok-tint: #16211a; --warn-tint: #221d10; --bad-tint: #241614;
     }
   }
   * { box-sizing: border-box; }
@@ -236,6 +244,28 @@
   .log-entry .log-body { padding: 0 0 0.9rem; }
   .log-entry .log-body.doc p:last-child, .log-entry .log-body.doc ul:last-child,
   .log-entry .log-body.doc pre:last-child, .log-entry .log-body.doc table:last-child { margin-bottom: 0; }
+  /* Execution entries carry their invocation's outcome as a subtle background
+     tint plus a left border, which does most of the signalling. The running
+     entry pulses its border instead, so the eye lands on the live step. */
+  .log-entry.state-running, .log-entry.state-ok,
+  .log-entry.state-warn, .log-entry.state-error {
+    border-left: 2px solid transparent; padding-left: 0.7rem;
+  }
+  .log-entry.state-running { background: var(--card); border-left-color: var(--accent); }
+  .log-entry.state-ok { background: var(--ok-tint); border-left-color: var(--ok-border); }
+  .log-entry.state-warn { background: var(--warn-tint); border-left-color: var(--warn-border); }
+  .log-entry.state-error { background: var(--bad-tint); border-left-color: var(--bad-border); }
+  .log-entry.state-ok .log-head .marker { color: var(--ok-fg); }
+  .log-entry.state-warn .log-head .marker { color: var(--warn-fg); }
+  .log-entry.state-error .log-head .marker { color: var(--bad-fg); }
+  .log-entry.state-running { animation: entry-glow 1.8s ease-in-out infinite; }
+  @keyframes entry-glow {
+    0%, 100% { box-shadow: inset 2px 0 0 -1px transparent; border-left-color: var(--rule-light); }
+    50% { box-shadow: inset 3px 0 0 -1px var(--accent); border-left-color: var(--accent); }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .log-entry.state-running { animation: none; border-left-color: var(--accent); }
+  }
   aside#activity ol { margin: 0; padding: 0; list-style: none; max-height: 70vh; overflow-y: auto; }
   aside#activity li { padding: 0.55rem 0; border-bottom: 1px solid var(--rule-light); font-size: 0.9rem; }
   aside#activity li:last-child { border-bottom: none; }
@@ -1057,7 +1087,11 @@
     list.replaceChildren();
     for (const entry of entries) {
       const article = document.createElement("article");
-      article.className = "log-entry";
+      // Planning entries carry no state and stay untinted; execution entries
+      // add state-running / state-ok / state-warn / state-error.
+      article.className = entry.state
+        ? "log-entry state-" + entry.state
+        : "log-entry";
 
       const head = document.createElement("div");
       head.className = "log-head";

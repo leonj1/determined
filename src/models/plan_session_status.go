@@ -89,12 +89,39 @@ type QuizQuestion struct {
 	Rationale    string   `json:"rationale"`
 }
 
+// EntryState is one execution log entry's outcome, which the status page turns
+// into the entry's background: running entries glow, and finished ones are
+// tinted by whether the invocation was clean, produced a warning signal, or
+// failed.
+type EntryState string
+
+const (
+	// EntryStateRunning is an invocation that has not returned yet.
+	EntryStateRunning EntryState = "running"
+	// EntryStateOK is an invocation that finished with no warning signal.
+	EntryStateOK EntryState = "ok"
+	// EntryStateWarn is an invocation that finished but tampered with a
+	// protected file, or whose step a verifier later unchecked.
+	EntryStateWarn EntryState = "warn"
+	// EntryStateError is an invocation that failed to run to completion.
+	EntryStateError EntryState = "error"
+)
+
 // LogEntry is one tool invocation's terminal output: the progress header the
 // terminal shows as "==> [time] message" plus the tool's streamed output body.
 type LogEntry struct {
 	At      time.Time `json:"at"`
 	Message string    `json:"message"`
 	Body    string    `json:"body"`
+	// State is the invocation's outcome. Planning log entries leave it empty;
+	// only the execution log tracks per-entry state.
+	State EntryState `json:"state,omitempty"`
+}
+
+// WithState returns a copy of the entry carrying the given outcome.
+func (e LogEntry) WithState(state EntryState) LogEntry {
+	e.State = state
+	return e
 }
 
 // WithBody returns a copy of the entry with more output appended.
@@ -197,6 +224,35 @@ func (s PlanSessionStatus) WithExecLogOutput(text string) PlanSessionStatus {
 	log := make([]LogEntry, len(s.ExecLog))
 	copy(log, s.ExecLog)
 	log[len(log)-1] = log[len(log)-1].WithBody(text)
+	s.ExecLog = log
+	return s
+}
+
+// WithExecLogStateAt returns a copy of the status with the execution log entry
+// at index i given the outcome. An out-of-range index leaves the log unchanged,
+// so a caller holding a stale index cannot mis-tint an unrelated entry.
+func (s PlanSessionStatus) WithExecLogStateAt(i int, state EntryState) PlanSessionStatus {
+	if i < 0 || i >= len(s.ExecLog) {
+		return s
+	}
+	log := make([]LogEntry, len(s.ExecLog))
+	copy(log, s.ExecLog)
+	log[i] = log[i].WithState(state)
+	s.ExecLog = log
+	return s
+}
+
+// WithoutRunningExecEntries returns a copy of the status with every execution
+// log entry still marked running given the fallback state, so an aborted run
+// leaves no entry glowing after the loop has ended.
+func (s PlanSessionStatus) WithoutRunningExecEntries(fallback EntryState) PlanSessionStatus {
+	log := make([]LogEntry, len(s.ExecLog))
+	copy(log, s.ExecLog)
+	for i, entry := range log {
+		if entry.State == EntryStateRunning {
+			log[i] = entry.WithState(fallback)
+		}
+	}
 	s.ExecLog = log
 	return s
 }
