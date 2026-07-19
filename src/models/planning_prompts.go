@@ -6,5 +6,6 @@ type PlanningPrompts struct {
 	Assess   string
 	Refine   string
 	Tests    string
+	Align    string
 	Annotate string
 }

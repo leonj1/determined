@@ -17,6 +17,7 @@ type PlanConfig struct {
 	AssessInvocation   Invocation // reviews plan and step quality, writing AssessmentFile
 	RefineInvocation   Invocation // resolves assessment findings in PlanFile and StepsFile
 	TestsInvocation    Invocation // backfills TestsFile when a plan exists without it
+	AlignInvocation    Invocation // judges each test in TestsFile against the plan's functional goal
 	AnnotateInvocation Invocation // applies one AnnotationFile feedback item to its plan document
 	MaxRefinePasses    int        // cap on assess/refine rounds; 0 disables refinement
 

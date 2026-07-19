@@ -11,9 +11,31 @@ const testsRequirement = "TESTS.md must list up to 3 recommended tests that vali
 	"block starting with `sequenceDiagram`, using only `participant` declarations and `->>` / `-->>` " +
 	"message arrows between participants. "
 
+// alignmentRequirement defines the per-test verdict every finished TESTS.md
+// carries: does the test prove the plan's functional goal, or only its
+// technical mechanics? The status page colours each test by this verdict.
+const alignmentRequirement = "Every `### Test N` section must end with an alignment verdict that judges the test against the " +
+	"functional goal of GOAL.md and PLAN.md — the user-facing outcome the plan exists to deliver — not its " +
+	"technical mechanics. Write the verdict as a `**Alignment:** aligned`, `**Alignment:** partial`, or " +
+	"`**Alignment:** misaligned` line. Use `aligned` only when passing the test proves the functional goal is " +
+	"achieved. Use `partial` when it proves part of the goal or mixes functional and technical assertions. " +
+	"Use `misaligned` when it asserts implementation details, internal structure, or anything that could pass " +
+	"while the functional goal remains unmet. For `partial` and `misaligned`, add a following " +
+	"`**Alignment note:** <reason>` line naming exactly which part of the functional goal the test fails to " +
+	"cover. Omit the note line for `aligned`. "
+
 const testsProtocol = "Read GOAL.md if it exists, PLAN.md, and STEPS.md. Write only TESTS.md. " +
 	testsRequirement +
+	alignmentRequirement +
 	"Do not modify PLAN.md or STEPS.md, implement anything, or create STOP.md."
+
+// alignProtocol re-judges an existing TESTS.md whose tests lack alignment
+// verdicts, adding them without rewriting the tests themselves.
+const alignProtocol = "Read GOAL.md if it exists, PLAN.md, STEPS.md, and TESTS.md. Assess each recommended test " +
+	"against the plan's functional goal and record the verdict in TESTS.md. " +
+	alignmentRequirement +
+	"Change nothing else in TESTS.md: keep every heading, narrative, mermaid diagram, and Gherkin scenario " +
+	"exactly as written. Do not modify PLAN.md or STEPS.md, implement anything, or create STOP.md."
 
 const annotateProtocol = "Read ANNOTATION.md. It contains the user's feedback on one section of the plan " +
 	"documents, naming the section (goal/plan/steps/tests), the specific target within it when there is one, " +
@@ -22,13 +44,16 @@ const annotateProtocol = "Read ANNOTATION.md. It contains the user's feedback on
 	"format: STEPS.md stays an ordered `- [ ]` checkbox list where every step has a `Purpose:` line and ends " +
 	"with `Done when:` and a concrete acceptance condition; TESTS.md keeps one `### Test N: <name>` heading " +
 	"per test with journey narratives, their mermaid sequence diagrams, and Gherkin scenarios in fenced " +
-	"blocks. Do not modify ANNOTATION.md, implement anything, or create STOP.md."
+	"blocks, each test keeping its `**Alignment:**` verdict line — re-judged against the plan's functional " +
+	"goal when the adjustment changes the test, with an `**Alignment note:**` line for partial or misaligned " +
+	"verdicts. Do not modify ANNOTATION.md, implement anything, or create STOP.md."
 
 const planProtocol = "Read GOAL.md and ANSWERS.md if it exists. Treat GOAL.md as authoritative. " +
 	"If essential information is missing, write only high-impact clarifying questions to QUESTIONS.md " +
 	"as a markdown numbered list, one question per line. Accept `use sensible defaults` as an answer. " +
 	"Otherwise write PLAN.md, STEPS.md, and TESTS.md, and do not write QUESTIONS.md. " +
 	testsRequirement +
+	alignmentRequirement +
 	"Classify the work and apply the matching template: greenfield (foundations and delivery), feature " +
 	"(user behavior, integration, regression), bugfix (reproduction, cause, fix, regression), refactor " +
 	"(preserved behavior and incremental checks), migration (compatibility, rollout, rollback), API " +
@@ -71,6 +96,7 @@ func PlanningPrompts(mode models.PlanMode) models.PlanningPrompts {
 		Assess:   assessmentPrompt(mode),
 		Refine:   refinementPrompt(mode),
 		Tests:    testsProtocol,
+		Align:    alignProtocol,
 		Annotate: annotateProtocol,
 	}
 }
@@ -91,6 +117,7 @@ func ReviewPrompts() models.PlanningPrompts {
 			"`- [ ]` step a `Purpose:` line stating its functional intent and a concrete `Done when:` acceptance condition. " +
 			"Do not implement anything or create STOP.md.",
 		Tests: testsProtocol,
+		Align: alignProtocol,
 	}
 }
 

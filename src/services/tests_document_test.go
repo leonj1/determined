@@ -58,6 +58,37 @@ func TestDiagramFenceWithoutSequenceDiagramDoesNotCount(t *testing.T) {
 	}
 }
 
+func TestTestWithoutAlignmentVerdictIsReported(t *testing.T) {
+	doc := services.NewTestsDocument(
+		"### Test 1: signup journey\n**Alignment:** aligned\nUser signs up.\n\n" +
+			"### Test 2: login scenario\n```gherkin\nScenario: login\n```\n")
+
+	missing := doc.TestsMissingAlignment()
+
+	if len(missing) != 1 || missing[0] != "### Test 2: login scenario" {
+		t.Fatalf("missing = %v, want the unjudged test heading only", missing)
+	}
+}
+
+func TestEveryAlignmentVerdictSatisfiesTheCheck(t *testing.T) {
+	doc := services.NewTestsDocument(
+		"### Test 1: a\n**Alignment:** aligned\n\n" +
+			"### Test 2: b\n**Alignment:** partial\n**Alignment note:** only covers signup.\n\n" +
+			"### Test 3: c\n**Alignment:** misaligned\n**Alignment note:** asserts internals.\n")
+
+	if missing := doc.TestsMissingAlignment(); len(missing) != 0 {
+		t.Fatalf("missing = %v, want none — all three carry a verdict", missing)
+	}
+}
+
+func TestUnknownAlignmentWordDoesNotCountAsAVerdict(t *testing.T) {
+	doc := services.NewTestsDocument("### Test 1: a\n**Alignment:** maybe\n")
+
+	if missing := doc.TestsMissingAlignment(); len(missing) != 1 {
+		t.Fatalf("missing = %v, want one — `maybe` is not a valid verdict", missing)
+	}
+}
+
 func TestEmptyDocumentHasNoJourneyTests(t *testing.T) {
 	if missing := services.NewTestsDocument("").JourneyTestsMissingDiagrams(); len(missing) != 0 {
 		t.Fatalf("missing = %v, want none", missing)

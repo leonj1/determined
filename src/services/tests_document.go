@@ -10,6 +10,7 @@ var typeLinePattern = regexp.MustCompile(`(?i)\*\*Type:\*\*\s*([^\n]+)`)
 var bddTypePattern = regexp.MustCompile(`(?i)bdd|gherkin`)
 var sequenceDiagramPattern = regexp.MustCompile("(?s)```mermaid\\s*\\n\\s*sequenceDiagram")
 var gherkinFencePattern = regexp.MustCompile("```gherkin")
+var alignmentLinePattern = regexp.MustCompile(`(?i)\*\*Alignment:\*\*\s*(aligned|partial|misaligned)`)
 
 // TestsDocument reads the recommended-tests markdown and answers questions
 // about its journey tests.
@@ -33,6 +34,19 @@ func (d TestsDocument) JourneyTestsMissingDiagrams() []string {
 			continue
 		}
 		if sequenceDiagramPattern.MatchString(section) {
+			continue
+		}
+		missing = append(missing, strings.SplitN(strings.TrimSpace(section), "\n", 2)[0])
+	}
+	return missing
+}
+
+// TestsMissingAlignment returns the heading line of every test that carries no
+// `**Alignment:**` verdict judging it against the plan's functional goal.
+func (d TestsDocument) TestsMissingAlignment() []string {
+	missing := []string{}
+	for _, section := range d.sections() {
+		if alignmentLinePattern.MatchString(section) {
 			continue
 		}
 		missing = append(missing, strings.SplitN(strings.TrimSpace(section), "\n", 2)[0])

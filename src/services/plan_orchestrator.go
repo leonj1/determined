@@ -486,7 +486,7 @@ func (o *PlanOrchestrator) ensureTests(ctx context.Context) (models.Outcome, boo
 			return models.OutcomePlanStalled, true
 		}
 		if len(missing) == 0 {
-			return models.OutcomePlanReady, false
+			return o.ensureAlignment(ctx)
 		}
 		if pass+1 >= 2 {
 			break
@@ -515,6 +515,45 @@ func (o *PlanOrchestrator) produceTests(ctx context.Context) (models.Outcome, bo
 		return models.OutcomePlanStalled, true
 	}
 	return models.OutcomePlanReady, false
+}
+
+// ensureAlignment makes every recommended test carry an alignment verdict
+// judging it against the plan's functional goal, so the status page can colour
+// each test by how well it proves that goal. Tests without a verdict trigger one
+// alignment invocation; a still-missing verdict after it stalls the plan.
+// It reports whether the loop should stop.
+func (o *PlanOrchestrator) ensureAlignment(ctx context.Context) (models.Outcome, bool) {
+	missing, err := o.testsMissingAlignment()
+	if err != nil {
+		fmt.Fprintf(o.terminal, "determined: could not read %s: %v\n", o.cfg.TestsFile, err)
+		return models.OutcomePlanStalled, true
+	}
+	if len(missing) == 0 {
+		return models.OutcomePlanReady, false
+	}
+	if outcome, stop := o.runInvocation(ctx, o.cfg.AlignInvocation, "assessing test alignment"); stop {
+		return outcome, stop
+	}
+	missing, err = o.testsMissingAlignment()
+	if err != nil {
+		fmt.Fprintf(o.terminal, "determined: could not read %s: %v\n", o.cfg.TestsFile, err)
+		return models.OutcomePlanStalled, true
+	}
+	if len(missing) > 0 {
+		fmt.Fprintf(o.terminal,
+			"determined: %d test(s) in %s still lack an alignment verdict\n", len(missing), o.cfg.TestsFile)
+		return models.OutcomePlanStalled, true
+	}
+	return models.OutcomePlanReady, false
+}
+
+// testsMissingAlignment lists tests in the tests file with no alignment verdict.
+func (o *PlanOrchestrator) testsMissingAlignment() ([]string, error) {
+	content, err := o.files.Read(o.cfg.TestsFile)
+	if err != nil {
+		return nil, err
+	}
+	return NewTestsDocument(content).TestsMissingAlignment(), nil
 }
 
 // journeyTestsMissingDiagrams lists journey tests in the tests file that lack

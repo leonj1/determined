@@ -13,9 +13,10 @@ import (
 )
 
 // validTestsDoc is a minimal TESTS.md whose journey test carries the required
-// mermaid sequence diagram.
+// mermaid sequence diagram and its alignment verdict against the plan's goal.
 const validTestsDoc = "### Test 1: journey\n**Type:** Journey\n" +
-	"```mermaid\nsequenceDiagram\nUser->>App: open\n```\n"
+	"```mermaid\nsequenceDiagram\nUser->>App: open\n```\n" +
+	"**Alignment:** aligned\n"
 
 // --- Hand-written fakes for the planning loop ---
 
@@ -71,6 +72,7 @@ func planConfig(budget time.Duration) models.PlanConfig {
 		AssessInvocation:   models.Invocation{Binary: "claude", Args: []string{"-p", "assess"}},
 		RefineInvocation:   models.Invocation{Binary: "claude", Args: []string{"-p", "refine"}},
 		TestsInvocation:    models.Invocation{Binary: "claude", Args: []string{"-p", "tests"}},
+		AlignInvocation:    models.Invocation{Binary: "claude", Args: []string{"-p", "align"}},
 		AnnotateInvocation: models.Invocation{Binary: "claude", Args: []string{"-p", "annotate"}},
 		MaxRefinePasses:    0, // refinement off by default; refinement tests opt in
 		GoalFile:           "GOAL.md",
@@ -677,6 +679,85 @@ func TestPlanRegeneratesTestsWhenJourneyDiagramMissing(t *testing.T) {
 	}
 	if !strings.Contains(terminal.String(), "missing a sequence diagram") {
 		t.Fatalf("expected a regeneration notice, got:\n%s", terminal.String())
+	}
+}
+
+func TestPlanAssessesTestAlignmentWhenVerdictsAreMissing(t *testing.T) {
+	fs := newFakeFileStore()
+	fs.Write("PLAN.md", "existing")
+	fs.Write("STEPS.md", "existing")
+	unjudged := "### Test 1: journey\n**Type:** Journey\n" +
+		"```mermaid\nsequenceDiagram\nUser->>App: open\n```\n"
+	judged := unjudged + "**Alignment:** partial\n**Alignment note:** only covers signup.\n"
+	runner := &fakeRunner{script: func(call int, _ io.Writer) error {
+		if call == 1 {
+			fs.Write("TESTS.md", unjudged)
+			return nil
+		}
+		fs.Write("TESTS.md", judged)
+		return nil
+	}}
+	o := services.NewPlanOrchestrator(runner, fs, &fakePrompter{}, &fakeClock{now: time.Now()}, &fakeLogSink{}, io.Discard, planConfig(0))
+
+	outcome := o.Run(context.Background())
+
+	if outcome != models.OutcomePlanReady {
+		t.Fatalf("expected a ready plan once every test is judged, got %v", outcome)
+	}
+	if runner.calls != 2 {
+		t.Fatalf("expected a tests run then one alignment run, got %d tool runs", runner.calls)
+	}
+	if got := runner.invocations[1].Args[1]; got != "align" {
+		t.Fatalf("expected the alignment invocation second, got prompt %q", got)
+	}
+	if fs.data["TESTS.md"] != judged {
+		t.Fatalf("expected the judged TESTS.md to remain, got %q", fs.data["TESTS.md"])
+	}
+}
+
+func TestPlanSkipsAlignmentWhenTestsAreAlreadyJudged(t *testing.T) {
+	fs := newFakeFileStore()
+	fs.Write("PLAN.md", "existing")
+	fs.Write("STEPS.md", "existing")
+	runner := &fakeRunner{script: func(int, io.Writer) error {
+		fs.Write("TESTS.md", validTestsDoc)
+		return nil
+	}}
+	o := services.NewPlanOrchestrator(runner, fs, &fakePrompter{}, &fakeClock{now: time.Now()}, &fakeLogSink{}, io.Discard, planConfig(0))
+
+	outcome := o.Run(context.Background())
+
+	if outcome != models.OutcomePlanReady {
+		t.Fatalf("expected a ready plan, got %v", outcome)
+	}
+	if runner.calls != 1 {
+		t.Fatalf("expected no alignment run when verdicts exist, got %d tool runs", runner.calls)
+	}
+}
+
+func TestPlanStallsWhenAlignmentVerdictsStayMissing(t *testing.T) {
+	fs := newFakeFileStore()
+	fs.Write("PLAN.md", "existing")
+	fs.Write("STEPS.md", "existing")
+	unjudged := "### Test 1: journey\n**Type:** Journey\n" +
+		"```mermaid\nsequenceDiagram\nUser->>App: open\n```\n"
+	runner := &fakeRunner{script: func(int, io.Writer) error {
+		fs.Write("TESTS.md", unjudged)
+		return nil
+	}}
+	var terminal strings.Builder
+	o := services.NewPlanOrchestrator(runner, fs, &fakePrompter{}, &fakeClock{now: time.Now()}, &fakeLogSink{}, &terminal, planConfig(0))
+
+	outcome := o.Run(context.Background())
+
+	if outcome != models.OutcomePlanStalled || outcome.ExitCode() != 1 {
+		t.Fatalf("expected a stall when verdicts never appear, got %v (exit %d)", outcome, outcome.ExitCode())
+	}
+	if runner.calls != 2 {
+		t.Fatalf("expected the loop to give up after one alignment round, got %d", runner.calls)
+	}
+	if !strings.Contains(terminal.String(), "still lack an alignment verdict") {
+		t.Fatalf("expected a stall notice, got:\n%s", terminal.String())
 	}
 }
 

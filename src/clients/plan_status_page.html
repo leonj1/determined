@@ -266,6 +266,23 @@
   @media (prefers-reduced-motion: reduce) {
     .log-entry.state-running { animation: none; border-left-color: var(--accent); }
   }
+  /* Each recommended test is a card tinted by how well it proves the plan's
+     functional goal: green aligned, yellow partial, red misaligned. Partial and
+     misaligned cards carry a note naming the shortfall. */
+  .test-card {
+    border-left: 2px solid var(--rule-light); padding: 0.2rem 0 0.2rem 0.7rem; margin: 0.9rem 0;
+  }
+  .test-card.align-aligned { background: var(--ok-tint); border-left-color: var(--ok-border); }
+  .test-card.align-partial { background: var(--warn-tint); border-left-color: var(--warn-border); }
+  .test-card.align-misaligned { background: var(--bad-tint); border-left-color: var(--bad-border); }
+  .test-card .doc > :first-child { margin-top: 0; }
+  .test-card .doc > :last-child { margin-bottom: 0; }
+  .test-card .align-note {
+    margin-top: 0.5rem; padding: 0.35rem 0; font-size: 0.85rem; font-weight: 600;
+    overflow-wrap: anywhere;
+  }
+  .test-card.align-partial .align-note { color: var(--warn-fg); }
+  .test-card.align-misaligned .align-note { color: var(--bad-fg); }
   aside#activity ol { margin: 0; padding: 0; list-style: none; max-height: 70vh; overflow-y: auto; }
   aside#activity li { padding: 0.55rem 0; border-bottom: 1px solid var(--rule-light); font-size: 0.9rem; }
   aside#activity li:last-child { border-bottom: none; }
@@ -793,9 +810,52 @@
     // Sections with no Type marker (title, preamble) lead the journey tab so
     // context is never lost; if nothing was typed at all, show everything there.
     return {
-      journey: untyped.concat(journey).join("\n").trim(),
-      bdd: bdd.join("\n").trim(),
+      journey: untyped.concat(journey),
+      bdd: bdd,
     };
+  }
+
+  // Each test carries an "**Alignment:**" verdict judging it against the plan's
+  // functional goal, and — for anything short of aligned — an
+  // "**Alignment note:**" explaining the shortfall. Returns the verdict class
+  // and note so the card can be tinted green, yellow, or red.
+  function alignmentOf(section) {
+    const verdict = ((section.match(/\*\*Alignment:\*\*\s*(aligned|partial|misaligned)/i) || [])[1] || "").toLowerCase();
+    const note = ((section.match(/\*\*Alignment note:\*\*\s*([^\n]+)/i) || [])[1] || "").trim();
+    if (verdict === "aligned") return { state: "aligned", note: "" };
+    if (verdict === "partial") return { state: "partial", note: note };
+    if (verdict === "misaligned") return { state: "misaligned", note: note };
+    return { state: "", note: "" };
+  }
+
+  // Renders one tab's test sections as cards, each tinted by its alignment
+  // verdict, with a warning line naming why a test misses the plan's goal.
+  function renderTests(node, sections, emptyText) {
+    node.classList.remove("empty", "plain");
+    if (!sections.length) {
+      node.replaceChildren();
+      node.textContent = emptyText;
+      node.classList.add("empty");
+      return;
+    }
+    const cards = [];
+    for (const section of sections) {
+      const alignment = alignmentOf(section);
+      const card = document.createElement("div");
+      card.className = "test-card" + (alignment.state ? " align-" + alignment.state : "");
+      const body = document.createElement("div");
+      body.className = "doc";
+      body.innerHTML = markdownToHtml(section);
+      card.append(body);
+      if (alignment.note) {
+        const warning = document.createElement("div");
+        warning.className = "align-note";
+        warning.textContent = (alignment.state === "misaligned" ? "✕ " : "⚠ ") + alignment.note;
+        card.append(warning);
+      }
+      cards.push(card);
+    }
+    node.replaceChildren(...cards);
   }
 
   // Builds one annotate button + comment form pair. The comment posts to
@@ -880,8 +940,8 @@
     setDoc(el("goal"), status.goal, "Not written yet.");
     setDoc(el("plan"), status.plan, "Not produced yet.");
     const tests = splitTests(status.tests);
-    setDoc(el("tests-journey-doc"), tests.journey, "Not produced yet.");
-    setDoc(el("tests-bdd-doc"), tests.bdd, "Not produced yet.");
+    renderTests(el("tests-journey-doc"), tests.journey, "Not produced yet.");
+    renderTests(el("tests-bdd-doc"), tests.bdd, "Not produced yet.");
     el("waiting").classList.toggle("on", !!status.waitingForInput);
 
     renderSteps(status.taskSteps || []);
