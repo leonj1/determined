@@ -319,8 +319,9 @@
     border: 0; border-left: 2px solid var(--accent); border-radius: 0; color: var(--accent);
     overflow-wrap: anywhere;
   }
-  aside#activity li.active { display: flex; align-items: baseline; gap: 0.5rem; }
-  aside#activity li.active .active-body { flex: 1; }
+  aside#activity li.timed { display: flex; align-items: baseline; gap: 0.5rem; }
+  aside#activity li.timed .active-body { flex: 1; }
+  aside#activity li.timed:not(.active) .elapsed { color: var(--muted); }
   aside#activity .spinner {
     flex: none; width: 0.8rem; height: 0.8rem; margin-top: 0.15rem;
     border: 2px solid var(--border); border-top-color: var(--accent);
@@ -1265,23 +1266,29 @@
     activeStartIso = null;
     steps.forEach((step, index) => {
       const li = document.createElement("li");
+      li.classList.add("timed");
       const t = document.createElement("time");
       t.textContent = fmtTime(step.at);
-      if (running && index === lastIndex) {
+      const body = document.createElement("span");
+      body.className = "active-body";
+      body.append(t, step.message);
+      const elapsed = document.createElement("span");
+      elapsed.className = "elapsed";
+      // A finished step ran until the next one started; the last step of a
+      // running session is still working, so its counter climbs live.
+      const isActive = running && index === lastIndex;
+      if (isActive) {
         activeStartIso = step.at;
         li.classList.add("active");
-        const spinner = document.createElement("span");
-        spinner.className = "spinner";
-        const body = document.createElement("span");
-        body.className = "active-body";
-        body.append(t, step.message);
-        const elapsed = document.createElement("span");
-        elapsed.className = "elapsed";
         elapsed.id = "activity-elapsed";
         elapsed.textContent = fmtDuration(step.at, new Date().toISOString());
+        const spinner = document.createElement("span");
+        spinner.className = "spinner";
         li.append(spinner, body, elapsed);
       } else {
-        li.append(t, step.message);
+        const next = steps[index + 1];
+        elapsed.textContent = next ? fmtDuration(step.at, next.at) : "";
+        li.append(body, elapsed);
       }
       list.append(li);
     });
