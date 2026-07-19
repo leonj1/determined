@@ -57,6 +57,16 @@
   }
   header .git .branch { color: var(--muted); font-weight: 600; }
   header .right { display: flex; align-items: center; gap: 0.75rem; }
+  #banner {
+    display: none; align-items: baseline; gap: 0.5rem; white-space: nowrap;
+    font: 0.7rem/1.4 ui-monospace, 'SF Mono', Menlo, monospace;
+    letter-spacing: 0.08em; text-transform: uppercase;
+  }
+  #banner.on { display: flex; }
+  #banner .mark { font-weight: 700; }
+  #banner.succeeded .mark { color: var(--ok-fg); }
+  #banner.failed .mark { color: var(--bad-fg); }
+  #banner .timing { color: var(--muted); }
   #theme-toggle {
     appearance: none; background: var(--bg); border: 1px solid var(--fg); border-radius: 0;
     width: 2rem; height: 2rem; padding: 0; flex: none; font-size: 1rem; line-height: 1;
@@ -109,20 +119,12 @@
     main { grid-template-columns: 1fr; gap: 2rem; }
   }
   #content { display: grid; gap: 2rem; min-width: 0; }
-  #banner, #waiting, #disconnected {
+  #waiting, #disconnected {
     padding: 0.7rem 0.8rem; border: 0; border-left: 2px solid var(--accent); border-radius: 0;
     background: transparent; color: var(--fg);
   }
-  #banner { display: none; font-weight: 600; }
-  #banner::before, #waiting::before, #disconnected::before {
+  #waiting::before, #disconnected::before {
     content: "\2192"; color: var(--accent); margin-right: 0.55rem; font-weight: 700;
-  }
-  #banner.succeeded { display: block; color: var(--ok-fg); }
-  #banner.failed { display: block; color: var(--bad-fg); }
-  #banner .timing {
-    display: block; margin: 0.35rem 0 0 1.35rem; color: var(--muted);
-    font: 0.7rem/1.4 ui-monospace, 'SF Mono', Menlo, monospace;
-    letter-spacing: 0.08em; text-transform: uppercase;
   }
   #waiting { display: none; }
   #waiting.on { display: block; }
@@ -299,6 +301,7 @@
   <div class="title">determined — planning</div>
   <button id="implement">▶ Implement</button>
   <div class="right">
+    <div id="banner"><span class="mark" id="banner-mark"></span><span class="timing" id="banner-timing"></span></div>
     <div class="git"><span id="remote">…</span> · <span id="branch" class="branch">…</span></div>
     <button id="theme-toggle" type="button" aria-label="Toggle theme">☾</button>
   </div>
@@ -321,7 +324,6 @@
 </nav>
 <main>
   <div id="content">
-    <div id="banner"><span id="banner-text"></span><span class="timing" id="banner-timing"></span></div>
     <div id="waiting">Waiting for your input on the terminal…</div>
     <div id="disconnected">Connection lost — the determined process may have exited.</div>
     <section class="panel active" id="panel-goal">
@@ -1251,25 +1253,13 @@
 
   function renderBanner(status) {
     const banner = el("banner");
-    banner.classList.remove("succeeded", "failed");
-    if (status.execPhase === "requested" || status.execPhase === "running") {
-      banner.classList.add("succeeded");
-      el("banner-text").textContent = "⚙ Execution phase in progress";
-      el("banner-timing").textContent =
-        "Started " + fmtStamp(status.startedAt) +
-        " · Ended " + fmtStamp(status.endedAt) +
-        " · Duration " + fmtDuration(status.startedAt, status.endedAt);
-      return;
-    }
-    if (status.phase !== "succeeded" && status.phase !== "failed") return;
-    banner.classList.add(status.phase);
-    el("banner-text").textContent = status.phase === "succeeded"
-      ? "✓ Planning has completed"
-      : "✗ Planning ended without a completed plan";
+    banner.classList.remove("on", "succeeded", "failed");
+    const running = status.execPhase === "requested" || status.execPhase === "running";
+    if (!running && status.phase !== "succeeded" && status.phase !== "failed") return;
+    banner.classList.add("on", running || status.phase === "succeeded" ? "succeeded" : "failed");
+    el("banner-mark").textContent = running ? "⚙" : (status.phase === "succeeded" ? "✓" : "✗");
     el("banner-timing").textContent =
-      "Started " + fmtStamp(status.startedAt) +
-      " · Ended " + fmtStamp(status.endedAt) +
-      " · Duration " + fmtDuration(status.startedAt, status.endedAt);
+      fmtTime(status.startedAt) + " · " + fmtDuration(status.startedAt, status.endedAt);
   }
 
   const events = new EventSource("/events");
