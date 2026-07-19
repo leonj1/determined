@@ -1,13 +1,47 @@
 package main
 
 import (
+	"bytes"
+	"context"
 	"flag"
 	"io"
 	"testing"
 	"time"
 
 	"determined/src/models"
+	"determined/src/services"
 )
+
+// These fakes stay in package main because they exercise the unexported
+// runAutoExec seam; Go requires same-package tests for that access.
+type fixedClock struct{ now time.Time }
+
+func (c fixedClock) Now() time.Time { return c.now }
+
+type fakePlanExecutor struct {
+	status  services.ExecStatusReporter
+	outcome models.Outcome
+}
+
+func (f *fakePlanExecutor) Execute(_ context.Context, status services.ExecStatusReporter) models.Outcome {
+	f.status = status
+	return f.outcome
+}
+
+type fakeStdin struct {
+	reads   chan byte
+	started chan struct{}
+}
+
+func newFakeStdin() *fakeStdin {
+	return &fakeStdin{reads: make(chan byte), started: make(chan struct{})}
+}
+
+func (f *fakeStdin) Read(buf []byte) (int, error) {
+	f.started <- struct{}{}
+	buf[0] = <-f.reads
+	return 1, nil
+}
 
 func TestUserCanRunUpdateCommand(t *testing.T) {
 	if !isUpdateCommand([]string{"determined", "update"}) {
@@ -181,21 +215,112 @@ func TestUserCanCombinePlanningWithExecution(t *testing.T) {
 }
 
 func TestSuccessfulPlanningContinuesIntoExecution(t *testing.T) {
-	if !shouldExecuteAfterPlan(true, models.OutcomePlanReady) {
+	if !shouldExecuteAfterPlan(true, false, models.OutcomePlanReady) {
 		t.Fatal("-plan -exec should execute once the plan is ready")
 	}
 }
 
 func TestFailedPlanningSkipsExecution(t *testing.T) {
-	if shouldExecuteAfterPlan(true, models.OutcomePlanStalled) {
+	if shouldExecuteAfterPlan(true, false, models.OutcomePlanStalled) {
 		t.Fatal("a stalled plan run should not continue into execution")
 	}
 }
 
 func TestPlanningWithoutExecFlagStopsAfterPlanning(t *testing.T) {
-	if shouldExecuteAfterPlan(false, models.OutcomePlanReady) {
+	if shouldExecuteAfterPlan(false, false, models.OutcomePlanReady) {
 		t.Fatal("without -exec, planning should not continue into execution")
 	}
+}
+
+func TestInteractivePlanningDoesNotStartASecondExecution(t *testing.T) {
+	if shouldExecuteAfterPlan(true, true, models.OutcomePlanReady) {
+		t.Fatal("interactive -plan -exec should execute only inside the live session")
+	}
+}
+
+func TestInteractivePostPlanActionMatchesRequestedFlow(t *testing.T) {
+	tests := []struct {
+		name      string
+		executing bool
+		outcome   models.Outcome
+		want      postPlanAction
+	}{
+		{"ready plan offers implementation", false, models.OutcomePlanReady, postPlanOffer},
+		{"ready plan executes automatically", true, models.OutcomePlanReady, postPlanAutoExec},
+		{"stalled auto-exec plan dismisses", true, models.OutcomePlanStalled, postPlanDismiss},
+		{"stalled plan-only session dismisses", false, models.OutcomePlanStalled, postPlanDismiss},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := postPlanActionFor(test.executing, test.outcome); got != test.want {
+				t.Fatalf("post-plan action = %v, want %v", got, test.want)
+			}
+		})
+	}
+}
+
+func TestAutomaticExecutionUsesLiveStatusAndPropagatesOutcome(t *testing.T) {
+	status := services.NewPlanStatusService(fixedClock{}, models.GitContext{})
+	executor := &fakePlanExecutor{outcome: models.OutcomeStalled}
+	held := false
+	hold := func(_ context.Context) { held = true }
+
+	got := runAutoExec(context.Background(), status, executor.Execute, hold)
+
+	if executor.status != status {
+		t.Fatal("automatic execution did not receive the session status reporter")
+	}
+	if got != executor.outcome {
+		t.Fatalf("automatic execution outcome = %v, want %v", got, executor.outcome)
+	}
+	if !held {
+		t.Fatal("automatic execution did not hold the completed status page")
+	}
+}
+
+func TestAutomaticExecutionStartsDismissalWaitAfterExecution(t *testing.T) {
+	executed := false
+	execute := func(_ context.Context, _ services.ExecStatusReporter) models.Outcome {
+		executed = true
+		return models.OutcomeStopped
+	}
+	hold := func(_ context.Context) {
+		if !executed {
+			t.Fatal("dismissal wait started before execution finished")
+		}
+	}
+
+	runAutoExec(context.Background(), nil, execute, hold)
+}
+
+func TestCompletedExecutionPagePromptsForDismissal(t *testing.T) {
+	var output bytes.Buffer
+	hold := completedStatusPageHolder("http://status.test", &output, bytes.NewReader(nil))
+	hold(context.Background())
+
+	want := "determined: execution finished; status page still serving at http://status.test — press Enter to exit\n"
+	if got := output.String(); got != want {
+		t.Fatalf("completion prompt = %q, want %q", got, want)
+	}
+}
+
+func TestDismissalChannelIgnoresEnterDuringExecution(t *testing.T) {
+	input := newFakeStdin()
+	ready := make(chan struct{})
+	dismissed := dismissalChannelWhenReady(input, ready)
+	<-input.started
+	input.reads <- '\n'
+	<-input.started // the early Enter was discarded and the next read began
+
+	close(ready)
+	select {
+	case <-dismissed:
+		t.Fatal("Enter during execution dismissed the completed page")
+	default:
+	}
+
+	input.reads <- '\n'
+	<-dismissed
 }
 
 func TestPrototypeSkipsQualityRefinement(t *testing.T) {

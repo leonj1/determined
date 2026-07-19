@@ -14,7 +14,7 @@ BUILD_ARGS := --build-arg VERSION=$(VERSION) \
 	--build-arg TARGETOS=$(TARGETOS) \
 	--build-arg TARGETARCH=$(TARGETARCH)
 
-.PHONY: build clean
+.PHONY: build clean test
 
 # Build the project inside Docker using Dockerfile.build and extract the
 # compiled binary to ./$(BIN_DIR)/$(BINARY).
@@ -22,6 +22,9 @@ build:
 	docker build -f $(DOCKERFILE) --target bin \
 		$(BUILD_ARGS) \
 		--output type=local,dest=$(BIN_DIR) .
+
+test:
+	go test -cover ./...
 
 clean:
 	rm -rf $(BIN_DIR)

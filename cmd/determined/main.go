@@ -4,6 +4,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"os/signal"
@@ -128,8 +129,8 @@ func main() {
 			executor := func(ctx context.Context, status services.ExecStatusReporter) models.Outcome {
 				return runLoop(ctx, selected, *budget, *maxStalled, *maxFailures, *maxIterationDuration, *verify, *specializedReviews, *gitCheckpoint, status, clock, logs)
 			}
-			outcome = runPlan(ctx, selected, planInput(*plan, flag.Args()), planMode, *budget, *maxStepPasses, *maxFailures, *interactive, !executing, executor, clock, logs)
-			if shouldExecuteAfterPlan(executing, outcome) {
+			outcome = runPlan(ctx, selected, planInput(*plan, flag.Args()), planMode, *budget, *maxStepPasses, *maxFailures, *interactive, executing, executor, clock, logs)
+			if shouldExecuteAfterPlan(executing, *interactive, outcome) {
 				outcome = runLoop(ctx, selected, *budget, *maxStalled, *maxFailures, *maxIterationDuration, *verify, *specializedReviews, *gitCheckpoint, nil, clock, logs)
 			}
 		} else {
@@ -251,10 +252,10 @@ func criteriaAllowsContinuation(outcome models.Outcome) bool {
 	return outcome == models.OutcomeCriteriaReady || outcome == models.OutcomeCriteriaCancelled
 }
 
-// shouldExecuteAfterPlan reports whether a -plan -exec run should continue
-// into the execute loop: only when planning left a usable plan behind.
-func shouldExecuteAfterPlan(executing bool, outcome models.Outcome) bool {
-	return executing && outcome == models.OutcomePlanReady
+// shouldExecuteAfterPlan reports whether a -plan -exec run should continue in
+// the headless execute loop. Interactive sessions execute before page shutdown.
+func shouldExecuteAfterPlan(executing, interactive bool, outcome models.Outcome) bool {
+	return executing && !interactive && outcome == models.OutcomePlanReady
 }
 
 func refinePasses(mode models.PlanMode, configured int) int {
@@ -348,10 +349,9 @@ func runUpdateCommand() {
 
 // runPlan runs the attended planning loop, relaying the tool's clarifying
 // questions to the user until a plan is produced. With interactive set, a
-// local web server shows the session live; holdPage keeps it serving after
-// completion (plan-only mode) until the user dismisses it, during which the
-// page's Implement button starts the execute loop via execute.
-func runPlan(ctx context.Context, tool models.Tool, goal string, mode models.PlanMode, budget time.Duration, maxStepPasses, maxFailures int, interactive, holdPage bool, execute planExecutor, clock services.Clock, logs services.LogSink) models.Outcome {
+// local web server shows the session live. Executing selects automatic live
+// execution; otherwise the page offers its Implement button after planning.
+func runPlan(ctx context.Context, tool models.Tool, goal string, mode models.PlanMode, budget time.Duration, maxStepPasses, maxFailures int, interactive, executing bool, execute planExecutor, clock services.Clock, logs services.LogSink) models.Outcome {
 	prompts := services.PlanningPrompts(mode)
 	cfg := models.PlanConfig{
 		Operation:              models.PlanOperationCreate,
@@ -386,15 +386,14 @@ func runPlan(ctx context.Context, tool models.Tool, goal string, mode models.Pla
 	if !interactive {
 		return orchestrator.Run(ctx)
 	}
-	return runInteractivePlan(ctx, orchestrator, holdPage, execute, clock)
+	return runInteractivePlan(ctx, orchestrator, executing, execute, clock)
 }
 
 // runInteractivePlan wraps a planning run with the live status web server. A
-// bind failure aborts before the AI tool is ever invoked; in plan-only mode
-// the page stays served after completion until the user presses Enter or
-// interrupts, so the completion banner remains viewable and the Implement
-// button can start execution.
-func runInteractivePlan(ctx context.Context, orchestrator *services.PlanOrchestrator, holdPage bool, execute planExecutor, clock services.Clock) models.Outcome {
+// bind failure aborts before the AI tool is ever invoked. A ready plan either
+// offers implementation or executes automatically, then stays viewable until
+// the user presses Enter or interrupts.
+func runInteractivePlan(ctx context.Context, orchestrator *services.PlanOrchestrator, executing bool, execute planExecutor, clock services.Clock) models.Outcome {
 	status := services.NewPlanStatusService(clock, clients.NewGitContextReader().Read(ctx))
 	server := clients.NewPlanStatusServer(status, status, status, clock)
 	if err := server.Start(); err != nil {
@@ -405,8 +404,15 @@ func runInteractivePlan(ctx context.Context, orchestrator *services.PlanOrchestr
 
 	outcome := orchestrator.WithStatusReporter(status).Run(ctx)
 
-	if holdPage && ctx.Err() == nil {
-		outcome = holdStatusPage(ctx, orchestrator, status, server.URL(), execute, outcome)
+	if ctx.Err() == nil {
+		switch postPlanActionFor(executing, outcome) {
+		case postPlanOffer:
+			outcome = holdStatusPage(ctx, orchestrator, status, server.URL(), execute, outcome)
+		case postPlanAutoExec:
+			fmt.Fprintf(os.Stdout, "determined: plan ready — executing now; status page streaming at %s\n", server.URL())
+			hold := completedStatusPageHolder(server.URL(), os.Stdout, os.Stdin)
+			outcome = runAutoExec(ctx, status, execute, hold)
+		}
 	}
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
@@ -414,11 +420,50 @@ func runInteractivePlan(ctx context.Context, orchestrator *services.PlanOrchestr
 	return outcome
 }
 
-// holdStatusPage keeps the finished session interactive: annotations refine
-// the plan documents, and — when planning succeeded — the page's Implement
-// button starts the execute loop, streaming it to the Execution tab. Pressing
-// Enter on the terminal dismisses the page. The returned outcome is the
-// execute loop's when the user implemented the plan, else the planning one.
+// completedStatusPageHolder drains terminal input during execution, then keeps
+// the completed page available until a fresh Enter or an interruption.
+func completedStatusPageHolder(url string, output io.Writer, input io.Reader) completedPageHolder {
+	ready := make(chan struct{})
+	dismissed := dismissalChannelWhenReady(input, ready)
+	return func(ctx context.Context) {
+		fmt.Fprintf(output,
+			"determined: execution finished; status page still serving at %s — press Enter to exit\n",
+			url)
+		close(ready)
+		select {
+		case <-ctx.Done():
+		case <-dismissed:
+		}
+	}
+}
+
+// dismissalChannelWhenReady discards reads before the page is ready to close.
+func dismissalChannelWhenReady(input io.Reader, ready <-chan struct{}) <-chan struct{} {
+	dismissed := make(chan struct{})
+	go func() {
+		for {
+			buf := make([]byte, 1)
+			_, err := input.Read(buf)
+			select {
+			case <-ready:
+				close(dismissed)
+				return
+			default:
+			}
+			if err != nil {
+				<-ready
+				close(dismissed)
+				return
+			}
+		}
+	}()
+	return dismissed
+}
+
+// holdStatusPage keeps a plan-only session interactive: annotations refine the
+// plan documents, and the Implement button starts execution in the live page.
+// Enter dismisses the page. The result is execution's outcome when requested,
+// or the planning outcome when the page is dismissed without implementation.
 func holdStatusPage(ctx context.Context, orchestrator *services.PlanOrchestrator, status *services.PlanStatusService, url string, execute planExecutor, outcome models.Outcome) models.Outcome {
 	if outcome == models.OutcomePlanReady {
 		status.OfferImplement()

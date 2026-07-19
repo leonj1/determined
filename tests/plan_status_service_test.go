@@ -360,6 +360,39 @@ func TestPlanStatusServiceExecutionFailureMarksFailedPhase(t *testing.T) {
 	}
 }
 
+func TestPlanStatusServiceStreamsAutomaticExecutionWithoutImplementOffer(t *testing.T) {
+	service := services.NewPlanStatusService(newSteppingClock(planStart()), models.GitContext{})
+	service.Start()
+	service.Finish(true)
+
+	service.StartExecution()
+	service.FinishExecution(true)
+
+	snapshot := service.Snapshot()
+	if snapshot.ExecPhase != models.ExecPhaseSucceeded {
+		t.Errorf("execPhase = %q, want succeeded", snapshot.ExecPhase)
+	}
+	if snapshot.ImplementOffered {
+		t.Error("implementOffered = true during automatic execution")
+	}
+}
+
+func TestPlanStatusServiceIgnoresImplementRequestAfterExecutionStarts(t *testing.T) {
+	service := implementReadyService(newSteppingClock(planStart()))
+	service.StartExecution()
+
+	service.RequestImplement()
+
+	if phase := service.Snapshot().ExecPhase; phase != models.ExecPhaseRunning {
+		t.Errorf("execPhase = %q, want running", phase)
+	}
+	select {
+	case <-service.ImplementSignal():
+		t.Error("implement signal fired after execution started")
+	default:
+	}
+}
+
 func TestPlanStatusServicePublishesExplanationLifecycle(t *testing.T) {
 	service := services.NewPlanStatusService(newSteppingClock(planStart()), models.GitContext{})
 	snapshots, cancel := service.Subscribe()
