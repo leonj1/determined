@@ -332,6 +332,13 @@
     font-variant-numeric: tabular-nums;
   }
   @keyframes activity-spin { to { transform: rotate(360deg); } }
+  aside#activity a.activity-link { color: inherit; text-decoration: underline; text-decoration-color: var(--rule-light); text-underline-offset: 2px; }
+  aside#activity a.activity-link:hover { text-decoration-color: var(--accent); color: var(--accent); }
+  .link-flash { animation: link-flash 1.6s ease-out; }
+  @keyframes link-flash {
+    from { background: color-mix(in srgb, var(--accent) 22%, transparent); }
+    to { background: transparent; }
+  }
 </style>
 <script>
   // Apply the saved theme before first paint so the page never flashes the
@@ -1184,6 +1191,7 @@
     list.replaceChildren();
     steps.forEach((step, index) => {
       const card = document.createElement("article");
+      card.id = "step-" + (index + 1);
       card.className = "step-card" + (step.completed ? " done" : "");
 
       const head = document.createElement("div");
@@ -1259,6 +1267,43 @@
   // The ticker reads this to update the counter once a second between renders.
   let activeStartIso = null;
 
+  // activityLink maps an activity message to the tab — and, for numbered
+  // steps, the step card — that the message reports on, so each entry can
+  // link back to the work it describes. Returns null for messages with no
+  // on-page counterpart (e.g. waiting for terminal input).
+  function activityLink(message) {
+    const step = message.match(/^(?:executing|verifying) step (\d+)/);
+    if (step) return { tab: "steps", targetId: "step-" + step[1] };
+    const rules = [
+      [/^writing planning goal/, { tab: "goal" }],
+      [/^(?:planning project|assessing plan|reviewing plan|refining plan)/, { tab: "plan" }],
+      [/^proposing BDD test/, { tab: "tests", testsTab: "bdd" }],
+      [/^(?:recommending tests|assessing test alignment)/, { tab: "tests" }],
+      [/^(?:updating project documentation|auditing the whole plan|running .+ review)/, { tab: "exec" }],
+      [/^explaining the changes/, { tab: "explain" }],
+      [/^writing the quiz/, { tab: "quiz" }],
+    ];
+    for (const [pattern, link] of rules) if (pattern.test(message)) return link;
+    return null;
+  }
+
+  function activityHref(link) {
+    return link.testsTab ? "/tests/" + link.testsTab : "/" + link.tab;
+  }
+
+  function followActivityLink(link) {
+    history.pushState(null, "", activityHref(link));
+    selectTab(link.tab);
+    if (link.testsTab) selectTestsTab(link.testsTab);
+    if (!link.targetId) return;
+    const target = el(link.targetId);
+    if (!target) return;
+    target.scrollIntoView({ behavior: "smooth", block: "start" });
+    target.classList.remove("link-flash");
+    void target.offsetWidth; // restart the flash when the same card is re-clicked
+    target.classList.add("link-flash");
+  }
+
   function renderActivity(steps, running) {
     const list = el("activity-log");
     list.replaceChildren();
@@ -1271,7 +1316,20 @@
       t.textContent = fmtTime(step.at);
       const body = document.createElement("span");
       body.className = "active-body";
-      body.append(t, step.message);
+      const link = activityLink(step.message);
+      if (link) {
+        const anchor = document.createElement("a");
+        anchor.className = "activity-link";
+        anchor.href = activityHref(link);
+        anchor.textContent = step.message;
+        anchor.addEventListener("click", (event) => {
+          event.preventDefault();
+          followActivityLink(link);
+        });
+        body.append(t, anchor);
+      } else {
+        body.append(t, step.message);
+      }
       const elapsed = document.createElement("span");
       elapsed.className = "elapsed";
       // A finished step ran until the next one started; the last step of a
