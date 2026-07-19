@@ -89,6 +89,120 @@ func TestServeAnnotationsRepublishesAfterEachApplication(t *testing.T) {
 	}
 }
 
+// invocationPrompts lists the second argument of each recorded invocation, the
+// slot planConfig uses to name what the tool was asked to do.
+func invocationPrompts(runner *fakeRunner) []string {
+	prompts := make([]string, 0, len(runner.invocations))
+	for _, inv := range runner.invocations {
+		prompts = append(prompts, inv.Args[1])
+	}
+	return prompts
+}
+
+func TestGoalAnnotationRebuildsPlanStepsAndTests(t *testing.T) {
+	fs := newFakeFileStore()
+	fs.Write("GOAL.md", "the goal")
+	fs.Write("PLAN.md", "stale plan")
+	fs.Write("STEPS.md", "- [ ] stale step\n")
+	fs.Write("TESTS.md", validTestsDoc)
+	runner := &fakeRunner{script: func(call int, _ io.Writer) error {
+		switch call {
+		case 1: // annotate: the tool revises the goal
+			fs.Write("GOAL.md", "the revised goal")
+		case 2: // replan: the tool rebuilds plan and steps from the new goal
+			fs.Write("PLAN.md", "rebuilt plan")
+			fs.Write("STEPS.md", "- [ ] rebuilt step\n")
+		case 3: // tests: rebuilt for the new plan
+			fs.Write("TESTS.md", validTestsDoc)
+		}
+		return nil
+	}}
+	reporter := &fakeStatusReporter{annotations: []models.Annotation{
+		annotation(models.AnnotationSectionGoal, "", "target teams, not individuals"),
+	}}
+	o := services.NewPlanOrchestrator(runner, fs, &fakePrompter{}, &fakeClock{now: time.Now()}, &fakeLogSink{}, io.Discard, planConfig(0)).
+		WithStatusReporter(reporter)
+
+	o.ServeAnnotations(context.Background(), closedChannel())
+
+	wantPrompts := []string{"annotate", "plan", "tests"}
+	got := invocationPrompts(runner)
+	if len(got) != len(wantPrompts) {
+		t.Fatalf("invocations = %v, want %v", got, wantPrompts)
+	}
+	for i, want := range wantPrompts {
+		if got[i] != want {
+			t.Errorf("invocation %d = %q, want %q (full order %v)", i+1, got[i], want, got)
+		}
+	}
+	if reporter.goal != "the revised goal" {
+		t.Errorf("republished goal = %q, want the revision", reporter.goal)
+	}
+	if reporter.plan != "rebuilt plan" {
+		t.Errorf("republished plan = %q, want the rebuilt plan", reporter.plan)
+	}
+	if len(reporter.taskSteps) != 1 || reporter.taskSteps[0].Text != "rebuilt step" {
+		t.Errorf("republished steps = %+v, want the rebuilt step", reporter.taskSteps)
+	}
+}
+
+func TestGoalAnnotationDiscardsStaleDocumentsBeforeReplanning(t *testing.T) {
+	fs := newFakeFileStore()
+	fs.Write("GOAL.md", "the goal")
+	fs.Write("PLAN.md", "stale plan")
+	fs.Write("STEPS.md", "- [ ] stale step\n")
+	fs.Write("TESTS.md", validTestsDoc)
+	var atReplan struct{ plan, steps, tests bool }
+	runner := &fakeRunner{script: func(call int, _ io.Writer) error {
+		if call == 2 { // the replan invocation must not see the previous goal's output
+			atReplan.plan = fs.Exists("PLAN.md")
+			atReplan.steps = fs.Exists("STEPS.md")
+			atReplan.tests = fs.Exists("TESTS.md")
+			fs.Write("PLAN.md", "rebuilt plan")
+			fs.Write("STEPS.md", "- [ ] rebuilt step\n")
+		}
+		if call == 3 {
+			fs.Write("TESTS.md", validTestsDoc)
+		}
+		return nil
+	}}
+	reporter := &fakeStatusReporter{annotations: []models.Annotation{
+		annotation(models.AnnotationSectionGoal, "", "widen the scope"),
+	}}
+	o := services.NewPlanOrchestrator(runner, fs, &fakePrompter{}, &fakeClock{now: time.Now()}, &fakeLogSink{}, io.Discard, planConfig(0)).
+		WithStatusReporter(reporter)
+
+	o.ServeAnnotations(context.Background(), closedChannel())
+
+	if atReplan.plan || atReplan.steps || atReplan.tests {
+		t.Errorf("stale documents survived into the replan: plan=%v steps=%v tests=%v",
+			atReplan.plan, atReplan.steps, atReplan.tests)
+	}
+}
+
+func TestPlanAnnotationDoesNotRebuildFromGoal(t *testing.T) {
+	fs := newFakeFileStore()
+	fs.Write("GOAL.md", "the goal")
+	fs.Write("PLAN.md", "the plan")
+	fs.Write("STEPS.md", "- [ ] a step\n")
+	fs.Write("TESTS.md", validTestsDoc)
+	runner := &fakeRunner{}
+	reporter := &fakeStatusReporter{annotations: []models.Annotation{
+		annotation(models.AnnotationSectionPlan, "", "tighten the scope"),
+	}}
+	o := services.NewPlanOrchestrator(runner, fs, &fakePrompter{}, &fakeClock{now: time.Now()}, &fakeLogSink{}, io.Discard, planConfig(0)).
+		WithStatusReporter(reporter)
+
+	o.ServeAnnotations(context.Background(), closedChannel())
+
+	if got := invocationPrompts(runner); len(got) != 1 || got[0] != "annotate" {
+		t.Errorf("invocations = %v, want just the annotate pass", got)
+	}
+	if !fs.Exists("PLAN.md") || !fs.Exists("STEPS.md") || !fs.Exists("TESTS.md") {
+		t.Error("a non-goal annotation must not discard the plan documents")
+	}
+}
+
 func TestServeAnnotationsAppliesLateArrivalsUntilDismissed(t *testing.T) {
 	fs := newFakeFileStore()
 	fs.Write("PLAN.md", "the plan")
@@ -110,10 +224,12 @@ func TestServeAnnotationsAppliesLateArrivalsUntilDismissed(t *testing.T) {
 	}()
 
 	// Submit an annotation after the loop is already waiting, the way the
-	// status page does during the hold window.
+	// status page does during the hold window. A plan annotation keeps this
+	// test on delivery alone; the goal section's extra rebuild passes are
+	// covered by TestGoalAnnotationRebuildsPlanStepsAndTests.
 	reporter.mu.Lock()
 	reporter.annotations = append(reporter.annotations,
-		annotation(models.AnnotationSectionGoal, "", "clarify the audience"))
+		annotation(models.AnnotationSectionPlan, "", "clarify the audience"))
 	reporter.mu.Unlock()
 	reporter.signal <- struct{}{}
 

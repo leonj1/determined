@@ -626,6 +626,8 @@ func (o *PlanOrchestrator) drainAnnotations(ctx context.Context) {
 
 // applyAnnotation stages one annotation for the tool, runs the annotate
 // invocation, and republishes the plan documents so the page shows the result.
+// A goal annotation additionally rebuilds the plan, steps, and tests, since
+// they were derived from the goal the annotation just changed.
 func (o *PlanOrchestrator) applyAnnotation(ctx context.Context, annotation models.Annotation) {
 	if err := o.files.Write(o.cfg.AnnotationFile, annotationDocument(annotation, o.cfg)); err != nil {
 		fmt.Fprintf(o.terminal, "determined: could not write %s: %v\n", o.cfg.AnnotationFile, err)
@@ -636,6 +638,37 @@ func (o *PlanOrchestrator) applyAnnotation(ctx context.Context, annotation model
 	}
 	o.files.Remove(o.cfg.AnnotationFile)
 	o.reportGoal()
+	if annotation.Section == models.AnnotationSectionGoal {
+		o.rebuildFromGoal(ctx)
+		return
+	}
+	o.reportPlan()
+}
+
+// rebuildFromGoal discards the plan, steps, and tests derived from the previous
+// goal and regenerates them from the revised one, so the page never shows a plan
+// that answers a goal the user has since changed.
+func (o *PlanOrchestrator) rebuildFromGoal(ctx context.Context) {
+	fmt.Fprintf(o.terminal,
+		"determined: the goal changed; rebuilding %s, %s, and %s\n",
+		o.cfg.PlanFile, o.cfg.StepsFile, o.cfg.TestsFile)
+	o.files.Remove(o.cfg.PlanFile)
+	o.files.Remove(o.cfg.StepsFile)
+	o.files.Remove(o.cfg.TestsFile)
+	if _, stop := o.runInvocation(ctx, o.cfg.Invocation, "replanning for the revised goal"); stop {
+		return
+	}
+	if !o.planDrafted() {
+		fmt.Fprintf(o.terminal,
+			"determined: the tool did not rebuild %s and %s for the revised goal\n",
+			o.cfg.PlanFile, o.cfg.StepsFile)
+		o.reportPlan()
+		return
+	}
+	if _, stop := o.ensureTests(ctx); stop {
+		o.reportPlan()
+		return
+	}
 	o.reportPlan()
 }
 
