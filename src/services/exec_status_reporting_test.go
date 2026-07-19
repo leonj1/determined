@@ -230,11 +230,12 @@ func TestExecuteRunReportsFullStatusSequence(t *testing.T) {
 		case 1:
 			io.WriteString(out, "widget added\n")
 			fs.Write("STEPS.md", "- [x] 1. Add the widget.\n  Done when: widget tests pass.\n")
-		case 2: // the whole-plan audit approves
+		case 2: // the docs update
+		case 3: // the whole-plan audit approves
 			fs.Write("STOP.md", "audit: plan satisfied")
-		case 3:
-			fs.Write("EXPLANATION.md", "The widget now works.\n\n```diff\n--- a/widget.go\n+++ b/widget.go\n+enabled\n```")
 		case 4:
+			fs.Write("EXPLANATION.md", "The widget now works.\n\n```diff\n--- a/widget.go\n+++ b/widget.go\n+enabled\n```")
+		case 5:
 			fs.Write("QUIZ.json", validQuizJSON)
 		}
 		return nil
@@ -255,21 +256,24 @@ func TestExecuteRunReportsFullStatusSequence(t *testing.T) {
 		"exec-log-entry: executing step 1: 1. Add the widget.",
 		"settle-exec-log-entry 0: ok",
 		"task-steps",
+		"progress: updating project documentation",
+		"exec-log-entry: updating project documentation",
+		"settle-exec-log-entry 1: ok",
 		"progress: auditing the whole plan",
 		"exec-log-entry: auditing the whole plan",
-		"settle-exec-log-entry 1: ok",
+		"settle-exec-log-entry 2: ok",
 		"task-steps",
 		"finish-execution: succeeded",
 		"start-explanation",
 		"progress: explaining the changes",
 		"exec-log-entry: explaining the changes",
-		"settle-exec-log-entry 2: ok",
+		"settle-exec-log-entry 3: ok",
 		"set-explanation",
 		"finish-explanation: succeeded",
 		"start-quiz",
 		"progress: writing the quiz",
 		"exec-log-entry: writing the quiz",
-		"settle-exec-log-entry 3: ok",
+		"settle-exec-log-entry 4: ok",
 		"set-quiz",
 		"finish-quiz: succeeded",
 	})
@@ -285,13 +289,13 @@ func TestExecuteRunReportsFullStatusSequence(t *testing.T) {
 	if !reflect.DeepEqual(reporter.quiz, validQuizQuestions) {
 		t.Errorf("quiz = %+v, want %+v", reporter.quiz, validQuizQuestions)
 	}
-	if runner.calls != 4 {
-		t.Fatalf("tool calls = %d, want work, audit, explanation, and quiz", runner.calls)
+	if runner.calls != 5 {
+		t.Fatalf("tool calls = %d, want work, docs, audit, explanation, and quiz", runner.calls)
 	}
-	if prompt := runner.prompt(3); !strings.Contains(prompt, "Write only EXPLANATION.md") {
+	if prompt := runner.prompt(4); !strings.Contains(prompt, "Write only EXPLANATION.md") {
 		t.Errorf("explanation prompt = %q, want configured filename", prompt)
 	}
-	if prompt := runner.prompt(4); !strings.Contains(prompt, "Write only QUIZ.json") ||
+	if prompt := runner.prompt(5); !strings.Contains(prompt, "Write only QUIZ.json") ||
 		!strings.Contains(prompt, "Read EXPLANATION.md") {
 		t.Errorf("quiz prompt = %q, want configured artifact names", prompt)
 	}

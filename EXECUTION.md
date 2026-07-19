@@ -35,8 +35,8 @@ itself every iteration; it never trusts the tool's own claim of completion.
    tool at exactly the next unchecked step, injecting the step text, its
    `Purpose:` intent when present, and its
    `Done when:` criterion, plus the `NOTES.md` read/append instructions (see
-   below). When every box is checked, the iteration runs the specialist review
-   sequence and then the whole-plan audit. If `STEPS.md` contains no parseable
+   below). When every box is checked, the iteration runs the documentation
+   update, then the specialist review sequence, then the whole-plan audit. If `STEPS.md` contains no parseable
    checkboxes, the tool is asked to restore a checkbox-format step list or
    confirm completion.
 4. **Invocation** — the tool's command runs, streaming its output live **and**
@@ -65,11 +65,22 @@ itself every iteration; it never trusts the tool's own claim of completion.
    progress, which bounds worker/reviewer ping-pong. `0` disables stall
    detection.
 
-## Specialist reviews and the whole-plan audit
+## Documentation update, specialist reviews, and the whole-plan audit
 
-Checked boxes alone are not success. Once every step is checked,
-`--specialized-reviews` (default **on**) runs three fresh, independent review
-invocations in order:
+Checked boxes alone are not success. Once every step is checked, one
+invocation first updates the project's own documentation so it describes the
+work as it now stands: `README.md`, plus any other documentation the project
+already keeps (a `docs/` directory, `AGENTS.md`, `CLAUDE.md`, `BUILD.md`,
+usage or configuration references, changelogs). It documents only what this
+work changed or added — new or renamed commands, flags, environment variables,
+endpoints, configuration, and setup or build steps — and corrects statements
+the work made wrong. It is the only completion-stage invocation that edits
+files rather than reporting findings, and it does not touch code, tests,
+`PLAN.md`, `STEPS.md`, `TESTS.md`, or `CRITERIA.md`. A failed documentation
+invocation blocks the later gates until the next iteration.
+
+Then `--specialized-reviews` (default **on**) runs three fresh, independent
+review invocations in order:
 
 1. **Security** — authentication/authorization, trust boundaries, injection,
    validation, secrets, cryptography, dependencies, and sensitive data.

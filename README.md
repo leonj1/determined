@@ -8,8 +8,8 @@ exactly the next unchecked step and its acceptance criterion. When the tool
 checks a step off, an independent reviewer invocation verifies the criterion
 actually holds — unchecking it and recording why in `FIXES.md` when it
 doesn't. Every verified step is git-committed. Only a final whole-plan audit
-can end the run successfully, and it is preceded by independent security,
-performance, and reliability/maintainability reviews.
+can end the run successfully, and it is preceded by a documentation update and
+independent security, performance, and reliability/maintainability reviews.
 
 Don't have a plan yet? `determined --plan "your goal"` interviews you first
 and writes `PLAN.md` / `STEPS.md` for you.
@@ -136,14 +136,19 @@ with `--plan` and `-exec` (the session runs first); see
    survives verification.
 7. **Detect stalls** — exit `3` after `--max-stalled-iterations` consecutive
    iterations without a newly checked step; otherwise return to step 2.
-8. **Run specialist reviews** — once all boxes are checked, independently
-   review security, performance, and reliability/maintainability. A concrete
-   finding is written to `FIXES.md` and reopens a relevant step (or adds a
-   remediation step), returning execution to step 2.
-9. **Audit the whole plan** — after the specialist gates pass, compare the
-   implementation with `PLAN.md`. Reopen unsatisfied steps and record why in
-   `FIXES.md`, or create `STOP.md` when the entire plan is satisfied.
-10. **Finish execution** — return to the completion check, which exits `0`
+8. **Update the documentation** — once all boxes are checked, bring the
+   project's own docs (`README.md`, a `docs/` directory, and any other
+   documentation the project already keeps) in line with what the work
+   changed: new commands, flags, environment variables, endpoints,
+   configuration, and setup steps.
+9. **Run specialist reviews** — independently review security, performance,
+   and reliability/maintainability. A concrete finding is written to
+   `FIXES.md` and reopens a relevant step (or adds a remediation step),
+   returning execution to step 2.
+10. **Audit the whole plan** — after the specialist gates pass, compare the
+    implementation with `PLAN.md`. Reopen unsatisfied steps and record why in
+    `FIXES.md`, or create `STOP.md` when the entire plan is satisfied.
+11. **Finish execution** — return to the completion check, which exits `0`
     only when all boxes remain checked and `STOP.md` is present.
 
 See [EXECUTION.md](EXECUTION.md) for details.

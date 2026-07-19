@@ -432,16 +432,23 @@ type specializedReview struct {
 // A failure or a reviewer-created remediation step prevents later gates from
 // running until the next outer iteration.
 func (o *Orchestrator) runCompletionReviews(ctx context.Context) (models.Outcome, bool) {
+	result := o.invoke(ctx, docsPrompt, "updating project documentation")
+	if result.stop {
+		return result.outcome, true
+	}
+	if !result.succeeded {
+		return models.OutcomeStopped, false
+	}
 	if o.cfg.SpecializedReviews {
-		result := o.runSpecializedReviews(ctx)
-		if result.stop {
-			return result.outcome, true
+		reviews := o.runSpecializedReviews(ctx)
+		if reviews.stop {
+			return reviews.outcome, true
 		}
-		if !result.succeeded {
+		if !reviews.succeeded {
 			return models.OutcomeStopped, false
 		}
 	}
-	result := o.invoke(ctx, auditPrompt, "auditing the whole plan")
+	result = o.invoke(ctx, auditPrompt, "auditing the whole plan")
 	if result.succeeded && o.runComplete(o.parsedSteps()) {
 		return models.OutcomeStopped, true
 	}
@@ -552,6 +559,19 @@ const noParsableStepsPrompt = "Read STEPS.md. It contains no checkbox-format ste
 	"`Purpose:` line stating the step's functional intent and ending with " +
 	"a `Done when:` line stating a checkable acceptance condition. " +
 	"If the work is genuinely finished, create STOP.md. Do not start new work."
+
+// docsPrompt updates the project's own documentation once every step is
+// checked, before any specialist review and the final audit. It is the only
+// completion-stage invocation that edits files rather than reporting findings.
+const docsPrompt = "All steps in STEPS.md are checked complete. Read PLAN.md, STEPS.md, and the implementation. " +
+	"Update the project's existing documentation so it describes the work as it now stands: " +
+	"README.md, plus any other documentation the project already keeps (a docs/ directory, " +
+	"AGENTS.md, CLAUDE.md, BUILD.md, usage or configuration references, changelogs). " +
+	"Only document behavior this work actually changed or added: new or renamed commands, " +
+	"flags, environment variables, endpoints, configuration, and setup or build steps. " +
+	"Correct any statement this work made wrong. Do not create new documentation files unless a " +
+	"documented surface has nowhere to live, do not restate the plan, and do not change code, " +
+	"tests, PLAN.md, STEPS.md, TESTS.md, or CRITERIA.md. If no documentation needs changing, do nothing."
 
 // auditPrompt is the final whole-plan review run once every step is checked.
 // It enforces the plan plus CRITERIA.md and TESTS.md test existence and passing.
