@@ -78,8 +78,12 @@ func (s *PlanStatusServer) Start() error {
 // interfaces, so the printed host is localhost; remote users substitute the
 // machine's external IP with the same port. Valid only after Start.
 func (s *PlanStatusServer) URL() string {
-	port := s.listener.Addr().(*net.TCPAddr).Port
-	return fmt.Sprintf("http://localhost:%d/", port)
+	return fmt.Sprintf("http://localhost:%d/", s.Port())
+}
+
+// Port returns the bound port. Valid only after Start.
+func (s *PlanStatusServer) Port() int {
+	return s.listener.Addr().(*net.TCPAddr).Port
 }
 
 // Shutdown stops the server, releasing the port.
@@ -98,6 +102,7 @@ func (s *PlanStatusServer) servePage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Header().Set(StatusPageHeader, "1")
 	w.Write(planStatusPage) //nolint:errcheck // best-effort page write
 }
 

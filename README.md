@@ -209,6 +209,7 @@ ideally a clean git checkout, so every change is reviewable and revertible.
 | `--review-plan`  | `false`  | Critique existing `PLAN.md` + `STEPS.md`, interview the user about consequential choices, and revise without executing. |
 | `--criteria`     | `false`  | Interactively capture BDD journey tests into `CRITERIA.md` (accept / modify / skip / end / cancel per proposal). Runs before `--plan` / `-exec` when combined; incompatible with `--review-plan`. |
 | `--interactive`  | `false`  | With `--plan`, serve a live HTML status page (local web server) showing the goal, plan, and workflow steps in real time, with a completion banner and timing. Once planning completes, an Implement button starts the execute loop on the Execution tab (`/exec`); after success, the Explanation tab (`/explain`) shows an AI-generated walkthrough with colored diffs, followed by a five-question Quiz tab (`/quiz`). Requires `--plan`. |
+| `--link`         | `false`  | Print the URL of the status page served by a still-running `--interactive` session, then exit. Recovers the link after the launching terminal is closed. Prints the URL on exit `0` only after confirming the recorded process is alive, its port is listening, and that port answers with the determined status page; otherwise reports no session and exits `1`. |
 | `--mvp`          | `false`  | Use a reduced quality gate for the smallest usable outcome. Requires `--plan`; incompatible with `--prototype`. |
 | `--prototype`    | `false`  | Ask only blocking questions and skip quality refinement for fast experiments. Requires `--plan`; incompatible with `--mvp`. |
 | `--max-step-passes` | `2`   | Max quality assess/refine rounds during planning or review. `0` disables refinement. |
@@ -228,6 +229,26 @@ ideally a clean git checkout, so every change is reviewable and revertible.
 | Command             | Purpose                                                        |
 |---------------------|----------------------------------------------------------------|
 | `determined update` | Download the latest supported GitHub Release binary and replace the current executable. |
+
+### Recovering the status page URL
+
+An `--interactive` session prints its URL once, at startup, so the link is lost
+when that terminal closes even though the server keeps serving. Run
+`determined -link` from any terminal to get it back:
+
+```
+$ determined -link
+http://localhost:63431/
+```
+
+The session's process ID and port are recorded in `~/.determined/session.json`,
+but that record is only a starting point — a saved port proves nothing once the
+process has exited and the operating system has handed the port to something
+else. Before printing anything, `-link` confirms the recorded process is still
+running, that its port is still listening, and that the port answers with the
+determined status page rather than an unrelated server. If any check fails it
+prints nothing to stdout, reports no running session on stderr, exits `1`, and
+deletes the stale record so it cannot mislead a later call.
 
 The protocol filenames (`PLAN.md` / `STEPS.md` / `STOP.md` / `NOTES.md` /
 `FIXES.md` / `EXPLANATION.md`) are hardcoded; the prompt is rebuilt each

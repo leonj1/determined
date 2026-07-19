@@ -60,8 +60,12 @@ func main() {
 	gitCheckpoint := flag.Bool("git-checkpoint", true,
 		"git-commit the working tree after each verified step when running in a git repository")
 	showVersion := flag.Bool("version", false, "print the version and exit")
+	link := flag.Bool("link", false, "print the URL of the interactive status page served by a still-running determined process, and exit")
 	flag.Parse()
 
+	if *link {
+		os.Exit(runLinkCommand(os.Stdout, os.Stderr))
+	}
 	if *initialize {
 		runInitCommand()
 		return
@@ -212,6 +216,45 @@ func validateExecFlag(reviewing, executing bool) error {
 		return fmt.Errorf("-exec and -review-plan cannot be used together")
 	}
 	return nil
+}
+
+// statusPageProbeTimeout bounds the -link liveness probe: a listener that has
+// not answered by then is treated as not serving, so -link always returns
+// promptly instead of hanging on a wedged process.
+const statusPageProbeTimeout = 2 * time.Second
+
+// sessionLocator builds the locator over the well-known record path. It reports
+// false when the home directory is unknown, in which case sessions cannot be
+// recorded or recovered.
+func sessionLocator() (services.SessionLocator, bool) {
+	path, err := clients.DefaultSessionRecordPath()
+	if err != nil {
+		return services.SessionLocator{}, false
+	}
+	return services.NewSessionLocator(
+		clients.NewFileSessionRecordStore(path),
+		clients.NewSignalProcessProbe(),
+		clients.NewHttpStatusPageProbe(statusPageProbeTimeout),
+	), true
+}
+
+// runLinkCommand prints the URL of a verified-live status page and returns the
+// process exit code: 0 when a session was confirmed, 1 when none was. It
+// reports a link only after proving the recording process is alive, its port is
+// listening, and that port answers with the determined status page.
+func runLinkCommand(stdout, stderr io.Writer) int {
+	locator, located := sessionLocator()
+	if !located {
+		fmt.Fprintf(stderr, "determined: cannot locate the session record: home directory is unknown\n")
+		return 1
+	}
+	link, err := locator.Locate()
+	if err != nil {
+		fmt.Fprintf(stderr, "determined: %v\n", err)
+		return 1
+	}
+	fmt.Fprintf(stdout, "%s\n", link.URL)
+	return 0
 }
 
 // operationRequested reports whether the flags select any run operation.
@@ -400,7 +443,13 @@ func runInteractivePlan(ctx context.Context, orchestrator *services.PlanOrchestr
 		fmt.Fprintf(os.Stderr, "determined: %v\n", err)
 		return models.OutcomeDroidFailed
 	}
+	locator, located := sessionLocator()
+	if located {
+		locator.Remember(models.SessionRecord{PID: os.Getpid(), Port: server.Port()}) //nolint:errcheck // -link is a convenience; planning proceeds regardless
+		defer locator.Forget()                                                        //nolint:errcheck // best-effort cleanup on exit
+	}
 	fmt.Fprintf(os.Stdout, "determined: planning status page at %s\n", server.URL())
+	fmt.Fprintf(os.Stdout, "determined: recover this link later with `determined -link`\n")
 
 	outcome := orchestrator.WithStatusReporter(status).Run(ctx)
 
