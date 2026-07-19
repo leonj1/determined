@@ -68,6 +68,11 @@ func TestPlanStatusServerContract(t *testing.T) {
 		Phase:        models.PlanPhaseRunning,
 		Explanation:  "The implementation is complete.",
 		ExplainPhase: models.ExplainPhaseSucceeded,
+		Quiz: []models.QuizQuestion{{
+			Question: "What changed?", Choices: []string{"A", "B", "C", "D"},
+			CorrectIndex: 2, Rationale: "C describes the diff.",
+		}},
+		QuizPhase: models.QuizPhaseSucceeded,
 	})
 	sink := &fakeAnnotationSink{}
 	server := clients.NewPlanStatusServer(source, sink, &fakeImplementSink{}, serverClock{t: time.Date(2026, 7, 16, 10, 0, 0, 0, time.UTC)})
@@ -113,6 +118,8 @@ func assertPageServed(t *testing.T, url string) {
 		"implementOffered", "execLog", "execPhase",
 		`data-tab="explain"`, `id="explanation"`, "renderExplanation",
 		"explainPhase", "renderDiff", "diff-add", "diff-del", "diff-hunk", "diff-meta",
+		`data-tab="quiz"`, `id="quiz-state"`, `id="quiz-card"`, "renderQuiz",
+		"quizPhase", "Question ", "Score: ", "Retake quiz",
 	} {
 		if !strings.Contains(page, marker) {
 			t.Errorf("page missing %q", marker)
@@ -206,6 +213,10 @@ func assertEventStream(t *testing.T, url string, source *fakePlanStatusSource) {
 	if !strings.Contains(first, `"explanation":"The implementation is complete."`) ||
 		!strings.Contains(first, `"explainPhase":"succeeded"`) {
 		t.Errorf("initial snapshot = %s, want the completed explanation", first)
+	}
+	if !strings.Contains(first, `"quiz":[{"question":"What changed?"`) ||
+		!strings.Contains(first, `"quizPhase":"succeeded"`) {
+		t.Errorf("initial snapshot = %s, want the completed quiz", first)
 	}
 
 	updated := source.snapshot

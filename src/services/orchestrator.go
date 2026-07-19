@@ -2,6 +2,7 @@ package services
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"strings"
@@ -39,6 +40,9 @@ type ExecStatusReporter interface {
 	StartExplanation()
 	SetExplanation(text string)
 	FinishExplanation(succeeded bool)
+	StartQuiz()
+	SetQuiz(questions []models.QuizQuestion)
+	FinishQuiz(succeeded bool)
 }
 
 // execOutputSink adapts an ExecStatusReporter onto LogOutputSink so
@@ -538,6 +542,19 @@ func explainPrompt(cfg models.Config) string {
 		"implement anything, or create STOP.md."
 }
 
+// quizPrompt asks for a machine-readable knowledge check grounded in the
+// explanation and diff, naming both configured artifacts explicitly.
+func quizPrompt(cfg models.Config) string {
+	return "Read " + cfg.ExplanationFile + " and inspect the code diff it explains. " +
+		"Write only " + cfg.QuizFile + " as JSON with exactly this shape: " +
+		`{"questions":[{"question":"What changed?","choices":["A","B","C","D"],` +
+		`"correctIndex":0,"rationale":"One sentence explaining the answer."}]}. ` +
+		"Create exactly 5 questions with exactly 4 non-empty choices each. Use a zero-based correctIndex " +
+		"from 0 through 3 and a non-empty one-sentence rationale for every question. Quiz the reader on " +
+		"the explanation's content and the important code changes. The file must contain only the JSON object. " +
+		"Do not modify any other file, implement anything, or create STOP.md."
+}
+
 // iterationPrompt reads the steps file and builds this iteration's instruction:
 // the whole-plan audit when every box is checked (checkCompletion only ends
 // the run once the audit's STOP.md exists), otherwise the next unchecked
@@ -701,4 +718,66 @@ func (o *Orchestrator) explainRun(ctx context.Context) {
 	}
 	o.status.SetExplanation(content)
 	o.status.FinishExplanation(true)
+	o.quizRun(ctx)
+}
+
+func (o *Orchestrator) quizRun(ctx context.Context) {
+	o.status.StartQuiz()
+	result := o.invoke(ctx, quizPrompt(o.cfg), "writing the quiz")
+	if !result.succeeded {
+		o.status.FinishQuiz(false)
+		return
+	}
+	content, err := o.files.Read(o.cfg.QuizFile)
+	if err != nil {
+		o.status.FinishQuiz(false)
+		return
+	}
+	questions, err := parseQuiz(content)
+	if err != nil {
+		o.status.FinishQuiz(false)
+		return
+	}
+	o.status.SetQuiz(questions)
+	o.status.FinishQuiz(true)
+}
+
+func parseQuiz(content string) ([]models.QuizQuestion, error) {
+	var artifact struct {
+		Questions []models.QuizQuestion `json:"questions"`
+	}
+	if err := json.Unmarshal([]byte(content), &artifact); err != nil {
+		return nil, fmt.Errorf("parse quiz: %w", err)
+	}
+	if err := validateQuiz(artifact.Questions); err != nil {
+		return nil, err
+	}
+	return artifact.Questions, nil
+}
+
+func validateQuiz(questions []models.QuizQuestion) error {
+	if len(questions) != 5 {
+		return fmt.Errorf("quiz has %d questions, want 5", len(questions))
+	}
+	for i, question := range questions {
+		if err := validateQuizQuestion(question); err != nil {
+			return fmt.Errorf("quiz question %d: %w", i+1, err)
+		}
+	}
+	return nil
+}
+
+func validateQuizQuestion(question models.QuizQuestion) error {
+	if strings.TrimSpace(question.Question) == "" || strings.TrimSpace(question.Rationale) == "" {
+		return fmt.Errorf("question and rationale must be non-empty")
+	}
+	if len(question.Choices) != 4 || question.CorrectIndex < 0 || question.CorrectIndex > 3 {
+		return fmt.Errorf("must have 4 choices and a correctIndex from 0 through 3")
+	}
+	for _, choice := range question.Choices {
+		if strings.TrimSpace(choice) == "" {
+			return fmt.Errorf("choices must be non-empty")
+		}
+	}
+	return nil
 }

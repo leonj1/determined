@@ -138,10 +138,29 @@
   .step-card .done-when p, .step-card .purpose p { display: inline; margin: 0; }
   .step-card .done-when strong, .step-card .purpose strong { color: var(--fg); }
   #log, #exec-log { display: grid; gap: 0.75rem; }
-  #exec-state, #explain-state { margin-bottom: 0.75rem; font-weight: 600; }
-  #exec-state.empty, #explain-state.empty { font-weight: 400; }
-  #exec-state.succeeded, #explain-state.succeeded { color: var(--ok-fg); }
-  #exec-state.failed, #explain-state.failed { color: var(--bad-fg); }
+  #exec-state, #explain-state, #quiz-state { margin-bottom: 0.75rem; font-weight: 600; }
+  #exec-state.empty, #explain-state.empty, #quiz-state.empty { font-weight: 400; }
+  #exec-state.succeeded, #explain-state.succeeded, #quiz-state.succeeded { color: var(--ok-fg); }
+  #exec-state.failed, #explain-state.failed, #quiz-state.failed { color: var(--bad-fg); }
+  #quiz-card { display: grid; gap: 0.9rem; }
+  .quiz-meta { display: flex; justify-content: space-between; gap: 1rem; color: var(--muted); font-size: 0.85rem; font-weight: 600; }
+  .quiz-question { margin: 0; font-size: 1.05rem; font-weight: 650; }
+  .quiz-choices { display: grid; gap: 0.55rem; }
+  .quiz-choice, .quiz-next, .quiz-retake {
+    appearance: none; border: 1px solid var(--border); border-radius: 0.5rem;
+    padding: 0.65rem 0.8rem; background: var(--bg); color: var(--fg); font: inherit; cursor: pointer;
+  }
+  .quiz-choice { text-align: left; }
+  .quiz-choice:hover:not(:disabled) { border-color: var(--accent); }
+  .quiz-choice:disabled { cursor: default; opacity: 1; }
+  .quiz-choice.correct { background: var(--ok-bg); color: var(--ok-fg); border-color: var(--ok-border); }
+  .quiz-choice.wrong { background: var(--bad-bg); color: var(--bad-fg); border-color: var(--bad-border); }
+  .quiz-rationale { margin: 0; padding: 0.65rem 0.8rem; border-left: 3px solid var(--accent); background: var(--bg); }
+  .quiz-next, .quiz-retake { justify-self: start; background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 650; }
+  .quiz-results { margin: 0; padding-left: 1.4rem; }
+  .quiz-results li { margin: 0.4rem 0; }
+  .quiz-results .correct { color: var(--ok-fg); }
+  .quiz-results .wrong { color: var(--bad-fg); }
   .log-entry { border: 1px solid var(--border); border-radius: 0.6rem; background: var(--bg); }
   .log-entry .log-head {
     display: flex; align-items: baseline; gap: 0.5rem; padding: 0.5rem 1rem;
@@ -228,6 +247,7 @@
   <button data-tab="log">Log</button>
   <button data-tab="exec">Execution</button>
   <button data-tab="explain">Explanation</button>
+  <button data-tab="quiz">Quiz</button>
 </nav>
 <main>
   <div id="content">
@@ -269,6 +289,11 @@
       <div id="explain-state" class="empty">Available after execution completes.</div>
       <div id="explanation" class="doc"></div>
     </section>
+    <section class="panel" id="panel-quiz">
+      <h2>Quiz</h2>
+      <div id="quiz-state" class="empty">Available after the explanation is generated.</div>
+      <div id="quiz-card"></div>
+    </section>
   </div>
   <aside id="activity">
     <section>
@@ -282,6 +307,7 @@
 <script>
   "use strict";
   const el = (id) => document.getElementById(id);
+  let quizAttempt = { payload: "", questions: [], questionIndex: 0, answers: [], results: false };
 
   // Header theme toggle: cycles auto → light → dark → auto. A forced choice
   // is stored under the "theme" key; auto removes it and the page follows
@@ -608,7 +634,7 @@
 
   function tabFromPath() {
     const name = window.location.pathname.replace(/^\//, "").split("/")[0];
-    return ["goal", "plan", "tests", "steps", "log", "exec", "explain"].includes(name) ? name : "goal";
+    return ["goal", "plan", "tests", "steps", "log", "exec", "explain", "quiz"].includes(name) ? name : "goal";
   }
   function testsTabFromPath() {
     const parts = window.location.pathname.replace(/^\//, "").split("/");
@@ -749,6 +775,7 @@
     renderLog(status.log || []);
     renderExec(status);
     renderExplanation(status);
+    renderQuiz(status);
     renderActivity(status.steps || [], activityIsRunning(status));
     renderAnnotations(status.pendingAnnotations || []);
     renderBanner(status);
@@ -802,6 +829,140 @@
       state.style.display = "none";
       setDoc(el("explanation"), status.explanation, "Explanation is empty.");
     }
+  }
+
+  function renderQuiz(status) {
+    const state = el("quiz-state");
+    const phase = status.quizPhase || "";
+    state.style.display = "block";
+    state.classList.remove("empty", "succeeded", "failed");
+    if (phase !== "succeeded") {
+      showQuizPhase(state, phase);
+      el("quiz-card").replaceChildren();
+      return;
+    }
+    state.style.display = "none";
+    const questions = status.quiz || [];
+    const payload = JSON.stringify(questions);
+    if (payload === quizAttempt.payload) return;
+    quizAttempt = { payload, questions, questionIndex: 0, answers: [], results: false };
+    renderQuizAttempt();
+  }
+
+  function showQuizPhase(state, phase) {
+    if (phase === "") {
+      state.classList.add("empty");
+      state.textContent = "Available after the explanation is generated.";
+    } else if (phase === "running") {
+      state.textContent = "⚙ Generating quiz…";
+    } else {
+      state.classList.add("failed");
+      state.textContent = "✗ Quiz could not be generated.";
+    }
+  }
+
+  function quizScore() {
+    return quizAttempt.answers.reduce((score, answer, index) =>
+      score + (answer === quizAttempt.questions[index].correctIndex ? 1 : 0), 0);
+  }
+
+  function renderQuizAttempt() {
+    const card = el("quiz-card");
+    card.replaceChildren();
+    if (quizAttempt.results) renderQuizResults(card);
+    else renderQuizQuestion(card);
+  }
+
+  function renderQuizQuestion(card) {
+    const question = quizAttempt.questions[quizAttempt.questionIndex];
+    if (!question) return;
+    const answered = quizAttempt.answers[quizAttempt.questionIndex] !== undefined;
+    const meta = document.createElement("div");
+    meta.className = "quiz-meta";
+    meta.innerHTML = "<span>Question " + (quizAttempt.questionIndex + 1) + " of " + quizAttempt.questions.length +
+      "</span><span>Score: " + quizScore() + " / " + quizAttempt.answers.length + "</span>";
+    const text = document.createElement("p");
+    text.className = "quiz-question";
+    text.textContent = question.question;
+    card.append(meta, text, quizChoices(question, answered));
+    if (answered) card.append(quizRationale(question), quizNextButton());
+  }
+
+  function quizChoices(question, answered) {
+    const choices = document.createElement("div");
+    choices.className = "quiz-choices";
+    question.choices.forEach((choice, index) => {
+      choices.append(quizChoiceButton(question, choice, index, answered));
+    });
+    return choices;
+  }
+
+  function quizChoiceButton(question, choice, index, answered) {
+    const button = document.createElement("button");
+    const selected = quizAttempt.answers[quizAttempt.questionIndex];
+    button.className = "quiz-choice";
+    button.textContent = choice;
+    button.disabled = answered;
+    if (answered && index === question.correctIndex) button.classList.add("correct");
+    if (answered && index === selected && index !== question.correctIndex) button.classList.add("wrong");
+    button.addEventListener("click", () => answerQuiz(index));
+    return button;
+  }
+
+  function quizRationale(question) {
+    const rationale = document.createElement("p");
+    rationale.className = "quiz-rationale";
+    rationale.textContent = question.rationale;
+    return rationale;
+  }
+
+  function quizNextButton() {
+    const button = document.createElement("button");
+    const last = quizAttempt.questionIndex === quizAttempt.questions.length - 1;
+    button.className = "quiz-next";
+    button.textContent = last ? "See results" : "Next question";
+    button.addEventListener("click", advanceQuiz);
+    return button;
+  }
+
+  function answerQuiz(choiceIndex) {
+    const answers = quizAttempt.answers.concat(choiceIndex);
+    quizAttempt = { ...quizAttempt, answers };
+    renderQuizAttempt();
+  }
+
+  function advanceQuiz() {
+    const last = quizAttempt.questionIndex === quizAttempt.questions.length - 1;
+    quizAttempt = last
+      ? { ...quizAttempt, results: true }
+      : { ...quizAttempt, questionIndex: quizAttempt.questionIndex + 1 };
+    renderQuizAttempt();
+  }
+
+  function renderQuizResults(card) {
+    const heading = document.createElement("h3");
+    heading.textContent = "You scored " + quizScore() + " / " + quizAttempt.questions.length;
+    const list = document.createElement("ol");
+    list.className = "quiz-results";
+    quizAttempt.questions.forEach((question, index) => list.append(quizResult(question, index)));
+    const retake = document.createElement("button");
+    retake.className = "quiz-retake";
+    retake.textContent = "Retake quiz";
+    retake.addEventListener("click", retakeQuiz);
+    card.append(heading, list, retake);
+  }
+
+  function quizResult(question, index) {
+    const item = document.createElement("li");
+    const correct = quizAttempt.answers[index] === question.correctIndex;
+    item.className = correct ? "correct" : "wrong";
+    item.textContent = (correct ? "✓ " : "✗ ") + question.question;
+    return item;
+  }
+
+  function retakeQuiz() {
+    quizAttempt = { ...quizAttempt, questionIndex: 0, answers: [], results: false };
+    renderQuizAttempt();
   }
 
   function renderLogInto(listId, panelId, entries) {

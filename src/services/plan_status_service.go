@@ -275,6 +275,34 @@ func (s *PlanStatusService) FinishExplanation(succeeded bool) {
 	})
 }
 
+// StartQuiz marks the post-explanation quiz as being generated.
+func (s *PlanStatusService) StartQuiz() {
+	s.update(func(st models.PlanSessionStatus) models.PlanSessionStatus {
+		st.QuizPhase = models.QuizPhaseRunning
+		return st
+	})
+}
+
+// SetQuiz publishes the validated multiple-choice questions.
+func (s *PlanStatusService) SetQuiz(questions []models.QuizQuestion) {
+	s.update(func(st models.PlanSessionStatus) models.PlanSessionStatus {
+		st.Quiz = questions
+		return st
+	})
+}
+
+// FinishQuiz records whether the quiz was produced and validated.
+func (s *PlanStatusService) FinishQuiz(succeeded bool) {
+	s.update(func(st models.PlanSessionStatus) models.PlanSessionStatus {
+		if succeeded {
+			st.QuizPhase = models.QuizPhaseSucceeded
+		} else {
+			st.QuizPhase = models.QuizPhaseFailed
+		}
+		return st
+	})
+}
+
 // BeginExecLogEntry opens a new execution log entry for a tool invocation,
 // mirroring the terminal's "==> [time] message" header.
 func (s *PlanStatusService) BeginExecLogEntry(message string) {

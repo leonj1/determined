@@ -1,6 +1,8 @@
 package tests
 
 import (
+	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -393,6 +395,65 @@ func TestPlanStatusServiceReportsExplanationFailure(t *testing.T) {
 	}
 	if snapshot.Explanation != "" {
 		t.Errorf("explanation = %q, want empty", snapshot.Explanation)
+	}
+}
+
+func TestPlanStatusServicePublishesQuizLifecycle(t *testing.T) {
+	service := services.NewPlanStatusService(newSteppingClock(planStart()), models.GitContext{})
+	snapshots, cancel := service.Subscribe()
+	defer cancel()
+	<-snapshots
+	questions := []models.QuizQuestion{{
+		Question: "What changed?", Choices: []string{"A", "B", "C", "D"},
+		CorrectIndex: 2, Rationale: "C describes the diff.",
+	}}
+
+	service.StartQuiz()
+	service.SetQuiz(questions)
+	service.FinishQuiz(true)
+
+	if running := <-snapshots; running.QuizPhase != models.QuizPhaseRunning {
+		t.Errorf("running phase = %q, want running", running.QuizPhase)
+	}
+	if published := <-snapshots; len(published.Quiz) != 1 || published.Quiz[0].Question != "What changed?" {
+		t.Errorf("published quiz = %+v", published.Quiz)
+	}
+	if finished := <-snapshots; finished.QuizPhase != models.QuizPhaseSucceeded {
+		t.Errorf("finished phase = %q, want succeeded", finished.QuizPhase)
+	}
+}
+
+func TestPlanStatusServiceReportsQuizFailure(t *testing.T) {
+	service := services.NewPlanStatusService(newSteppingClock(planStart()), models.GitContext{})
+	service.StartQuiz()
+	service.FinishQuiz(false)
+
+	snapshot := service.Snapshot()
+	if snapshot.QuizPhase != models.QuizPhaseFailed {
+		t.Errorf("quizPhase = %q, want failed", snapshot.QuizPhase)
+	}
+	if snapshot.Quiz != nil {
+		t.Errorf("quiz = %+v, want empty", snapshot.Quiz)
+	}
+}
+
+func TestPlanStatusServiceQuizJSONUsesPublicFieldNames(t *testing.T) {
+	service := services.NewPlanStatusService(newSteppingClock(planStart()), models.GitContext{})
+	service.SetQuiz([]models.QuizQuestion{{
+		Question: "What changed?", Choices: []string{"A", "B", "C", "D"},
+		CorrectIndex: 2, Rationale: "C describes the diff.",
+	}})
+	service.FinishQuiz(true)
+
+	encoded, err := json.Marshal(service.Snapshot())
+	if err != nil {
+		t.Fatalf("marshal status: %v", err)
+	}
+	statusJSON := string(encoded)
+	for _, field := range []string{`"quiz":[`, `"quizPhase":"succeeded"`, `"correctIndex":2`} {
+		if !strings.Contains(statusJSON, field) {
+			t.Errorf("status JSON %s missing %s", statusJSON, field)
+		}
 	}
 }
 

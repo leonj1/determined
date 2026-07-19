@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -19,6 +20,7 @@ type fakeExecReporter struct {
 	taskSteps   []models.TaskStep
 	logOutput   string
 	explanation string
+	quiz        []models.QuizQuestion
 }
 
 func (r *fakeExecReporter) Progress(message string) {
@@ -54,6 +56,18 @@ func (r *fakeExecReporter) FinishExplanation(succeeded bool) {
 		r.events = append(r.events, "finish-explanation: failed")
 	}
 }
+func (r *fakeExecReporter) StartQuiz() { r.events = append(r.events, "start-quiz") }
+func (r *fakeExecReporter) SetQuiz(questions []models.QuizQuestion) {
+	r.quiz = questions
+	r.events = append(r.events, "set-quiz")
+}
+func (r *fakeExecReporter) FinishQuiz(succeeded bool) {
+	if succeeded {
+		r.events = append(r.events, "finish-quiz: succeeded")
+	} else {
+		r.events = append(r.events, "finish-quiz: failed")
+	}
+}
 
 // execConfig disables the review gates so tests exercise pure step reporting.
 func execConfig() models.Config {
@@ -61,8 +75,19 @@ func execConfig() models.Config {
 	cfg.Verify = false
 	cfg.SpecializedReviews = false
 	cfg.ExplanationFile = "EXPLANATION.md"
+	cfg.QuizFile = "QUIZ.json"
 	return cfg
 }
+
+var validQuizQuestions = []models.QuizQuestion{
+	{Question: "What was added?", Choices: []string{"A widget", "A server", "A queue", "A cache"}, CorrectIndex: 0, Rationale: "The diff adds the widget."},
+	{Question: "What confirms completion?", Choices: []string{"A comment", "The tests", "A timer", "A flag"}, CorrectIndex: 1, Rationale: "The tests exercise the completed widget."},
+	{Question: "Where is behavior enabled?", Choices: []string{"README", "widget.go", "PLAN.md", "STOP.md"}, CorrectIndex: 1, Rationale: "The implementation change is in widget.go."},
+	{Question: "Why show a diff?", Choices: []string{"To deploy", "To configure", "To highlight changes", "To erase history"}, CorrectIndex: 2, Rationale: "The diff highlights the important implementation."},
+	{Question: "What remains unchanged?", Choices: []string{"The widget", "The design", "The tests", "The explanation"}, CorrectIndex: 1, Rationale: "The design is preserved while behavior is enabled."},
+}
+
+const validQuizJSON = `{"questions":[{"question":"What was added?","choices":["A widget","A server","A queue","A cache"],"correctIndex":0,"rationale":"The diff adds the widget."},{"question":"What confirms completion?","choices":["A comment","The tests","A timer","A flag"],"correctIndex":1,"rationale":"The tests exercise the completed widget."},{"question":"Where is behavior enabled?","choices":["README","widget.go","PLAN.md","STOP.md"],"correctIndex":1,"rationale":"The implementation change is in widget.go."},{"question":"Why show a diff?","choices":["To deploy","To configure","To highlight changes","To erase history"],"correctIndex":2,"rationale":"The diff highlights the important implementation."},{"question":"What remains unchanged?","choices":["The widget","The design","The tests","The explanation"],"correctIndex":1,"rationale":"The design is preserved while behavior is enabled."}]}`
 
 func TestExecuteRunReportsFullStatusSequence(t *testing.T) {
 	fs := plannedFileStore("- [ ] 1. Add the widget.\n  Done when: widget tests pass.\n")
@@ -75,6 +100,8 @@ func TestExecuteRunReportsFullStatusSequence(t *testing.T) {
 			fs.Write("STOP.md", "audit: plan satisfied")
 		case 3:
 			fs.Write("EXPLANATION.md", "The widget now works.\n\n```diff\n--- a/widget.go\n+++ b/widget.go\n+enabled\n```")
+		case 4:
+			fs.Write("QUIZ.json", validQuizJSON)
 		}
 		return nil
 	}}
@@ -102,6 +129,11 @@ func TestExecuteRunReportsFullStatusSequence(t *testing.T) {
 		"exec-log-entry: explaining the changes",
 		"set-explanation",
 		"finish-explanation: succeeded",
+		"start-quiz",
+		"progress: writing the quiz",
+		"exec-log-entry: writing the quiz",
+		"set-quiz",
+		"finish-quiz: succeeded",
 	})
 	if !strings.Contains(reporter.logOutput, "widget added\n") {
 		t.Errorf("exec log output = %q, want the streamed tool output", reporter.logOutput)
@@ -112,11 +144,18 @@ func TestExecuteRunReportsFullStatusSequence(t *testing.T) {
 	if reporter.explanation != fs.data["EXPLANATION.md"] {
 		t.Errorf("explanation = %q, want the generated file exactly", reporter.explanation)
 	}
-	if runner.calls != 3 {
-		t.Fatalf("tool calls = %d, want work, audit, and one explanation", runner.calls)
+	if !reflect.DeepEqual(reporter.quiz, validQuizQuestions) {
+		t.Errorf("quiz = %+v, want %+v", reporter.quiz, validQuizQuestions)
+	}
+	if runner.calls != 4 {
+		t.Fatalf("tool calls = %d, want work, audit, explanation, and quiz", runner.calls)
 	}
 	if prompt := runner.prompt(3); !strings.Contains(prompt, "Write only EXPLANATION.md") {
 		t.Errorf("explanation prompt = %q, want configured filename", prompt)
+	}
+	if prompt := runner.prompt(4); !strings.Contains(prompt, "Write only QUIZ.json") ||
+		!strings.Contains(prompt, "Read EXPLANATION.md") {
+		t.Errorf("quiz prompt = %q, want configured artifact names", prompt)
 	}
 }
 
@@ -140,8 +179,8 @@ func TestExecuteRunReportsFailureToStatusPage(t *testing.T) {
 	if last != "finish-execution: failed" {
 		t.Errorf("last event = %q, want the failed finish", last)
 	}
-	if strings.Contains(strings.Join(reporter.events, "\n"), "explanation") {
-		t.Errorf("events = %q, want no explanation after failed execution", reporter.events)
+	if events := strings.Join(reporter.events, "\n"); strings.Contains(events, "explanation") || strings.Contains(events, "quiz") {
+		t.Errorf("events = %q, want no explanation or quiz after failed execution", reporter.events)
 	}
 }
 
@@ -169,6 +208,9 @@ func TestExplanationFailureDoesNotChangeSuccessfulRun(t *testing.T) {
 	if reporter.explanation != "" {
 		t.Errorf("explanation = %q, want empty after invocation failure", reporter.explanation)
 	}
+	if strings.Contains(strings.Join(reporter.events, "\n"), "quiz") {
+		t.Errorf("events = %q, want no quiz after failed explanation", reporter.events)
+	}
 }
 
 func TestMissingExplanationFileDoesNotChangeSuccessfulRun(t *testing.T) {
@@ -185,6 +227,47 @@ func TestMissingExplanationFileDoesNotChangeSuccessfulRun(t *testing.T) {
 	}
 	if got := reporter.events[len(reporter.events)-1]; got != "finish-explanation: failed" {
 		t.Errorf("last event = %q, want failed explanation", got)
+	}
+	if strings.Contains(strings.Join(reporter.events, "\n"), "quiz") {
+		t.Errorf("events = %q, want no quiz without an explanation file", reporter.events)
+	}
+}
+
+func TestInvalidQuizArtifactDoesNotChangeSuccessfulRun(t *testing.T) {
+	tests := []struct {
+		name string
+		json string
+	}{
+		{name: "invalid JSON", json: `{"questions":`},
+		{name: "wrong question count", json: `{"questions":[]}`},
+		{name: "correct index out of range", json: strings.Replace(validQuizJSON, `"correctIndex":0`, `"correctIndex":4`, 1)},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			fs := plannedFileStore("- [x] 1. Add the widget.\n")
+			fs.Write("STOP.md", "audit: plan satisfied")
+			runner := &fakeRunner{script: func(call int, _ io.Writer) error {
+				if call == 1 {
+					fs.Write("EXPLANATION.md", "The widget now works.")
+				}
+				if call == 2 {
+					fs.Write("QUIZ.json", test.json)
+				}
+				return nil
+			}}
+			reporter := &fakeExecReporter{}
+			o := services.NewOrchestrator(runner, fs, &fakeClock{now: time.Now()}, &fakeLogSink{}, io.Discard, execConfig()).WithStatusReporter(reporter)
+
+			if outcome := o.Run(context.Background()); outcome != models.OutcomeStopped {
+				t.Fatalf("outcome = %v, want successful execution", outcome)
+			}
+			if got := reporter.events[len(reporter.events)-1]; got != "finish-quiz: failed" {
+				t.Errorf("last event = %q, want failed quiz", got)
+			}
+			if reporter.quiz != nil {
+				t.Errorf("quiz = %+v, want no published questions", reporter.quiz)
+			}
+		})
 	}
 }
 

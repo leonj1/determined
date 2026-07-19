@@ -103,13 +103,18 @@ satisfies the plan:
 Only *all steps checked + `STOP.md` present* ends the run with exit **0**.
 
 For an execution started from the interactive planning page, a successful
-audit is followed by one presentation-only invocation. It inspects the run's
-git history and diff, writes `EXPLANATION.md`, and publishes that markdown on
-the page's **Explanation** tab. The tab starts with the change's intuition and
-then shows the most important design changes with colored unified diffs. This
-phase runs after the Execution tab has already reported success and before the
-run branch is squashed. If explanation generation fails, the tab reports that
-failure but the successful execute outcome remains unchanged.
+audit is followed by a presentation-only invocation. It inspects the run's git
+history and diff, writes `EXPLANATION.md`, and publishes that markdown on the
+page's **Explanation** tab. The tab starts with the change's intuition and then
+shows the most important design changes with colored unified diffs.
+
+After the explanation succeeds, a second invocation reads it and the diff,
+writes five validated multiple-choice questions to `QUIZ.json`, and publishes
+them on the **Quiz** tab. The page presents one question at a time, scores the
+answers locally, and offers a retake after the results. These phases run after
+the Execution tab has already reported success and before the run branch is
+squashed. An explanation or quiz failure is reported on its tab but does not
+change the successful execute outcome; a failed explanation skips the quiz.
 
 ## Protocol files
 
@@ -123,6 +128,7 @@ failure but the successful execute outcome remains unchanged.
 | `CRITERIA.md` | Optional user-approved BDD journey tests from a `--criteria` session; enforced by the final audit. |
 | `TESTS.md` | Recommended journey/BDD tests from planning; enforced by the final audit. |
 | `EXPLANATION.md` | Presentation-only walkthrough generated after a successful interactive execution; it does not gate the run outcome. |
+| `QUIZ.json` | Five-question quiz generated from a successful explanation and validated before publication; it does not gate the run outcome. |
 
 ## NOTES.md
 

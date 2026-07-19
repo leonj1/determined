@@ -44,6 +44,19 @@ const (
 	ExplainPhaseFailed ExplainPhase = "failed"
 )
 
+// QuizPhase describes where post-explanation quiz generation stands. The
+// empty value means no quiz was requested because no explanation succeeded.
+type QuizPhase string
+
+const (
+	// QuizPhaseRunning means the quiz invocation is working.
+	QuizPhaseRunning QuizPhase = "running"
+	// QuizPhaseSucceeded means the quiz was validated and published.
+	QuizPhaseSucceeded QuizPhase = "succeeded"
+	// QuizPhaseFailed means the quiz could not be produced, read, or validated.
+	QuizPhaseFailed QuizPhase = "failed"
+)
+
 // GitContext identifies the repository a planning session runs inside. Missing
 // values carry explicit placeholders rather than empty strings so the status
 // page never renders blanks.
@@ -65,6 +78,15 @@ type TaskStep struct {
 	Purpose   string `json:"purpose"`
 	DoneWhen  string `json:"doneWhen"`
 	Completed bool   `json:"completed"`
+}
+
+// QuizQuestion is one validated multiple-choice question about the generated
+// explanation and the code changes it describes.
+type QuizQuestion struct {
+	Question     string   `json:"question"`
+	Choices      []string `json:"choices"`
+	CorrectIndex int      `json:"correctIndex"`
+	Rationale    string   `json:"rationale"`
 }
 
 // LogEntry is one tool invocation's terminal output: the progress header the
@@ -115,6 +137,11 @@ type PlanSessionStatus struct {
 	// execute run; ExplainPhase describes its generation state.
 	Explanation  string       `json:"explanation"`
 	ExplainPhase ExplainPhase `json:"explainPhase"`
+
+	// Quiz is the client-scored knowledge check generated from the explanation;
+	// QuizPhase describes its generation and validation state.
+	Quiz      []QuizQuestion `json:"quiz"`
+	QuizPhase QuizPhase      `json:"quizPhase"`
 }
 
 // Duration returns the elapsed planning time: zero until the session starts,

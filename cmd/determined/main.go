@@ -276,6 +276,7 @@ func runLoop(ctx context.Context, tool models.Tool, budget time.Duration, maxSta
 		PlanFile:               "PLAN.md",
 		StepsFile:              "STEPS.md",
 		ExplanationFile:        "EXPLANATION.md",
+		QuizFile:               "QUIZ.json",
 		ProtectedFiles:         []string{"PLAN.md", "TESTS.md", "CRITERIA.md"},
 		Tool:                   tool,
 		Budget:                 budget,
