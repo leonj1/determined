@@ -153,6 +153,29 @@ with `--plan` and `-exec` (the session runs first); see
 
 See [EXECUTION.md](EXECUTION.md) for details.
 
+## Activity steps
+
+Every phase of a run reports itself as a timestamped activity entry (on the
+terminal and in the status page). These are the steps you will see and what
+each one is for:
+
+| Step | Purpose |
+|------|---------|
+| `writing planning goal` | Write the supplied goal text (or goal file contents) to `GOAL.md` so the planner has a fixed statement of intent. |
+| `planning project` | Invoke the AI tool to read the goal and either raise clarifying questions or write `PLAN.md` / `STEPS.md`. |
+| `answering planning questions` | Relay each question from `QUESTIONS.md` to you on the terminal and record your responses in `ANSWERS.md` for the next planner pass. |
+| `assessing plan` | Independently grade the drafted plan for completeness, ordering, step size, and concrete `Done when:` criteria, writing issues to `REFINEMENTS.md`. |
+| `refining plan` | Rework the plan to resolve the assessment's issues, then reassess — up to `--max-step-passes` rounds. |
+| `applying annotation` | Apply one user annotation from the plan page to the plan documents and republish them. |
+| `executing step N` | Invoke the tool with exactly the next unchecked step from `STEPS.md` and its acceptance criterion. |
+| `verifying step N` | Use a fresh reviewer invocation to test the newly checked step's `Done when:` criterion; failure unchecks it and records why in `FIXES.md`. |
+| `checkpointing step N` | Git-commit the work of a step that survived verification. |
+| `updating project documentation` | Once all boxes are checked, bring the project's own docs in line with what the work changed, before any review gate. |
+| `running security review` | Independent specialist pass over the completed work for security findings; a material issue reopens or adds a remediation step. |
+| `running performance review` | Independent specialist pass for performance findings, with the same reopen-on-finding behavior. |
+| `running reliability and maintainability review` | Independent specialist pass for error handling, races, test gaps, and convention consistency, with the same reopen-on-finding behavior. |
+| `auditing the whole plan` | Compare the implementation against `PLAN.md`; reopen unsatisfied steps, or create `STOP.md` when the entire plan is satisfied. |
+
 ## Supported tools
 
 Pick the AI coding CLI with `--tool`. Each iteration runs the tool's own
