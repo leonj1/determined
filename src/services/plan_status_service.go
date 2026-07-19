@@ -247,6 +247,34 @@ func (s *PlanStatusService) FinishExecution(succeeded bool) {
 	})
 }
 
+// StartExplanation marks the post-execution explanation as being generated.
+func (s *PlanStatusService) StartExplanation() {
+	s.update(func(st models.PlanSessionStatus) models.PlanSessionStatus {
+		st.ExplainPhase = models.ExplainPhaseRunning
+		return st
+	})
+}
+
+// SetExplanation publishes the generated markdown walkthrough.
+func (s *PlanStatusService) SetExplanation(text string) {
+	s.update(func(st models.PlanSessionStatus) models.PlanSessionStatus {
+		st.Explanation = text
+		return st
+	})
+}
+
+// FinishExplanation records whether the explanation was produced and read.
+func (s *PlanStatusService) FinishExplanation(succeeded bool) {
+	s.update(func(st models.PlanSessionStatus) models.PlanSessionStatus {
+		if succeeded {
+			st.ExplainPhase = models.ExplainPhaseSucceeded
+		} else {
+			st.ExplainPhase = models.ExplainPhaseFailed
+		}
+		return st
+	})
+}
+
 // BeginExecLogEntry opens a new execution log entry for a tool invocation,
 // mirroring the terminal's "==> [time] message" header.
 func (s *PlanStatusService) BeginExecLogEntry(message string) {

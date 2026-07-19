@@ -30,6 +30,20 @@ const (
 	ExecPhaseFailed ExecPhase = "failed"
 )
 
+// ExplainPhase describes where the post-execution explanation stands. The
+// empty value means no explanation was requested because execution has not
+// completed successfully.
+type ExplainPhase string
+
+const (
+	// ExplainPhaseRunning means the explanation invocation is working.
+	ExplainPhaseRunning ExplainPhase = "running"
+	// ExplainPhaseSucceeded means the explanation was produced and published.
+	ExplainPhaseSucceeded ExplainPhase = "succeeded"
+	// ExplainPhaseFailed means the explanation could not be produced or read.
+	ExplainPhaseFailed ExplainPhase = "failed"
+)
+
 // GitContext identifies the repository a planning session runs inside. Missing
 // values carry explicit placeholders rather than empty strings so the status
 // page never renders blanks.
@@ -96,6 +110,11 @@ type PlanSessionStatus struct {
 	ExecLog       []LogEntry `json:"execLog"`
 	ExecStartedAt time.Time  `json:"execStartedAt"`
 	ExecEndedAt   time.Time  `json:"execEndedAt"`
+
+	// Explanation is the post-execution walkthrough shown after a successful
+	// execute run; ExplainPhase describes its generation state.
+	Explanation  string       `json:"explanation"`
+	ExplainPhase ExplainPhase `json:"explainPhase"`
 }
 
 // Duration returns the elapsed planning time: zero until the session starts,

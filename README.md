@@ -180,7 +180,7 @@ ideally a clean git checkout, so every change is reviewable and revertible.
 | `--exec`         | `false`  | Run the unattended execute loop against `PLAN.md` + `STEPS.md`. With `--plan`, execution follows successful planning; incompatible with `--review-plan`. Without `--plan` or `--exec`, `determined` prints the usage screen. |
 | `--review-plan`  | `false`  | Critique existing `PLAN.md` + `STEPS.md`, interview the user about consequential choices, and revise without executing. |
 | `--criteria`     | `false`  | Interactively capture BDD journey tests into `CRITERIA.md` (accept / modify / skip / end / cancel per proposal). Runs before `--plan` / `-exec` when combined; incompatible with `--review-plan`. |
-| `--interactive`  | `false`  | With `--plan`, serve a live HTML status page (local web server) showing the goal, plan, and workflow steps in real time, with a completion banner and timing. Once planning completes, an Implement button in the page header starts the execute loop, streamed live on the page's Execution tab (`/exec`). Requires `--plan`. |
+| `--interactive`  | `false`  | With `--plan`, serve a live HTML status page (local web server) showing the goal, plan, and workflow steps in real time, with a completion banner and timing. Once planning completes, an Implement button starts the execute loop on the Execution tab (`/exec`); after success, the Explanation tab (`/explain`) shows an AI-generated walkthrough with colored diffs. Requires `--plan`. |
 | `--mvp`          | `false`  | Use a reduced quality gate for the smallest usable outcome. Requires `--plan`; incompatible with `--prototype`. |
 | `--prototype`    | `false`  | Ask only blocking questions and skip quality refinement for fast experiments. Requires `--plan`; incompatible with `--mvp`. |
 | `--max-step-passes` | `2`   | Max quality assess/refine rounds during planning or review. `0` disables refinement. |
@@ -202,8 +202,10 @@ ideally a clean git checkout, so every change is reviewable and revertible.
 | `determined update` | Download the latest supported GitHub Release binary and replace the current executable. |
 
 The protocol filenames (`PLAN.md` / `STEPS.md` / `STOP.md` / `NOTES.md` /
-`FIXES.md`) are hardcoded; the prompt is rebuilt each iteration from the next
-unchecked step in `STEPS.md`.
+`FIXES.md` / `EXPLANATION.md`) are hardcoded; the prompt is rebuilt each
+iteration from the next unchecked step in `STEPS.md`. `EXPLANATION.md` is a
+presentation artifact created only after successful interactive execution and
+does not affect the run outcome.
 
 ## Going deeper
 

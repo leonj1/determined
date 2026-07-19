@@ -358,6 +358,44 @@ func TestPlanStatusServiceExecutionFailureMarksFailedPhase(t *testing.T) {
 	}
 }
 
+func TestPlanStatusServicePublishesExplanationLifecycle(t *testing.T) {
+	service := services.NewPlanStatusService(newSteppingClock(planStart()), models.GitContext{})
+	snapshots, cancel := service.Subscribe()
+	defer cancel()
+	<-snapshots
+
+	service.StartExplanation()
+	service.SetExplanation("The change keeps execution visible.\n\n```diff\n+new behavior\n```")
+	service.FinishExplanation(true)
+
+	running := <-snapshots
+	published := <-snapshots
+	finished := <-snapshots
+	if running.ExplainPhase != models.ExplainPhaseRunning {
+		t.Errorf("running phase = %q, want running", running.ExplainPhase)
+	}
+	if published.Explanation != "The change keeps execution visible.\n\n```diff\n+new behavior\n```" {
+		t.Errorf("published explanation = %q", published.Explanation)
+	}
+	if finished.ExplainPhase != models.ExplainPhaseSucceeded {
+		t.Errorf("finished phase = %q, want succeeded", finished.ExplainPhase)
+	}
+}
+
+func TestPlanStatusServiceReportsExplanationFailure(t *testing.T) {
+	service := services.NewPlanStatusService(newSteppingClock(planStart()), models.GitContext{})
+	service.StartExplanation()
+	service.FinishExplanation(false)
+
+	snapshot := service.Snapshot()
+	if snapshot.ExplainPhase != models.ExplainPhaseFailed {
+		t.Errorf("explainPhase = %q, want failed", snapshot.ExplainPhase)
+	}
+	if snapshot.Explanation != "" {
+		t.Errorf("explanation = %q, want empty", snapshot.Explanation)
+	}
+}
+
 func TestPlanStatusServiceExecLogAccumulatesSeparatelyFromPlanLog(t *testing.T) {
 	clock := newSteppingClock(planStart())
 	service := services.NewPlanStatusService(clock, models.GitContext{})

@@ -10,17 +10,18 @@ type Invocation struct {
 
 // Config holds everything one orchestrator run needs.
 type Config struct {
-	StopFile  string
-	PlanFile  string // must exist at startup; execute mode refuses to run without a plan
-	StepsFile string
+	StopFile        string
+	PlanFile        string // must exist at startup; execute mode refuses to run without a plan
+	StepsFile       string
+	ExplanationFile string
 	// ProtectedFiles lists the files that define the work's success criteria
 	// (the plan, tests, and BDD criteria) and therefore must not change during
 	// execution. Any modification a tool invocation makes to one of them is
 	// reverted and recorded. The steps file must not be listed: the tool checks
 	// boxes there by design.
 	ProtectedFiles []string
-	Tool      Tool          // builds each iteration's invocation from the injected prompt
-	Budget    time.Duration // wall-clock budget; 0 means unlimited
+	Tool           Tool          // builds each iteration's invocation from the injected prompt
+	Budget         time.Duration // wall-clock budget; 0 means unlimited
 	// MaxStalledIterations ends the run with OutcomeStalled after this many
 	// consecutive iterations complete without a newly checked step; 0 disables
 	// stall detection.

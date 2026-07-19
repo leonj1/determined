@@ -63,9 +63,11 @@ func (c serverClock) Now() time.Time { return c.t }
 // bind, serve the page, stream SSE snapshots, and shut down cleanly.
 func TestPlanStatusServerContract(t *testing.T) {
 	source := newFakePlanStatusSource(models.PlanSessionStatus{
-		Git:   models.GitContext{Remote: "git@github.com:leonj1/determined.git", Branch: "master"},
-		Goal:  "build a todo CLI",
-		Phase: models.PlanPhaseRunning,
+		Git:          models.GitContext{Remote: "git@github.com:leonj1/determined.git", Branch: "master"},
+		Goal:         "build a todo CLI",
+		Phase:        models.PlanPhaseRunning,
+		Explanation:  "The implementation is complete.",
+		ExplainPhase: models.ExplainPhaseSucceeded,
 	})
 	sink := &fakeAnnotationSink{}
 	server := clients.NewPlanStatusServer(source, sink, &fakeImplementSink{}, serverClock{t: time.Date(2026, 7, 16, 10, 0, 0, 0, time.UTC)})
@@ -109,6 +111,8 @@ func assertPageServed(t *testing.T, url string) {
 		"annotationControls", "/annotate", "pendingAnnotations", "annotate-btn",
 		`data-tab="exec"`, `id="implement"`, "/implement", "renderExec",
 		"implementOffered", "execLog", "execPhase",
+		`data-tab="explain"`, `id="explanation"`, "renderExplanation",
+		"explainPhase", "renderDiff", "diff-add", "diff-del", "diff-hunk", "diff-meta",
 	} {
 		if !strings.Contains(page, marker) {
 			t.Errorf("page missing %q", marker)
@@ -198,6 +202,10 @@ func assertEventStream(t *testing.T, url string, source *fakePlanStatusSource) {
 	first := readEventData(t, reader)
 	if !strings.Contains(first, `"goal":"build a todo CLI"`) {
 		t.Errorf("initial snapshot = %s, want the current goal", first)
+	}
+	if !strings.Contains(first, `"explanation":"The implementation is complete."`) ||
+		!strings.Contains(first, `"explainPhase":"succeeded"`) {
+		t.Errorf("initial snapshot = %s, want the completed explanation", first)
 	}
 
 	updated := source.snapshot
@@ -344,7 +352,7 @@ func TestPlanStatusServerServesTestsPath(t *testing.T) {
 	url, _, _, stop := startAnnotateServer(t)
 	defer stop()
 
-	for _, path := range []string{"tests", "tests/journey", "tests/bdd", "exec"} {
+	for _, path := range []string{"tests", "tests/journey", "tests/bdd", "exec", "explain"} {
 		resp, err := http.Get(url + path)
 		if err != nil {
 			t.Fatalf("get /%s: %v", path, err)

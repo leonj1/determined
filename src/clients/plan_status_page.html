@@ -120,6 +120,10 @@
   .tok-string { color: var(--ok-fg); }
   .tok-keyword { color: var(--accent); font-weight: 600; }
   .tok-number { color: var(--bad-fg); }
+  .diff-add { display: block; background: var(--ok-bg); color: var(--ok-fg); }
+  .diff-del { display: block; background: var(--bad-bg); color: var(--bad-fg); }
+  .diff-hunk { display: block; color: var(--accent); font-weight: 600; }
+  .diff-meta { display: block; color: var(--muted); }
   #steps { display: grid; gap: 0.75rem; }
   .step-card { border: 1px solid var(--border); border-radius: 0.6rem; padding: 0.75rem 1rem; background: var(--bg); }
   .step-card.done { border-color: var(--ok-border); }
@@ -134,10 +138,10 @@
   .step-card .done-when p, .step-card .purpose p { display: inline; margin: 0; }
   .step-card .done-when strong, .step-card .purpose strong { color: var(--fg); }
   #log, #exec-log { display: grid; gap: 0.75rem; }
-  #exec-state { margin-bottom: 0.75rem; font-weight: 600; }
-  #exec-state.empty { font-weight: 400; }
-  #exec-state.succeeded { color: var(--ok-fg); }
-  #exec-state.failed { color: var(--bad-fg); }
+  #exec-state, #explain-state { margin-bottom: 0.75rem; font-weight: 600; }
+  #exec-state.empty, #explain-state.empty { font-weight: 400; }
+  #exec-state.succeeded, #explain-state.succeeded { color: var(--ok-fg); }
+  #exec-state.failed, #explain-state.failed { color: var(--bad-fg); }
   .log-entry { border: 1px solid var(--border); border-radius: 0.6rem; background: var(--bg); }
   .log-entry .log-head {
     display: flex; align-items: baseline; gap: 0.5rem; padding: 0.5rem 1rem;
@@ -223,6 +227,7 @@
   <button data-tab="steps">Steps</button>
   <button data-tab="log">Log</button>
   <button data-tab="exec">Execution</button>
+  <button data-tab="explain">Explanation</button>
 </nav>
 <main>
   <div id="content">
@@ -258,6 +263,11 @@
       <h2>Execution</h2>
       <div id="exec-state" class="empty">Not started — the Implement button appears once planning completes.</div>
       <div id="exec-log"></div>
+    </section>
+    <section class="panel" id="panel-explain">
+      <h2>Explanation</h2>
+      <div id="explain-state" class="empty">Available after execution completes.</div>
+      <div id="explanation" class="doc"></div>
     </section>
   </div>
   <aside id="activity">
@@ -437,13 +447,26 @@
       parts.join("") + "</svg></div>";
   }
 
-  // Fenced-block dispatcher: mermaid sequence diagrams render as SVG,
-  // everything else as highlighted code.
+  function renderDiff(code) {
+    return code.split("\n").map((line) => {
+      let cls = "";
+      if (/^(\+\+\+|---|diff --git|index)/.test(line)) cls = "diff-meta";
+      else if (line.startsWith("@@")) cls = "diff-hunk";
+      else if (line.startsWith("+")) cls = "diff-add";
+      else if (line.startsWith("-")) cls = "diff-del";
+      const escaped = escapeHtml(line);
+      return cls ? '<span class="' + cls + '">' + escaped + "</span>" : escaped;
+    }).join("\n");
+  }
+
+  // Fenced-block dispatcher: diagrams and diffs get purpose-built rendering;
+  // everything else uses the compact syntax highlighter.
   function renderFence(code, language) {
     if (language === "mermaid" && /^\s*sequenceDiagram/.test(code)) {
       const svg = renderSequenceDiagram(code.replace(/^\s*sequenceDiagram\s*/, ""));
       if (svg) return svg;
     }
+    if (language === "diff") return "<pre><code>" + renderDiff(code) + "</code></pre>";
     return "<pre><code>" + highlightCode(code, language) + "</code></pre>";
   }
 
@@ -585,7 +608,7 @@
 
   function tabFromPath() {
     const name = window.location.pathname.replace(/^\//, "").split("/")[0];
-    return ["goal", "plan", "tests", "steps", "log", "exec"].includes(name) ? name : "goal";
+    return ["goal", "plan", "tests", "steps", "log", "exec", "explain"].includes(name) ? name : "goal";
   }
   function testsTabFromPath() {
     const parts = window.location.pathname.replace(/^\//, "").split("/");
@@ -725,6 +748,7 @@
     renderSteps(status.taskSteps || []);
     renderLog(status.log || []);
     renderExec(status);
+    renderExplanation(status);
     renderActivity(status.steps || [], activityIsRunning(status));
     renderAnnotations(status.pendingAnnotations || []);
     renderBanner(status);
@@ -757,6 +781,26 @@
         ? "✓ Execution completed"
         : "✗ Execution ended without completing the plan") +
         " · Duration " + fmtDuration(status.execStartedAt, status.execEndedAt);
+    }
+  }
+
+  function renderExplanation(status) {
+    const state = el("explain-state");
+    const phase = status.explainPhase || "";
+    state.style.display = "block";
+    state.classList.remove("empty", "succeeded", "failed");
+    setDoc(el("explanation"), "", "");
+    if (phase === "") {
+      state.classList.add("empty");
+      state.textContent = "Available after execution completes.";
+    } else if (phase === "running") {
+      state.textContent = "⚙ Generating explanation…";
+    } else if (phase === "failed") {
+      state.classList.add("failed");
+      state.textContent = "✗ Explanation could not be generated.";
+    } else {
+      state.style.display = "none";
+      setDoc(el("explanation"), status.explanation, "Explanation is empty.");
     }
   }
 

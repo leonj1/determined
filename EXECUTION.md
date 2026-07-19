@@ -102,6 +102,15 @@ satisfies the plan:
 
 Only *all steps checked + `STOP.md` present* ends the run with exit **0**.
 
+For an execution started from the interactive planning page, a successful
+audit is followed by one presentation-only invocation. It inspects the run's
+git history and diff, writes `EXPLANATION.md`, and publishes that markdown on
+the page's **Explanation** tab. The tab starts with the change's intuition and
+then shows the most important design changes with colored unified diffs. This
+phase runs after the Execution tab has already reported success and before the
+run branch is squashed. If explanation generation fails, the tab reports that
+failure but the successful execute outcome remains unchanged.
+
 ## Protocol files
 
 | File       | Role                                                              |
@@ -113,6 +122,7 @@ Only *all steps checked + `STOP.md` present* ends the run with exit **0**.
 | `FIXES.md` | Why a verifier, specialist, or audit reopened/added a step; appended by reviewer invocations. |
 | `CRITERIA.md` | Optional user-approved BDD journey tests from a `--criteria` session; enforced by the final audit. |
 | `TESTS.md` | Recommended journey/BDD tests from planning; enforced by the final audit. |
+| `EXPLANATION.md` | Presentation-only walkthrough generated after a successful interactive execution; it does not gate the run outcome. |
 
 ## NOTES.md
 

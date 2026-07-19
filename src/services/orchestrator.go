@@ -36,6 +36,9 @@ type ExecStatusReporter interface {
 	AppendExecLogOutput(text string)
 	SetTaskSteps(steps []models.TaskStep)
 	FinishExecution(succeeded bool)
+	StartExplanation()
+	SetExplanation(text string)
+	FinishExplanation(succeeded bool)
 }
 
 // execOutputSink adapts an ExecStatusReporter onto LogOutputSink so
@@ -111,7 +114,7 @@ func (o *Orchestrator) Run(ctx context.Context) models.Outcome {
 	}
 	o.reportStart()
 	outcome := o.loop(ctx)
-	o.reportFinish(outcome)
+	o.reportFinish(ctx, outcome)
 	return outcome
 }
 
@@ -521,6 +524,20 @@ const auditPrompt = "All steps in STEPS.md are checked complete. Read PLAN.md an
 	"If everything is satisfied, create STOP.md. " +
 	"Do not start work beyond this audit."
 
+// explainPrompt asks for a presentation-only walkthrough after a successful
+// run, naming the configured artifact so alternate configurations still work.
+func explainPrompt(cfg models.Config) string {
+	return "Execution is complete. Inspect the code changes this run produced " +
+		"(use `git log` and `git diff` against the branch's starting point; fall back to comparing with " +
+		"PLAN.md/STEPS.md if git is unavailable). Write only " + cfg.ExplanationFile + ". " +
+		"Start with a single short paragraph giving the intuition of what the changes accomplish — no heading, no code. " +
+		"Then present the most important changes in descending order of importance. For each change: first a brief " +
+		"plain-language explanation of why this code matters and what it does, then the relevant diff in a fenced " +
+		"```diff block using unified diff format with `+`/`-` line prefixes and a `--- / +++` file header. " +
+		"Cover only the changes that carry the design; skip mechanical edits. Do not modify any other file, " +
+		"implement anything, or create STOP.md."
+}
+
 // iterationPrompt reads the steps file and builds this iteration's instruction:
 // the whole-plan audit when every box is checked (checkCompletion only ends
 // the run once the audit's STOP.md exists), otherwise the next unchecked
@@ -657,11 +674,31 @@ func (o *Orchestrator) reportTaskSteps() {
 	o.status.SetTaskSteps(taskSteps(o.parsedSteps()))
 }
 
-// reportFinish records the execution phase end and success state.
-func (o *Orchestrator) reportFinish(outcome models.Outcome) {
+// reportFinish records execution's result, then generates the optional
+// presentation-only explanation after a successful interactive run.
+func (o *Orchestrator) reportFinish(ctx context.Context, outcome models.Outcome) {
 	if o.status == nil {
 		return
 	}
 	o.reportTaskSteps()
 	o.status.FinishExecution(outcome == models.OutcomeStopped)
+	if outcome == models.OutcomeStopped {
+		o.explainRun(ctx)
+	}
+}
+
+func (o *Orchestrator) explainRun(ctx context.Context) {
+	o.status.StartExplanation()
+	result := o.invoke(ctx, explainPrompt(o.cfg), "explaining the changes")
+	if !result.succeeded {
+		o.status.FinishExplanation(false)
+		return
+	}
+	content, err := o.files.Read(o.cfg.ExplanationFile)
+	if err != nil {
+		o.status.FinishExplanation(false)
+		return
+	}
+	o.status.SetExplanation(content)
+	o.status.FinishExplanation(true)
 }
