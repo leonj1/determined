@@ -314,6 +314,17 @@
   .annotate-form button:hover { background: var(--fg); color: var(--bg); }
   .annotate-form button.send { background: var(--fg); border-color: var(--fg); color: var(--bg); }
   .annotate-form button.send:hover { background: var(--bg); color: var(--fg); }
+  .annotate-form button[disabled] { cursor: progress; opacity: 0.55; }
+  .annotate-form button[disabled]:hover { background: var(--fg); color: var(--bg); }
+  .annotate-form textarea[disabled] { opacity: 0.55; cursor: progress; }
+  .annotate-form button.send .send-spinner {
+    display: inline-block; width: 0.7rem; height: 0.7rem; margin-right: 0.4rem;
+    vertical-align: -0.05rem; border: 2px solid var(--bg); border-top-color: transparent;
+    border-radius: 50%; animation: activity-spin 0.8s linear infinite;
+  }
+  .annotate-status { margin-top: 0.4rem; font-size: 0.8rem; color: var(--muted); }
+  .annotate-status.sent { color: var(--accent); }
+  .annotate-status.failed { color: var(--bad-fg); }
   aside#activity .annotation-chip {
     display: block; margin: 0.4rem 0; padding: 0.35rem 0.6rem; font-size: 0.8rem;
     border: 0; border-left: 2px solid var(--accent); border-radius: 0; color: var(--accent);
@@ -885,23 +896,70 @@
     const cancel = document.createElement("button");
     cancel.textContent = "Cancel";
     actions.append(send, cancel);
-    form.append(textarea, actions);
+    const status = document.createElement("p");
+    status.className = "annotate-status";
+    status.hidden = true;
+    form.append(textarea, actions, status);
+
+    // The send button owns the in-flight state: while the POST is open the
+    // whole form locks and the button wears a spinner, so a slow server never
+    // looks like a dropped click and a second click cannot double-submit.
+    function showStatus(text, kind) {
+      status.className = "annotate-status" + (kind ? " " + kind : "");
+      status.textContent = text;
+      status.hidden = false;
+    }
+    function lock(sending) {
+      send.disabled = sending;
+      cancel.disabled = sending;
+      textarea.disabled = sending;
+      send.replaceChildren();
+      if (!sending) {
+        send.textContent = "Send";
+        return;
+      }
+      const spinner = document.createElement("span");
+      spinner.className = "send-spinner";
+      send.append(spinner, document.createTextNode("Sending…"));
+    }
 
     button.addEventListener("click", () => {
+      if (send.disabled) return;
       form.classList.toggle("open");
-      if (form.classList.contains("open")) textarea.focus();
+      if (!form.classList.contains("open")) return;
+      status.hidden = true;
+      textarea.focus();
     });
-    cancel.addEventListener("click", () => form.classList.remove("open"));
+    cancel.addEventListener("click", () => {
+      if (cancel.disabled) return;
+      form.classList.remove("open");
+    });
     send.addEventListener("click", () => {
       const comment = textarea.value.trim();
       if (!comment) return;
+      lock(true);
+      showStatus("Sending annotation…", "");
       fetch("/annotate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ section, target: targetOf(), comment }),
-      }).then(() => {
+      }).then((response) => {
+        lock(false);
+        if (!response.ok) {
+          showStatus("Could not send annotation (" + response.status + "). Try again.", "failed");
+          return;
+        }
         textarea.value = "";
-        form.classList.remove("open");
+        // The form stays open just long enough for the confirmation to be
+        // read; the queued annotation then shows up in the activity sidebar.
+        showStatus("✓ Annotation queued", "sent");
+        setTimeout(() => {
+          form.classList.remove("open");
+          status.hidden = true;
+        }, 1500);
+      }, () => {
+        lock(false);
+        showStatus("Could not reach the server. Try again.", "failed");
       });
     });
     return { button, form };
