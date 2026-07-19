@@ -298,7 +298,7 @@
 </head>
 <body>
 <header>
-  <div class="title">determined — planning</div>
+  <div class="title" id="title">planning</div>
   <button id="implement">▶ Implement</button>
   <div class="right">
     <div id="banner"><span class="mark" id="banner-mark"></span><span class="timing" id="banner-timing"></span></div>
@@ -418,6 +418,16 @@
     const m = Math.floor(seconds / 60); const s = seconds % 60;
     return (h ? h + "h " : "") + (h || m ? m + "m " : "") + s + "s";
   }
+  // Reduces a git remote URL to the bare repository name, handling both the
+  // scp-style (git@host:owner/repo.git) and URL-style (https://host/owner/repo)
+  // forms. Returns "" when the remote is absent or unparseable.
+  function repoShortName(remote) {
+    if (!remote || remote === "no remote") return "";
+    const trimmed = remote.trim().replace(/\/+$/, "").replace(/\.git$/, "");
+    const last = trimmed.split(/[/:]/).pop();
+    return last || "";
+  }
+
   function setText(node, text, emptyText) {
     if (text) { node.textContent = text; node.classList.remove("empty"); }
     else { node.textContent = emptyText; node.classList.add("empty"); }
@@ -833,6 +843,8 @@
   });
 
   function render(status) {
+    const repo = repoShortName(status.git.remote);
+    el("title").textContent = repo ? repo + " — planning" : "planning";
     setText(el("remote"), status.git.remote, "no remote");
     setText(el("branch"), status.git.branch, "no branch");
     setDoc(el("goal"), status.goal, "Not written yet.");
