@@ -45,8 +45,7 @@ func main() {
 	interactive := flag.Bool("interactive", false, "with -plan, serve a live HTML status page for the planning session on a local web server")
 	mvp := flag.Bool("mvp", false, "create a lean plan for the smallest usable outcome (plan mode only)")
 	prototype := flag.Bool("prototype", false, "create a fast experimental plan with minimal questioning and no refinement (plan mode only)")
-	maxStepPasses := flag.Int("max-step-passes", 5,
-		"max quality assess/refine rounds during planning; 0 disables")
+	maxStepPasses := registerMaxStepPassesFlag(flag.CommandLine)
 	maxStalled := flag.Int("max-stalled-iterations", 3,
 		"stop with exit 3 after this many consecutive iterations check no new step; 0 disables")
 	maxFailures := flag.Int("max-consecutive-failures", 3,
@@ -150,6 +149,11 @@ func main() {
 
 func registerInitFlag(flags *flag.FlagSet) *bool {
 	return flags.Bool("init", false, "install personal CLAUDE.md and AGENTS.md files")
+}
+
+func registerMaxStepPassesFlag(flags *flag.FlagSet) *int {
+	return flags.Int("max-step-passes", 2,
+		"max quality assess/refine rounds during planning; 0 disables")
 }
 
 func runInitCommand() {

@@ -210,6 +210,15 @@ func TestMVPStillUsesConfiguredQualityRefinement(t *testing.T) {
 	}
 }
 
+func TestMaxStepPassesDefaultsToTwo(t *testing.T) {
+	flags := flag.NewFlagSet("determined", flag.ContinueOnError)
+	maxStepPasses := registerMaxStepPassesFlag(flags)
+
+	if *maxStepPasses != 2 {
+		t.Fatalf("max step passes default = %d, want 2", *maxStepPasses)
+	}
+}
+
 func TestUserCanSetMaxDurationWithShortFlag(t *testing.T) {
 	flags := flag.NewFlagSet("determined", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
