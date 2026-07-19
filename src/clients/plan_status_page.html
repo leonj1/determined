@@ -63,9 +63,29 @@
     color: var(--fg); cursor: pointer; display: inline-flex; align-items: center; justify-content: center;
   }
   #theme-toggle:hover { background: var(--fg); color: var(--bg); }
+  /* Whole-session progress: planning fills the first half by artifact
+     milestone, execution the second half by completed step. */
+  #progress {
+    display: flex; align-items: center; gap: 0.8rem; padding: 0.55rem 0 0.5rem;
+    background: var(--bg); position: sticky; top: 3.45rem; z-index: 1;
+  }
+  #progress-track {
+    flex: 1; height: 3px; background: var(--rule-light); overflow: hidden;
+  }
+  #progress-fill {
+    height: 100%; width: 0; background: var(--accent);
+    transition: width 0.35s ease;
+  }
+  #progress-label {
+    color: var(--muted); font: 0.7rem/1.4 ui-monospace, 'SF Mono', Menlo, monospace;
+    letter-spacing: 0.08em; text-transform: uppercase; white-space: nowrap;
+    font-variant-numeric: tabular-nums;
+  }
+  #progress.done #progress-fill { background: var(--ok-fg); }
+  #progress.failed #progress-fill { background: var(--bad-fg); }
   nav#tabs {
     display: flex; gap: 1.5rem; padding: 0.65rem 0 0; background: var(--bg);
-    border-bottom: 1px solid var(--rule-light); position: sticky; top: 3.45rem; z-index: 1;
+    border-bottom: 1px solid var(--rule-light); position: sticky; top: 5.4rem; z-index: 1;
     overflow-x: auto;
   }
   nav#tabs button {
@@ -84,6 +104,7 @@
     body { padding-inline: 1rem; }
     header { align-items: flex-start; flex-wrap: wrap; position: static; }
     header .right { margin-left: auto; }
+    #progress { position: static; }
     nav#tabs { position: static; gap: 1rem; }
     main { grid-template-columns: 1fr; gap: 2rem; }
   }
@@ -282,6 +303,12 @@
     <button id="theme-toggle" type="button" aria-label="Toggle theme">☾</button>
   </div>
 </header>
+<div id="progress">
+  <div id="progress-track" role="progressbar" aria-valuemin="0" aria-valuemax="100">
+    <div id="progress-fill"></div>
+  </div>
+  <div id="progress-label"></div>
+</div>
 <nav id="tabs">
   <button data-tab="goal" class="active">Goal</button>
   <button data-tab="plan">Plan</button>
@@ -821,6 +848,7 @@
     renderActivity(status.steps || [], activityIsRunning(status));
     renderAnnotations(status.pendingAnnotations || []);
     renderBanner(status);
+    renderProgress(status);
     el("implement").classList.toggle("on",
       !!status.implementOffered && status.phase === "succeeded" && !status.execPhase);
   }
@@ -1159,6 +1187,67 @@
     const node = el("activity-elapsed");
     if (node) node.textContent = fmtDuration(activeStartIso, new Date().toISOString());
   }, 1000);
+
+  // Whole-session progress across both phases. Planning owns the first half
+  // and advances by artifact milestone — goal, plan, tests, steps — because
+  // planning has no step list of its own until STEPS.md is parsed. Execution
+  // owns the second half and advances by completed step; a step counts once,
+  // so a retry pass does not move the bar.
+  const PLAN_MILESTONES = 4;
+  const PLAN_SHARE = 50;
+
+  function planningMilestones(status) {
+    let done = 0;
+    if (status.goal) done += 1;
+    if (status.plan) done += 1;
+    if (status.tests) done += 1;
+    if ((status.taskSteps || []).length) done += 1;
+    return done;
+  }
+
+  function progressState(status) {
+    const steps = status.taskSteps || [];
+    const completed = steps.filter((s) => s.completed).length;
+    const exec = status.execPhase || "";
+    const planDone = status.phase === "succeeded";
+    // Planning half: milestones while planning runs, full once it succeeds so
+    // a milestone the session never produced cannot strand the bar below 50%.
+    const planPercent = planDone
+      ? PLAN_SHARE
+      : (planningMilestones(status) / PLAN_MILESTONES) * PLAN_SHARE;
+    const execPercent = steps.length && (exec === "running" || exec === "succeeded" || exec === "failed")
+      ? (completed / steps.length) * (100 - PLAN_SHARE)
+      : 0;
+    const percent = Math.round(Math.min(100, planPercent + execPercent));
+
+    if (exec === "succeeded") return { percent: 100, label: "100% · Complete · Step " + steps.length + "/" + steps.length, tone: "done" };
+    if (exec === "failed") return { percent: percent, label: percent + "% · Execution failed · Step " + completed + "/" + steps.length, tone: "failed" };
+    // Hold at 99% while the run is still working: 100% means finished, and
+    // the last step is only marked complete once the run itself succeeds.
+    if (exec === "running") {
+      const running = Math.min(percent, 99);
+      return { percent: running, label: running + "% · Executing · Step " + Math.min(completed + 1, steps.length) + "/" + steps.length, tone: "" };
+    }
+    if (exec === "requested") return { percent: percent, label: percent + "% · Starting execution", tone: "" };
+    if (status.phase === "failed") return { percent: percent, label: percent + "% · Planning failed", tone: "failed" };
+    if (planDone) return { percent: percent, label: percent + "% · Plan ready · " + steps.length + " steps", tone: "" };
+    return {
+      percent: percent,
+      label: percent + "% · Planning · Milestone " + planningMilestones(status) + "/" + PLAN_MILESTONES,
+      tone: "",
+    };
+  }
+
+  function renderProgress(status) {
+    const state = progressState(status);
+    const bar = el("progress");
+    bar.classList.remove("done", "failed");
+    if (state.tone) bar.classList.add(state.tone);
+    el("progress-fill").style.width = state.percent + "%";
+    el("progress-track").setAttribute("aria-valuenow", String(state.percent));
+    el("progress-track").setAttribute("aria-valuetext", state.label);
+    el("progress-label").textContent = state.label;
+  }
 
   function renderBanner(status) {
     const banner = el("banner");
