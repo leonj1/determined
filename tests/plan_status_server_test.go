@@ -76,7 +76,7 @@ func TestPlanStatusServerContract(t *testing.T) {
 		ExplainPhase: models.ExplainPhaseSucceeded,
 		Quiz: []models.QuizQuestion{{
 			Question: "What changed?", Choices: []string{"A", "B", "C", "D"},
-			CorrectIndex: 2, Rationale: "C describes the diff.",
+			CorrectIndex: 2, Rationale: "C describes the diff.", SourceSection: "Status reporting",
 		}},
 		QuizPhase: models.QuizPhaseSucceeded,
 	})
@@ -133,6 +133,8 @@ func assertPageServed(t *testing.T, url string) {
 		`href="/assets/diff2html.min.css"`, `src="/assets/diff2html.min.js"`,
 		`data-tab="quiz"`, `id="quiz-state"`, `id="quiz-card"`, "renderQuiz",
 		"quizPhase", "Question ", "Score: ", "Retake quiz",
+		"slugify", "sourceSection", "quiz-source-link", "followQuizSource", `headingIds: true`,
+		"pendingExplanationHash", "restoreExplanationHash",
 	} {
 		if !strings.Contains(page, marker) {
 			t.Errorf("page missing %q", marker)

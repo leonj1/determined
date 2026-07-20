@@ -80,13 +80,14 @@ type TaskStep struct {
 	Completed bool   `json:"completed"`
 }
 
-// QuizQuestion is one validated multiple-choice question about the generated
-// explanation and the code changes it describes.
+// QuizQuestion is one validated multiple-choice question grounded in a
+// section of the generated explanation.
 type QuizQuestion struct {
-	Question     string   `json:"question"`
-	Choices      []string `json:"choices"`
-	CorrectIndex int      `json:"correctIndex"`
-	Rationale    string   `json:"rationale"`
+	Question      string   `json:"question"`
+	Choices       []string `json:"choices"`
+	CorrectIndex  int      `json:"correctIndex"`
+	Rationale     string   `json:"rationale"`
+	SourceSection string   `json:"sourceSection"`
 }
 
 // EntryState is one execution log entry's outcome, which the status page turns

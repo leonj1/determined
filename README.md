@@ -208,7 +208,7 @@ ideally a clean git checkout, so every change is reviewable and revertible.
 | `--exec`         | `false`  | Run the unattended execute loop against `PLAN.md` + `STEPS.md`. With `--plan`, execution follows successful planning; incompatible with `--review-plan`. Without `--plan` or `--exec`, `determined` prints the usage screen. |
 | `--review-plan`  | `false`  | Critique existing `PLAN.md` + `STEPS.md`, interview the user about consequential choices, and revise without executing. |
 | `--criteria`     | `false`  | Interactively capture BDD journey tests into `CRITERIA.md` (accept / modify / skip / end / cancel per proposal). Runs before `--plan` / `-exec` when combined; incompatible with `--review-plan`. |
-| `--interactive`  | `false`  | With `--plan`, serve a live HTML status page (local web server) showing the goal, plan, and workflow steps in real time, with a completion banner and timing. Once planning completes, an Implement button starts the execute loop on the Execution tab (`/exec`); after success, the Explanation tab (`/explain`) shows an AI-generated walkthrough with colored diffs, followed by a five-question Quiz tab (`/quiz`). Requires `--plan`. |
+| `--interactive`  | `false`  | With `--plan`, serve a live HTML status page (local web server) showing the goal, plan, and workflow steps in real time, with a completion banner and timing. Once planning completes, an Implement button starts the execute loop on the Execution tab (`/exec`); after success, the Explanation tab (`/explain`) shows an AI-generated walkthrough with colored diffs, followed by a five-question Quiz tab (`/quiz`) whose questions link to their source explanation sections. Requires `--plan`. |
 | `--link`         | `false`  | Print the URL of the status page served by a still-running `--interactive` session, then exit. Recovers the link after the launching terminal is closed. Prints the URL on exit `0` only after confirming the recorded process is alive, its port is listening, and that port answers with the determined status page; otherwise reports no session and exits `1`. |
 | `--mvp`          | `false`  | Use a reduced quality gate for the smallest usable outcome. Requires `--plan`; incompatible with `--prototype`. |
 | `--prototype`    | `false`  | Ask only blocking questions and skip quality refinement for fast experiments. Requires `--plan`; incompatible with `--mvp`. |
@@ -278,6 +278,9 @@ Each tool (`droid`/`pi`/`claude`) is a `models.Tool` that builds its own
 command from the prompt, so the orchestrator stays tool-agnostic. I/O sits
 behind interfaces with hand-written Fakes (no mocking frameworks), so the loop
 logic is tested entirely without touching a real CLI or disk.
+
+The test suite requires Go 1.24 and Node.js 18 or newer; Node executes the
+interactive status page's browser-behavior tests without third-party packages.
 
 ```bash
 go test -cover ./...

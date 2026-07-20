@@ -98,14 +98,14 @@ func execConfig() models.Config {
 }
 
 var validQuizQuestions = []models.QuizQuestion{
-	{Question: "What was added?", Choices: []string{"A widget", "A server", "A queue", "A cache"}, CorrectIndex: 0, Rationale: "The diff adds the widget."},
-	{Question: "What confirms completion?", Choices: []string{"A comment", "The tests", "A timer", "A flag"}, CorrectIndex: 1, Rationale: "The tests exercise the completed widget."},
-	{Question: "Where is behavior enabled?", Choices: []string{"README", "widget.go", "PLAN.md", "STOP.md"}, CorrectIndex: 1, Rationale: "The implementation change is in widget.go."},
-	{Question: "Why show a diff?", Choices: []string{"To deploy", "To configure", "To highlight changes", "To erase history"}, CorrectIndex: 2, Rationale: "The diff highlights the important implementation."},
-	{Question: "What remains unchanged?", Choices: []string{"The widget", "The design", "The tests", "The explanation"}, CorrectIndex: 1, Rationale: "The design is preserved while behavior is enabled."},
+	{Question: "What was added?", Choices: []string{"A widget", "A server", "A queue", "A cache"}, CorrectIndex: 0, Rationale: "The explanation describes the widget.", SourceSection: "Widget behavior"},
+	{Question: "What confirms completion?", Choices: []string{"A comment", "The tests", "A timer", "A flag"}, CorrectIndex: 1, Rationale: "The tests exercise the completed widget.", SourceSection: "Widget behavior"},
+	{Question: "Where is behavior enabled?", Choices: []string{"README", "widget.go", "PLAN.md", "STOP.md"}, CorrectIndex: 1, Rationale: "The implementation change is in widget.go.", SourceSection: "Widget behavior"},
+	{Question: "Why show a diff?", Choices: []string{"To deploy", "To configure", "To highlight changes", "To erase history"}, CorrectIndex: 2, Rationale: "The diff highlights the important implementation.", SourceSection: "Widget behavior"},
+	{Question: "What remains unchanged?", Choices: []string{"The widget", "The design", "The tests", "The explanation"}, CorrectIndex: 1, Rationale: "The design is preserved while behavior is enabled.", SourceSection: "Widget behavior"},
 }
 
-const validQuizJSON = `{"questions":[{"question":"What was added?","choices":["A widget","A server","A queue","A cache"],"correctIndex":0,"rationale":"The diff adds the widget."},{"question":"What confirms completion?","choices":["A comment","The tests","A timer","A flag"],"correctIndex":1,"rationale":"The tests exercise the completed widget."},{"question":"Where is behavior enabled?","choices":["README","widget.go","PLAN.md","STOP.md"],"correctIndex":1,"rationale":"The implementation change is in widget.go."},{"question":"Why show a diff?","choices":["To deploy","To configure","To highlight changes","To erase history"],"correctIndex":2,"rationale":"The diff highlights the important implementation."},{"question":"What remains unchanged?","choices":["The widget","The design","The tests","The explanation"],"correctIndex":1,"rationale":"The design is preserved while behavior is enabled."}]}`
+const validQuizJSON = `{"questions":[{"question":"What was added?","choices":["A widget","A server","A queue","A cache"],"correctIndex":0,"rationale":"The explanation describes the widget.","sourceSection":"Widget behavior"},{"question":"What confirms completion?","choices":["A comment","The tests","A timer","A flag"],"correctIndex":1,"rationale":"The tests exercise the completed widget.","sourceSection":"Widget behavior"},{"question":"Where is behavior enabled?","choices":["README","widget.go","PLAN.md","STOP.md"],"correctIndex":1,"rationale":"The implementation change is in widget.go.","sourceSection":"Widget behavior"},{"question":"Why show a diff?","choices":["To deploy","To configure","To highlight changes","To erase history"],"correctIndex":2,"rationale":"The diff highlights the important implementation.","sourceSection":"Widget behavior"},{"question":"What remains unchanged?","choices":["The widget","The design","The tests","The explanation"],"correctIndex":1,"rationale":"The design is preserved while behavior is enabled.","sourceSection":"Widget behavior"}]}`
 
 // The status page paints each execution entry by the outcome the orchestrator
 // settles it with, so these tests pin the state each kind of invocation earns:
@@ -234,7 +234,7 @@ func TestExecuteRunReportsFullStatusSequence(t *testing.T) {
 		case 3: // the whole-plan audit approves
 			fs.Write("STOP.md", "audit: plan satisfied")
 		case 4:
-			fs.Write("EXPLANATION.md", "The widget now works.\n\n```diff\n--- a/widget.go\n+++ b/widget.go\n+enabled\n```")
+			fs.Write("EXPLANATION.md", "The widget now works.\n\n## Widget behavior\n\nThe widget is enabled.\n\n```diff\n--- a/widget.go\n+++ b/widget.go\n+enabled\n```")
 		case 5:
 			fs.Write("QUIZ.json", validQuizJSON)
 		}
@@ -296,7 +296,9 @@ func TestExecuteRunReportsFullStatusSequence(t *testing.T) {
 		t.Errorf("explanation prompt = %q, want configured filename", prompt)
 	}
 	if prompt := runner.prompt(5); !strings.Contains(prompt, "Write only QUIZ.json") ||
-		!strings.Contains(prompt, "Read EXPLANATION.md") {
+		!strings.Contains(prompt, "Read EXPLANATION.md") ||
+		!strings.Contains(prompt, `"sourceSection":"Exact heading text"`) ||
+		strings.Contains(prompt, "inspect the code diff") {
 		t.Errorf("quiz prompt = %q, want configured artifact names", prompt)
 	}
 }
@@ -390,7 +392,7 @@ func TestInvalidQuizArtifactDoesNotChangeSuccessfulRun(t *testing.T) {
 			fs.Write("STOP.md", "audit: plan satisfied")
 			runner := &fakeRunner{script: func(call int, _ io.Writer) error {
 				if call == 1 {
-					fs.Write("EXPLANATION.md", "The widget now works.")
+					fs.Write("EXPLANATION.md", "The widget now works.\n\n## Widget behavior\n\nThe widget is enabled.")
 				}
 				if call == 2 {
 					fs.Write("QUIZ.json", test.json)
@@ -409,7 +411,45 @@ func TestInvalidQuizArtifactDoesNotChangeSuccessfulRun(t *testing.T) {
 			if reporter.quiz != nil {
 				t.Errorf("quiz = %+v, want no published questions", reporter.quiz)
 			}
+			if runner.calls != 3 {
+				t.Errorf("tool calls = %d, want explanation plus two bounded quiz attempts", runner.calls)
+			}
+			if prompt := runner.prompt(3); !strings.Contains(prompt, "Previous attempt failed validation:") {
+				t.Errorf("retry prompt = %q, want the validation failure", prompt)
+			}
 		})
+	}
+}
+
+func TestUngroundedQuizIsRegeneratedOnceAndThenPublished(t *testing.T) {
+	fs := plannedFileStore("- [x] 1. Add the widget.\n")
+	fs.Write("STOP.md", "audit: plan satisfied")
+	ungrounded := strings.Replace(validQuizJSON, "Widget behavior", "Raw diff", 1)
+	runner := &fakeRunner{script: func(call int, _ io.Writer) error {
+		switch call {
+		case 1:
+			fs.Write("EXPLANATION.md", "The widget now works.\n\n## Widget behavior\n\nThe widget is enabled.")
+		case 2:
+			fs.Write("QUIZ.json", ungrounded)
+		case 3:
+			fs.Write("QUIZ.json", validQuizJSON)
+		}
+		return nil
+	}}
+	reporter := &fakeExecReporter{}
+	o := services.NewOrchestrator(runner, fs, &fakeClock{now: time.Now()}, &fakeLogSink{}, io.Discard, execConfig()).WithStatusReporter(reporter)
+
+	if outcome := o.Run(context.Background()); outcome != models.OutcomeStopped {
+		t.Fatalf("outcome = %v, want successful execution", outcome)
+	}
+	if !reflect.DeepEqual(reporter.quiz, validQuizQuestions) {
+		t.Errorf("quiz = %+v, want grounded questions", reporter.quiz)
+	}
+	if runner.calls != 3 {
+		t.Fatalf("tool calls = %d, want explanation, quiz, and one retry", runner.calls)
+	}
+	if prompt := runner.prompt(3); !strings.Contains(prompt, `sourceSection "Raw diff" is not an explanation heading`) {
+		t.Errorf("retry prompt = %q, want the rejected sourceSection", prompt)
 	}
 }
 

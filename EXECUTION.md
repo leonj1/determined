@@ -119,13 +119,22 @@ history and diff, writes `EXPLANATION.md`, and publishes that markdown on the
 page's **Explanation** tab. The tab starts with the change's intuition and then
 shows the most important design changes with colored unified diffs.
 
-After the explanation succeeds, a second invocation reads it and the diff,
-writes five validated multiple-choice questions to `QUIZ.json`, and publishes
-them on the **Quiz** tab. The page presents one question at a time, scores the
-answers locally, and offers a retake after the results. These phases run after
-the Execution tab has already reported success and before the run branch is
-squashed. An explanation or quiz failure is reported on its tab but does not
-change the successful execute outcome; a failed explanation skips the quiz.
+After the explanation succeeds, a second invocation reads it alone, writes five
+validated multiple-choice questions to `QUIZ.json`, and publishes them on the
+**Quiz** tab. Each question's `sourceSection` must exactly match a `##` heading
+in the explanation; invalid output gets one regeneration attempt and is never
+published if it remains ungrounded. The artifact has this shape:
+
+```json
+{"questions":[{"question":"What changed?","choices":["A","B","C","D"],"correctIndex":0,"rationale":"Why A is correct.","sourceSection":"Exact explanation heading"}]}
+```
+
+The page presents one question at a time, scores the answers locally, and links
+each question and result back to its explanation section for review. These
+phases run after the Execution tab has already reported success and before the
+run branch is squashed. An explanation or quiz failure is reported on its tab
+but does not change the successful execute outcome; a failed explanation skips
+the quiz.
 
 ## Protocol files
 
@@ -139,7 +148,7 @@ change the successful execute outcome; a failed explanation skips the quiz.
 | `CRITERIA.md` | Optional user-approved BDD journey tests from a `--criteria` session; enforced by the final audit. |
 | `TESTS.md` | Recommended journey/BDD tests from planning; enforced by the final audit. |
 | `EXPLANATION.md` | Presentation-only walkthrough generated after a successful interactive execution; it does not gate the run outcome. |
-| `QUIZ.json` | Five-question quiz generated from a successful explanation and validated before publication; it does not gate the run outcome. |
+| `QUIZ.json` | Five-question quiz generated from a successful explanation; every question includes a `sourceSection` matching an explanation `##` heading and is validated before publication. It does not gate the run outcome. |
 
 ## NOTES.md
 

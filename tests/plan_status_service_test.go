@@ -448,7 +448,7 @@ func TestPlanStatusServicePublishesQuizLifecycle(t *testing.T) {
 	<-snapshots
 	questions := []models.QuizQuestion{{
 		Question: "What changed?", Choices: []string{"A", "B", "C", "D"},
-		CorrectIndex: 2, Rationale: "C describes the diff.",
+		CorrectIndex: 2, Rationale: "C describes the diff.", SourceSection: "Status reporting",
 	}}
 
 	service.StartQuiz()
@@ -484,7 +484,7 @@ func TestPlanStatusServiceQuizJSONUsesPublicFieldNames(t *testing.T) {
 	service := services.NewPlanStatusService(newSteppingClock(planStart()), models.GitContext{}, models.ToolIdentity{})
 	service.SetQuiz([]models.QuizQuestion{{
 		Question: "What changed?", Choices: []string{"A", "B", "C", "D"},
-		CorrectIndex: 2, Rationale: "C describes the diff.",
+		CorrectIndex: 2, Rationale: "C describes the diff.", SourceSection: "Status reporting",
 	}})
 	service.FinishQuiz(true)
 
@@ -493,7 +493,7 @@ func TestPlanStatusServiceQuizJSONUsesPublicFieldNames(t *testing.T) {
 		t.Fatalf("marshal status: %v", err)
 	}
 	statusJSON := string(encoded)
-	for _, field := range []string{`"quiz":[`, `"quizPhase":"succeeded"`, `"correctIndex":2`} {
+	for _, field := range []string{`"quiz":[`, `"quizPhase":"succeeded"`, `"correctIndex":2`, `"sourceSection":"Status reporting"`} {
 		if !strings.Contains(statusJSON, field) {
 			t.Errorf("status JSON %s missing %s", statusJSON, field)
 		}

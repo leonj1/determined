@@ -237,6 +237,9 @@
   #quiz-card { display: grid; gap: 0.9rem; }
   .quiz-meta { display: flex; justify-content: space-between; gap: 1rem; color: var(--muted); font: 700 0.7rem/1.4 ui-monospace, 'SF Mono', Menlo, monospace; letter-spacing: 0.08em; text-transform: uppercase; }
   .quiz-question { margin: 0; font-size: 1.05rem; font-weight: 650; }
+  .quiz-source-link { color: inherit; text-decoration-color: var(--rule-light); text-underline-offset: 3px; }
+  .quiz-source-link:hover { color: var(--accent); text-decoration-color: var(--accent); }
+  .quiz-source { margin-left: 0.4rem; color: var(--muted); font: 700 0.65rem/1.4 ui-monospace, 'SF Mono', Menlo, monospace; letter-spacing: 0.05em; text-transform: uppercase; white-space: nowrap; }
   .quiz-choices { display: grid; gap: 0.55rem; }
   .quiz-choice, .quiz-next, .quiz-retake {
     appearance: none; border: 1px solid var(--fg); border-radius: 0;
@@ -477,6 +480,7 @@
   "use strict";
   const el = (id) => document.getElementById(id);
   let quizAttempt = { payload: "", questions: [], questionIndex: 0, answers: [], results: false };
+  let pendingExplanationHash = window.location.hash;
 
   // Header theme toggle: cycles auto → light → dark → auto. A forced choice
   // is stored under the "theme" key; auto removes it and the page follows
@@ -744,7 +748,13 @@
     }).join("\n");
   }
 
-  function markdownToHtml(text) {
+  function slugify(headingText) {
+    return String(headingText || "").trim().replace(/[A-Z]/g, (character) => character.toLowerCase())
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "");
+  }
+
+  function markdownToHtml(text, options = {}) {
     const lines = unflattenTables(text).split("\n");
     const out = [];
     let index = 0;
@@ -759,7 +769,11 @@
         out.push(renderFence(code.join("\n"), language));
       } else if (/^#{1,6}\s+/.test(line)) {
         const level = line.match(/^#+/)[0].length;
-        out.push("<h" + level + ">" + renderInline(line.replace(/^#+\s+/, "")) + "</h" + level + ">");
+        const headingText = line.replace(/^#+\s+/, "");
+        const id = options.headingIds && level === 2
+          ? ' id="explain--' + slugify(headingText) + '"'
+          : "";
+        out.push("<h" + level + id + ">" + renderInline(headingText) + "</h" + level + ">");
         index++;
       } else if (/^\s*([-*+]|\d+\.)\s+/.test(line)) {
         const ordered = /^\s*\d+\./.test(line);
@@ -776,7 +790,7 @@
           quoted.push(lines[index].replace(/^>\s?/, ""));
           index++;
         }
-        out.push("<blockquote>" + markdownToHtml(quoted.join("\n")) + "</blockquote>");
+        out.push("<blockquote>" + markdownToHtml(quoted.join("\n"), options) + "</blockquote>");
       } else if (isTableRow(line) && index + 1 < lines.length && isSeparatorRow(lines[index + 1])) {
         const rows = [];
         while (index < lines.length && isTableRow(lines[index])) rows.push(lines[index++]);
@@ -800,13 +814,13 @@
     return out.join("");
   }
 
-  function setDoc(node, text, emptyText) {
+  function setDoc(node, text, emptyText, options = {}) {
     node.classList.remove("empty", "plain");
     if (!text) {
       node.textContent = emptyText;
       node.classList.add("empty");
     } else if (looksLikeMarkdown(text)) {
-      node.innerHTML = markdownToHtml(text);
+      node.innerHTML = markdownToHtml(text, options);
     } else {
       node.textContent = text;
       node.classList.add("plain");
@@ -852,8 +866,10 @@
   }
 
   window.addEventListener("popstate", () => {
+    pendingExplanationHash = window.location.hash;
     selectTab(tabFromPath());
     selectTestsTab(testsTabFromPath());
+    restoreExplanationHash();
   });
   selectTab(tabFromPath());
   selectTestsTab(testsTabFromPath());
@@ -1121,8 +1137,19 @@
       state.textContent = "✗ Explanation could not be generated.";
     } else {
       state.style.display = "none";
-      setDoc(el("explanation"), status.explanation, "Explanation is empty.");
+      setDoc(el("explanation"), status.explanation, "Explanation is empty.", { headingIds: true });
+      restoreExplanationHash();
     }
+  }
+
+  function restoreExplanationHash() {
+    if (!pendingExplanationHash.startsWith("#explain--")) return;
+    const targetId = pendingExplanationHash.slice(1);
+    pendingExplanationHash = "";
+    const target = el(targetId);
+    if (!target) return;
+    target.scrollIntoView({ behavior: "smooth", block: "start" });
+    flashTarget(target);
   }
 
   function renderQuiz(status) {
@@ -1177,7 +1204,7 @@
       "</span><span>Score: " + quizScore() + " / " + quizAttempt.answers.length + "</span>";
     const text = document.createElement("p");
     text.className = "quiz-question";
-    text.textContent = question.question;
+    text.append(quizSourceLink(question));
     card.append(meta, text, quizChoices(question, answered));
     if (answered) card.append(quizRationale(question), quizNextButton());
   }
@@ -1250,8 +1277,36 @@
     const item = document.createElement("li");
     const correct = quizAttempt.answers[index] === question.correctIndex;
     item.className = correct ? "correct" : "wrong";
-    item.textContent = (correct ? "✓ " : "✗ ") + question.question;
+    item.append(correct ? "✓ " : "✗ ", quizSourceLink(question));
     return item;
+  }
+
+  function quizSourceLink(question) {
+    const link = document.createElement("a");
+    link.className = "quiz-source-link";
+    link.href = "/explain#explain--" + slugify(question.sourceSection);
+    link.append(question.question, quizSourceLabel());
+    link.addEventListener("click", (event) => {
+      event.preventDefault();
+      followQuizSource(question.sourceSection);
+    });
+    return link;
+  }
+
+  function quizSourceLabel() {
+    const label = document.createElement("span");
+    label.className = "quiz-source";
+    label.textContent = "source ↗";
+    return label;
+  }
+
+  function followQuizSource(sourceSection) {
+    history.pushState(null, "", "/explain");
+    selectTab("explain");
+    const target = el("explain--" + slugify(sourceSection));
+    if (!target) return;
+    target.scrollIntoView({ behavior: "smooth", block: "start" });
+    flashTarget(target);
   }
 
   function retakeQuiz() {
@@ -1417,6 +1472,10 @@
     const target = el(link.targetId);
     if (!target) return;
     target.scrollIntoView({ behavior: "smooth", block: "start" });
+    flashTarget(target);
+  }
+
+  function flashTarget(target) {
     target.classList.remove("link-flash");
     void target.offsetWidth; // restart the flash when the same card is re-clicked
     target.classList.add("link-flash");
