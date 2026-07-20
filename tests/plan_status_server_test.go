@@ -59,6 +59,12 @@ type serverClock struct{ t time.Time }
 
 func (c serverClock) Now() time.Time { return c.t }
 
+type assetExpectation struct {
+	path        string
+	contentType string
+	marker      string
+}
+
 // TestPlanStatusServerContract exercises the production server end to end:
 // bind, serve the page, stream SSE snapshots, and shut down cleanly.
 func TestPlanStatusServerContract(t *testing.T) {
@@ -87,6 +93,7 @@ func TestPlanStatusServerContract(t *testing.T) {
 	}
 
 	assertPageServed(t, url)
+	assertDiffAssetsServed(t, url)
 	assertEventStream(t, url, source)
 }
 
@@ -119,12 +126,19 @@ func assertPageServed(t *testing.T, url string) {
 		`data-tab="exec"`, `id="implement"`, "/implement", "renderExec",
 		"implementOffered", "execLog", "execPhase",
 		`data-tab="explain"`, `id="explanation"`, "renderExplanation",
-		"explainPhase", "renderDiff", "diff-add", "diff-del", "diff-hunk", "diff-meta",
+		"explainPhase", "renderDiff", "Diff2Html.html", "matching: \"words\"",
+		`href="/assets/diff2html.min.css"`, `src="/assets/diff2html.min.js"`,
 		`data-tab="quiz"`, `id="quiz-state"`, `id="quiz-card"`, "renderQuiz",
 		"quizPhase", "Question ", "Score: ", "Retake quiz",
 	} {
 		if !strings.Contains(page, marker) {
 			t.Errorf("page missing %q", marker)
+		}
+	}
+
+	for _, removed := range []string{"diff-add", "diff-del", "diff-hunk", "diff-meta"} {
+		if strings.Contains(page, removed) {
+			t.Errorf("page still contains custom diff renderer class %q", removed)
 		}
 	}
 
@@ -205,6 +219,32 @@ func assertPageServed(t *testing.T, url string) {
 		if !strings.Contains(page, marker) {
 			t.Errorf("page missing editorial style marker %q", marker)
 		}
+	}
+}
+
+func assertDiffAssetsServed(t *testing.T, url string) {
+	t.Helper()
+	for _, asset := range []assetExpectation{
+		{path: "assets/diff2html.min.css", contentType: "text/css", marker: ".d2h-wrapper"},
+		{path: "assets/diff2html.min.js", contentType: "text/javascript", marker: "Diff2Html"},
+	} {
+		assertAssetServed(t, url, asset)
+	}
+}
+
+func assertAssetServed(t *testing.T, url string, asset assetExpectation) {
+	t.Helper()
+	resp, err := http.Get(url + asset.path)
+	if err != nil {
+		t.Fatalf("fetch %s: %v", asset.path, err)
+	}
+	defer resp.Body.Close()
+	body, readErr := io.ReadAll(resp.Body)
+	if readErr != nil {
+		t.Fatalf("read %s: %v", asset.path, readErr)
+	}
+	if resp.StatusCode != http.StatusOK || !strings.HasPrefix(resp.Header.Get("Content-Type"), asset.contentType) || !strings.Contains(string(body), asset.marker) {
+		t.Errorf("asset %s was not served as %s with marker %q", asset.path, asset.contentType, asset.marker)
 	}
 }
 

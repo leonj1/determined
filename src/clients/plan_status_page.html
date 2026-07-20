@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>determined — planning</title>
+<link rel="stylesheet" href="/assets/diff2html.min.css">
 <style>
   :root {
     color-scheme: light;
@@ -181,16 +182,15 @@
   .doc pre code { background: none; border: none; padding: 0; }
   .doc blockquote { margin: 0.5rem 0; padding: 0.1rem 0.9rem; border-left: 2px solid var(--accent); color: var(--muted); }
   .doc hr { border: none; border-top: 1px solid var(--rule-light); margin: 1rem 0; }
-  .doc table { border-collapse: collapse; margin: 0.5rem 0; }
-  .doc th, .doc td { border: 1px solid var(--rule-light); padding: 0.3rem 0.6rem; }
+  .doc table:not(.d2h-diff-table) { border-collapse: collapse; margin: 0.5rem 0; }
+  .doc table:not(.d2h-diff-table) th, .doc table:not(.d2h-diff-table) td { border: 1px solid var(--rule-light); padding: 0.3rem 0.6rem; }
   .tok-comment { color: var(--muted); font-style: italic; }
   .tok-string { color: var(--ok-fg); }
   .tok-keyword { color: var(--accent); font-weight: 600; }
   .tok-number { color: var(--bad-fg); }
-  .diff-add { display: block; color: var(--ok-fg); border-left: 2px solid var(--ok-border); padding-left: 0.4rem; }
-  .diff-del { display: block; color: var(--bad-fg); border-left: 2px solid var(--bad-border); padding-left: 0.4rem; }
-  .diff-hunk { display: block; color: var(--accent); font-weight: 600; }
-  .diff-meta { display: block; color: var(--muted); }
+  .doc .d2h-wrapper { margin: 0.75rem 0; overflow-x: auto; }
+  .doc .d2h-file-wrapper { border-radius: 0; }
+  .doc .d2h-file-header { font-family: ui-monospace, 'SF Mono', Menlo, monospace; }
   #steps { display: grid; gap: 0; }
   .step-card { border: 0; border-bottom: 1px solid var(--rule-light); border-radius: 0; padding: 0.8rem 0 0.95rem; background: transparent; }
   .step-card.done { border-bottom-color: var(--rule-light); }
@@ -444,6 +444,7 @@
     </section>
   </aside>
 </main>
+<script src="/assets/diff2html.min.js"></script>
 <script>
   "use strict";
   const el = (id) => document.getElementById(id);
@@ -472,6 +473,7 @@
       else localStorage.removeItem("theme");
     } catch (e) {}
     renderThemeToggle();
+    syncDiffTheme();
   });
   renderThemeToggle();
 
@@ -630,16 +632,25 @@
       parts.join("") + "</svg></div>";
   }
 
+  function diffColorScheme() {
+    return document.documentElement.dataset.theme || "auto";
+  }
+
+  function syncDiffTheme() {
+    const scheme = diffColorScheme();
+    document.querySelectorAll(".d2h-wrapper").forEach((wrapper) => {
+      wrapper.classList.remove("d2h-light-color-scheme", "d2h-dark-color-scheme", "d2h-auto-color-scheme");
+      wrapper.classList.add("d2h-" + scheme + "-color-scheme");
+    });
+  }
+
   function renderDiff(code) {
-    return code.split("\n").map((line) => {
-      let cls = "";
-      if (/^(\+\+\+|---|diff --git|index)/.test(line)) cls = "diff-meta";
-      else if (line.startsWith("@@")) cls = "diff-hunk";
-      else if (line.startsWith("+")) cls = "diff-add";
-      else if (line.startsWith("-")) cls = "diff-del";
-      const escaped = escapeHtml(line);
-      return cls ? '<span class="' + cls + '">' + escaped + "</span>" : escaped;
-    }).join("\n");
+    return Diff2Html.html(code, {
+      colorScheme: diffColorScheme(),
+      drawFileList: false,
+      matching: "words",
+      outputFormat: "line-by-line",
+    });
   }
 
   // Fenced-block dispatcher: diagrams and diffs get purpose-built rendering;
@@ -649,7 +660,7 @@
       const svg = renderSequenceDiagram(code.replace(/^\s*sequenceDiagram\s*/, ""));
       if (svg) return svg;
     }
-    if (language === "diff") return "<pre><code>" + renderDiff(code) + "</code></pre>";
+    if (language === "diff") return renderDiff(code);
     return "<pre><code>" + highlightCode(code, language) + "</code></pre>";
   }
 

@@ -2,7 +2,7 @@ package clients
 
 import (
 	"context"
-	_ "embed"
+	"embed"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -14,6 +14,9 @@ import (
 
 //go:embed plan_status_page.html
 var planStatusPage []byte
+
+//go:embed assets/diff2html.min.css assets/diff2html.min.js
+var planStatusAssets embed.FS
 
 // PlanStatusSource is the slice of session state the server needs: the current
 // snapshot for late joiners and a subscription for live updates. The real
@@ -64,6 +67,7 @@ func (s *PlanStatusServer) Start() error {
 	s.listener = listener
 
 	mux := http.NewServeMux()
+	mux.Handle("/assets/", http.FileServer(http.FS(planStatusAssets)))
 	mux.HandleFunc("/", s.servePage)
 	mux.HandleFunc("/events", s.serveEvents)
 	mux.HandleFunc("/annotate", s.serveAnnotate)
