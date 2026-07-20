@@ -114,6 +114,9 @@ func assertPageServed(t *testing.T, url string) {
 	page := string(body)
 	for _, marker := range []string{
 		"determined — planning", "EventSource", "banner",
+		`id="active-task"`, `id="active-task-message"`, `id="active-task-elapsed"`,
+		"const active = activeActivity(activitySteps, activityIsRunning(status));",
+		"renderActiveTask(active)", "renderActivity(activitySteps, active)",
 		"step-card", "taskSteps", "Done when: ",
 		"log-entry", "renderLog", `data-tab="log"`,
 		"renderTable", "unflattenTables", "isSeparatorRow",
