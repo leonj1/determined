@@ -1,73 +1,152 @@
-# TODO: Restyle plan status page to editorial/newspaper theme
+# TODO: `determined -exec -interactive` — live status page with annotate-and-retry
 
-Target file: `src/clients/plan_status_page.html` (served by `src/clients/plan_status_server.go`).
-Goal: match screenshot aesthetic — "Nexigent" style editorial layout: white paper background,
-serif display headings, monospace uppercase metadata, thin black horizontal rules instead of
-cards, warm orange accent, no rounded corners or shadows.
+## Context
 
-## Design tokens (from screenshot)
+Today `-interactive` requires `-plan`: an exec-only run (`determined -exec`) is always
+headless, and even in plan-interactive sessions a failed Implement run leaves the button
+permanently dead (`RequestImplement` rejects once `ExecPhase != ""`,
+`src/services/plan_status_service.go:208`). Observed pain: execution halted after 3 failed
+step verifications, the user annotated the failing step on the page, and nothing could resume.
 
-- [ ] Replace `:root` light palette variables:
-  - `--bg: #ffffff` (plain white, no gray page background)
-  - `--fg: #111111` (near-black text)
-  - `--card: #ffffff` (sections are not boxes; keep variable for form fields)
-  - `--muted: #9a9a9a` (light gray for monospace metadata like `2H AGO`, `TO: ...`)
-  - `--border: #111111` for section-heading rules; add `--rule-light: #e5e5e5` for subtle inner separators
-  - `--accent: #e05d38` (warm orange-red, used for the `→` marker in screenshot)
-  - Keep ok/bad colors but mute them (thin-border, no filled pill backgrounds)
-- [ ] Fonts:
-  - Headings + body prose: serif stack — `Georgia, 'Times New Roman', Times, serif`
-    (screenshot uses a Tiempos-like editorial serif; Georgia is the closest system font)
-  - Metadata, timestamps, URLs, log output: `ui-monospace, 'SF Mono', Menlo, monospace`,
-    uppercase with `letter-spacing: 0.08em` where it mimics the screenshot labels
-- [ ] Dark theme: derive equivalent palette (`#111` background, `#eee` text, same accent);
-  update both `:root[data-theme="dark"]` and the `prefers-color-scheme` block. Keep the
-  existing toggle JS untouched.
+This change makes `determined -exec -interactive` serve the live status page for an existing
+PLAN.md/STEPS.md: the page seeds Goal/Plan/Tests/Steps from disk (planning shown as
+succeeded), execution starts immediately and streams live, and after a **failed** run the
+Implement button re-arms so the user can annotate → apply → click Implement → retry, all in
+one session. The re-arm also fixes the dead-button bug in the existing plan-interactive flow.
 
-## Structural style changes (CSS only — no HTML/JS behavior changes)
+Agreed scope: full retry loop; seed docs from disk; re-arm on `failed` only (never after
+success); bare `determined -interactive` stays rejected (requires explicit `-plan` or `-exec`).
 
-- [ ] `body`: white background, serif font, generous horizontal padding (~2rem),
-  max-width unconstrained like screenshot (columns spread full width).
-- [ ] `header`: drop card background and border; large serif title ("determined — planning"
-  styled like "Nexigent" masthead, ~1.6rem serif, weight 400/500), full-width 1px black
-  rule underneath. Git remote/branch becomes uppercase monospace muted text.
-- [ ] `nav#tabs`: replace accent-underline pill tabs with editorial tabs — serif bold labels,
-  active tab gets 2px black underline (not blue), inactive muted. Remove card background.
-- [ ] `section`: remove card look entirely — no background, no border, no border-radius,
-  no padding box. Each `section h2` becomes the screenshot's column header: bold serif
-  (~1.15rem), normal case (screenshot uses "Polsia", "Documents", "Email" in title case,
-  not uppercase), followed by full-width 1px black bottom rule with small gap.
-- [ ] `#banner`, `#waiting`, `#disconnected`: flat editorial notices — no filled background,
-  square corners, thin top/bottom rules or left accent bar; orange `→` prefix via
-  `::before` for status lines (mirrors screenshot's arrow before "Welcome to Nexigent!").
-- [ ] `.step-card`, `.log-entry`: replace bordered rounded cards with rule-separated list
-  items: `border: 0; border-bottom: 1px solid var(--rule-light); border-radius: 0`.
-  Step number / badge / timestamps become uppercase monospace muted (like `2H AGO`).
-  "Done" badge: plain monospace text (`✓ DONE`), no pill background.
-- [ ] Right-aligned timestamps in log/step heads (screenshot pattern: title left, `2H AGO` right).
-- [ ] `aside#activity`: same column treatment — "Activity" serif header with black rule,
-  entries separated by light rules; timestamps monospace uppercase; spinner accent stays orange.
-- [ ] Buttons (`#implement`, quiz buttons, annotate, theme toggle): square corners
-  (`border-radius: 0`), either solid black background with white text or thin 1px black
-  outline; hover inverts. `VIEW ALL`-style links: uppercase monospace with underline.
-- [ ] `.doc` prose: serif body text; code blocks keep monospace with `--rule-light` border,
-  square corners, white/very-light background. `blockquote` left bar becomes black or accent.
-- [ ] Diff/quiz/token colors: keep semantic green/red but as text color on white with thin
-  borders — no filled `--ok-bg`/`--bad-bg` panels in light theme (or soften to near-white tints).
-- [ ] Sequence diagram (`.seq-*`): black strokes, square actor boxes (`rx="0"` is SVG-side —
-  acceptable to leave; recolor via CSS vars only).
+Exploration finding: the plumbing is ~90% there — `runLoop` already accepts a live
+`services.ExecStatusReporter` (the exec-only branch just passes `nil`), and
+`PlanStatusService` already implements every exec event.
 
-## Verification
+## Step 1 — Service: re-arm Implement after failure, fresh timing window on retry
 
-- [ ] Run `determined` interactive mode (or open the HTML with a stub status payload) and
-  compare against screenshot: masthead, column rules, monospace metadata, orange accent.
-- [ ] Toggle theme: auto → light → dark all render coherently, no flash on reload.
-- [ ] Check all 8 tabs plus tests sub-tabs, quiz flow, annotate forms, exec log rendering.
-- [ ] `go test ./...` — confirm no test asserts on the old CSS.
+`src/services/plan_status_service.go`:
+- [ ] `RequestImplement` (:205): guard becomes
+  `!st.ImplementOffered || st.Phase != models.PlanPhaseSucceeded || !execRetryable(st.ExecPhase)`
+  with new helper `execRetryable(phase models.ExecPhase) bool` → true for `""` or
+  `models.ExecPhaseFailed` (requested/running/succeeded stay blocked).
+- [ ] `StartExecution` (:231): also `st.ExecEndedAt = time.Time{}` (add `time` import). Keep
+  `ExecLog` cumulative across retries (honest history; progress bar derives from taskSteps,
+  not ExecLog). Update doc comment.
 
-## Notes
+Tests in `tests/plan_status_service_test.go` (black-box, `steppingClock`, exact-state):
+- [ ] Re-arm after failed exec: Offer → Finish(true) → StartExecution → FinishExecution(false)
+  → RequestImplement ⇒ `ExecPhase == requested` and one value receivable from `ImplementSignal()`.
+- [ ] Stays blocked after successful exec: same with FinishExecution(true) ⇒ phase stays
+  `succeeded`, no signal.
+- [ ] Retry timing: second StartExecution ⇒ `ExecStartedAt` = latest clock,
+  `ExecEndedAt.IsZero()`, prior ExecLog entry retained (settled to error state).
 
-- All changes confined to `<style>` block (plus possible small class additions in static
-  HTML). No JS behavior edits needed.
-- SVG diagram rect corner radius (`rx="5"`) is generated in JS `renderSequenceDiagram`;
-  change to `rx="0"` if square corners wanted there too (one-line JS constant edit).
+## Step 2 — Page: show Implement button after a failed run
+
+- [ ] `src/clients/plan_status_page.html` (~:1134): visibility becomes
+  `!!status.implementOffered && status.phase === "succeeded" && (!status.execPhase || status.execPhase === "failed")`.
+  No other page changes: failed→requested→running re-render, banner, and progress already
+  behave (verified renderExec/progressState paths).
+- [ ] Test in `tests/plan_status_page_test.js`: render a `phase:"succeeded",
+  implementOffered:true` status with `execPhase` of `"failed"` / `"running"` / `"succeeded"`
+  / `""`; assert the `implement` button `on` class is true/false/false/true.
+  No `tests/plan_status_server_test.go` marker changes needed (no renames).
+
+## Step 3 — `PlanDocumentPublisher`: disk → snapshot seeding (shared with planning)
+
+New `src/services/plan_document_publisher.go`:
+- [ ] `PlanDocumentSink` interface: `SetGoal/SetPlan/SetTests/SetTaskSteps` (satisfied by
+  `*PlanStatusService`).
+- [ ] `PlanDocumentPublisher{files FileStore, cfg models.PlanConfig}` +
+  `NewPlanDocumentPublisher`; methods `PublishGoal(sink)`, `PublishPlan(sink)` (plan + tests
+  + steps), `Publish(sink)` (everything). Bodies move verbatim from
+  `PlanOrchestrator.reportGoal/reportPlan/reportTests/reportTaskSteps`
+  (`plan_orchestrator.go:713-758`), preserving exact read-error-skip semantics. Move
+  unexported `taskSteps()` helper (:761-767) into this file (same package — the exec
+  orchestrator's use keeps compiling).
+- [ ] `src/services/plan_orchestrator.go`: add `docs *PlanDocumentPublisher` field (built in
+  `NewPlanOrchestrator`); `reportGoal`/`reportPlan` delegate to it; delete moved helpers.
+  Existing reporting/annotation tests must stay green unchanged.
+
+New `src/services/plan_document_publisher_test.go` (in-package, reuse `fakeFileStore`; small
+`fakeDocumentSink` recording calls):
+- [ ] Seeds all documents: exact goal/plan/tests strings; STEPS.md with `- [x]`/`- [ ]`
+  items parses to TaskSteps with correct Text/Completed.
+- [ ] Missing files publish nothing (all recorded slices empty ⇒ page placeholders survive).
+- [ ] Goal-only store publishes goal and nothing else.
+
+## Step 4 — cmd wiring: flag, dispatch, `runInteractiveExec`
+
+`cmd/determined/main.go`:
+- [ ] `validateInteractiveFlag(interactive, planning, executing bool)` — error
+  `"-interactive requires -plan or -exec"`; call site passes raw `*exec` (not
+  `executeRequested`) so bare `-interactive` still errors. Update `-exec`/`-interactive`
+  help text.
+- [ ] Dispatch: exec-only branch splits — if `*interactive`, build the same `executor`
+  closure as the -plan branch and call `runInteractiveExec(...)`; else headless
+  `runLoop(..., nil, ...)` as today.
+- [ ] Extract `createPlanConfig(tool, goal, mode, budget, maxStepPasses, maxFailures)
+  models.PlanConfig` from `runPlan` (:398-419); exec path calls it with `goal=""`,
+  `models.PlanModeStandard`, `maxStepPasses=0`— gives ServeFeedback/applyAnnotation/
+  rebuildFromGoal every invocation they need.
+- [ ] Extract `startStatusSession(status, clock) (server, cleanup func(), ok bool)` from
+  `runInteractivePlan` (:440-452): server start, locator Remember + `-link` hint, cleanup =
+  Forget + 2s-timeout Shutdown. Refactor `runInteractivePlan` onto it (keeps both <30 lines).
+- [ ] Extract `serveFeedbackLoop(ctx, orchestrator, status, execute, outcome)` from
+  `holdStatusPage` (:516-528) — the `for orchestrator.ServeFeedback(...) { outcome =
+  execute(...) }` loop; `holdStatusPage` becomes offer + printf + delegate.
+- [ ] New in `plan_flow.go`: `seedResumedSession(status, docs planDocumentPublisher)` →
+  `status.Start(); docs.Publish(status); status.Finish(true)` (small interface
+  `planDocumentPublisher{ Publish(services.PlanDocumentSink) }` for testability).
+- [ ] New `runInteractiveExec(ctx, tool, budget, maxFailures, execute, clock, logs)` in
+  main.go next to `runInteractivePlan`:
+  - `cfg := createPlanConfig(tool, "", standard, budget, 0, maxFailures)`; `status :=
+    services.NewPlanStatusService(clock, gitContext, tool.Identity())`;
+    `startStatusSession`; construct `services.NewPlanOrchestrator(
+    clients.NewExecCommandRunner(), files, clients.NewStdinPrompter(...), clock, logs,
+    os.Stdout, cfg).WithStatusReporter(status)`.
+  - `seedResumedSession(status, services.NewPlanDocumentPublisher(files, cfg))`.
+  - `outcome := execute(ctx, status)`; on `ctx.Err()` return.
+  - **Only then** `status.OfferImplement()` (offering before the first run would open a
+    window — phase succeeded, ExecPhase still "" — where a click queues a spurious run) +
+    "still serving … annotate / Implement to run again after a failure / Enter to exit" printf.
+  - `return serveFeedbackLoop(ctx, orchestrator, status, execute, outcome)`.
+
+Tests in `cmd/determined/main_test.go`:
+- [ ] Update the three `validateInteractiveFlag` tests (:423-435) to the 3-arg form; add
+  `TestUserCanUseInteractiveWithExec` (`true,false,true` accepted); assert the reject
+  message names both `-plan` and `-exec`.
+- [ ] `TestResumedSessionSeedsDocumentsAndShowsPlanningSucceeded`: `fakeDocsPublisher` +
+  real `PlanStatusService` with `fixedClock`; after `seedResumedSession` assert `published`,
+  `Phase == succeeded`, `StartedAt`/`EndedAt` set — proves the page renders a completed
+  planning half.
+
+## Step 5 — Docs + verification
+
+- [ ] README.md flag table: `--interactive` row no longer "Requires `--plan`"; describe the
+  exec resume/retry flow.
+- [ ] `go build ./... && go vet ./... && gofmt -l . && go test ./...` (the Go test wrapper
+  runs the node JS page tests), plus `node --test tests/plan_status_page_test.js` directly.
+- [ ] Manual smoke: in a repo with an existing PLAN.md/STEPS.md (some steps unchecked), run
+  `determined -exec -interactive`, confirm: page seeds docs + planning bar at 50%, exec
+  streams, on failure the Implement button appears, an annotation on the failing step lands
+  in STEPS.md, Implement re-runs, Enter exits. `determined -link` recovers the URL.
+
+## Decided edge cases
+
+- **Goal annotation triggers a full replan** (`rebuildFromGoal` deletes/regenerates
+  PLAN/STEPS/TESTS): accepted — identical to held plan-interactive behavior; the full
+  standard PlanConfig makes it work.
+- **Missing PLAN.md/STEPS.md**: seeding publishes nothing; exec fails fast; button re-arms;
+  retries keep failing until files exist. No special handling.
+- **Enter during a run** dismisses after the run ends (dismissalChannel armed before loop) —
+  matches existing holdStatusPage semantics.
+- **Cumulative ExecLog**: all attempts visible in Execution tab; duration/"Executing since"
+  use reset timestamps; progress resumes mid-bar from STEPS.md checkboxes — the desired
+  resume story.
+- **Plan-interactive dead-button bug**: fixed by Steps 1+2 alone (`ImplementOffered`
+  persists; relaxed guard + page condition), zero cmd changes.
+
+## Execution order
+
+1 → 2 → 3 → 4 → 5. Steps 1–3 are each independently green; 4 depends on 3 (publisher/sink)
+and semantically on 1–2 for end-to-end retry.

@@ -370,6 +370,63 @@ func TestPlanStatusServiceExecutionFailureMarksFailedPhase(t *testing.T) {
 	}
 }
 
+func TestUserCanRequestImplementationAgainAfterFailedExecution(t *testing.T) {
+	service := implementReadyService(newSteppingClock(planStart()))
+	service.StartExecution()
+	service.FinishExecution(false)
+
+	service.RequestImplement()
+
+	if phase := service.Snapshot().ExecPhase; phase != models.ExecPhaseRequested {
+		t.Fatalf("execPhase = %q, want requested", phase)
+	}
+	select {
+	case <-service.ImplementSignal():
+	default:
+		t.Fatal("implement signal empty after retry request")
+	}
+}
+
+func TestUserCannotRequestImplementationAgainAfterSuccessfulExecution(t *testing.T) {
+	service := implementReadyService(newSteppingClock(planStart()))
+	service.StartExecution()
+	service.FinishExecution(true)
+
+	service.RequestImplement()
+
+	if phase := service.Snapshot().ExecPhase; phase != models.ExecPhaseSucceeded {
+		t.Fatalf("execPhase = %q, want succeeded", phase)
+	}
+	select {
+	case <-service.ImplementSignal():
+		t.Fatal("implement signal fired after successful execution")
+	default:
+	}
+}
+
+func TestRetryStartsAFreshTimingWindowAndRetainsExecutionHistory(t *testing.T) {
+	clock := newSteppingClock(planStart())
+	service := implementReadyService(clock)
+	service.StartExecution()
+	service.BeginExecLogEntry("first attempt")
+	clock.advance(time.Minute)
+	service.FinishExecution(false)
+	clock.advance(time.Minute)
+
+	service.StartExecution()
+
+	snapshot := service.Snapshot()
+	if !snapshot.ExecStartedAt.Equal(planStart().Add(2 * time.Minute)) {
+		t.Errorf("execStartedAt = %v, want latest clock", snapshot.ExecStartedAt)
+	}
+	if !snapshot.ExecEndedAt.IsZero() {
+		t.Errorf("execEndedAt = %v, want zero during retry", snapshot.ExecEndedAt)
+	}
+	if len(snapshot.ExecLog) != 1 || snapshot.ExecLog[0].State != models.EntryStateError {
+		t.Errorf("execLog = %+v, want retained failed entry", snapshot.ExecLog)
+	}
+}
+
 func TestPlanStatusServiceStreamsAutomaticExecutionWithoutImplementOffer(t *testing.T) {
 	service := services.NewPlanStatusService(newSteppingClock(planStart()), models.GitContext{}, models.ToolIdentity{})
 	service.Start()

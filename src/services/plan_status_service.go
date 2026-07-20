@@ -2,6 +2,7 @@ package services
 
 import (
 	"sync"
+	"time"
 
 	"determined/src/models"
 )
@@ -200,12 +201,12 @@ func (s *PlanStatusService) OfferImplement() {
 
 // RequestImplement queues one execution request from the page's Implement
 // button. Requests are ignored unless implementation was offered, planning
-// succeeded, and execution has not already been requested, so repeated clicks
-// start at most one execute run.
+// succeeded, and execution is either unstarted or failed, so repeated clicks
+// start at most one run while successful execution remains final.
 func (s *PlanStatusService) RequestImplement() {
 	requested := false
 	s.update(func(st models.PlanSessionStatus) models.PlanSessionStatus {
-		if !st.ImplementOffered || st.Phase != models.PlanPhaseSucceeded || st.ExecPhase != "" {
+		if !st.ImplementOffered || st.Phase != models.PlanPhaseSucceeded || !execRetryable(st.ExecPhase) {
 			return st
 		}
 		st.ExecPhase = models.ExecPhaseRequested
@@ -221,17 +222,24 @@ func (s *PlanStatusService) RequestImplement() {
 	}
 }
 
+// execRetryable reports whether the page may request a new execute run.
+func execRetryable(phase models.ExecPhase) bool {
+	return phase == "" || phase == models.ExecPhaseFailed
+}
+
 // ImplementSignal reports Implement requests: the channel receives one value
 // per accepted request.
 func (s *PlanStatusService) ImplementSignal() <-chan struct{} {
 	return s.implement
 }
 
-// StartExecution records the execute loop's start.
+// StartExecution records a fresh timing window for the execute loop while
+// retaining the cumulative execution log from prior attempts.
 func (s *PlanStatusService) StartExecution() {
 	s.update(func(st models.PlanSessionStatus) models.PlanSessionStatus {
 		st.ExecPhase = models.ExecPhaseRunning
 		st.ExecStartedAt = s.clock.Now()
+		st.ExecEndedAt = time.Time{}
 		return st
 	})
 }

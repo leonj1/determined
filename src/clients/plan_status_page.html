@@ -1132,7 +1132,8 @@
     renderTabStates(status);
     renderDocumentTitle(progress, repo);
     el("implement").classList.toggle("on",
-      !!status.implementOffered && status.phase === "succeeded" && !status.execPhase);
+      !!status.implementOffered && status.phase === "succeeded" &&
+      (!status.execPhase || status.execPhase === "failed"));
   }
 
   function renderLog(entries) {

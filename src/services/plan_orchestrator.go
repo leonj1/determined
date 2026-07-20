@@ -58,6 +58,7 @@ type PlanOrchestrator struct {
 	terminal io.Writer
 	status   PlanStatusReporter
 	cfg      models.PlanConfig
+	docs     *PlanDocumentPublisher
 
 	iteration  int
 	goalSeeded bool
@@ -82,6 +83,7 @@ func NewPlanOrchestrator(
 		logs:     logs,
 		terminal: terminal,
 		cfg:      cfg,
+		docs:     NewPlanDocumentPublisher(files, cfg),
 	}
 }
 
@@ -714,9 +716,7 @@ func (o *PlanOrchestrator) reportGoal() {
 	if o.status == nil {
 		return
 	}
-	if goal, err := o.files.Read(o.cfg.GoalFile); err == nil {
-		o.status.SetGoal(goal)
-	}
+	o.docs.PublishGoal(o.status)
 }
 
 // reportPlan publishes the current PLAN.md contents and the parsed STEPS.md
@@ -725,45 +725,7 @@ func (o *PlanOrchestrator) reportPlan() {
 	if o.status == nil {
 		return
 	}
-	if o.files.Exists(o.cfg.PlanFile) {
-		if plan, err := o.files.Read(o.cfg.PlanFile); err == nil {
-			o.status.SetPlan(plan)
-		}
-	}
-	o.reportTests()
-	o.reportTaskSteps()
-}
-
-// reportTests publishes the recommended TESTS.md contents to the status page.
-func (o *PlanOrchestrator) reportTests() {
-	if !o.files.Exists(o.cfg.TestsFile) {
-		return
-	}
-	if tests, err := o.files.Read(o.cfg.TestsFile); err == nil {
-		o.status.SetTests(tests)
-	}
-}
-
-// reportTaskSteps publishes STEPS.md as parsed checkbox items so the status
-// page can render one card per step.
-func (o *PlanOrchestrator) reportTaskSteps() {
-	if !o.files.Exists(o.cfg.StepsFile) {
-		return
-	}
-	content, err := o.files.Read(o.cfg.StepsFile)
-	if err != nil {
-		return
-	}
-	o.status.SetTaskSteps(taskSteps(ParseSteps(content)))
-}
-
-// taskSteps converts parsed steps into the status page's task-step model.
-func taskSteps(steps []Step) []models.TaskStep {
-	out := make([]models.TaskStep, len(steps))
-	for i, s := range steps {
-		out[i] = models.TaskStep{Text: s.Text, Purpose: s.Purpose, DoneWhen: s.DoneWhen, Completed: s.Completed}
-	}
-	return out
+	o.docs.PublishPlan(o.status)
 }
 
 // reportFinish records the planning phase end and success state.

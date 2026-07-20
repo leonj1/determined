@@ -40,10 +40,10 @@ func main() {
 	tool := flag.String("tool", "droid", "AI coding CLI to run (droid|pi|claude)")
 	model := flag.String("model", "", "model ID or alias to pass to droid or claude")
 	plan := flag.String("plan", "", "describe a goal to plan interactively, producing PLAN.md and STEPS.md")
-	exec := flag.Bool("exec", false, "run the execute loop against PLAN.md / STEPS.md; with -plan, execution follows successful planning")
+	exec := flag.Bool("exec", false, "run the execute loop against PLAN.md / STEPS.md; add -interactive for a live status page and failed-run retries")
 	reviewPlan := flag.Bool("review-plan", false, "critique and interactively revise existing PLAN.md and STEPS.md")
 	criteria := flag.Bool("criteria", false, "interactively capture BDD journey tests into CRITERIA.md; with -plan or -exec, the session runs first and the tests become required acceptance criteria")
-	interactive := flag.Bool("interactive", false, "with -plan, serve a live HTML status page for the planning session on a local web server")
+	interactive := flag.Bool("interactive", false, "with -plan or -exec, serve a live HTML status page on a local web server")
 	mvp := flag.Bool("mvp", false, "create a lean plan for the smallest usable outcome (plan mode only)")
 	prototype := flag.Bool("prototype", false, "create a fast experimental plan with minimal questioning and no refinement (plan mode only)")
 	maxStepPasses := registerMaxStepPassesFlag(flag.CommandLine)
@@ -87,7 +87,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "determined: %v\n", err)
 		os.Exit(2)
 	}
-	if err := validateInteractiveFlag(*interactive, *plan != ""); err != nil {
+	if err := validateInteractiveFlag(*interactive, *plan != "", *exec); err != nil {
 		fmt.Fprintf(os.Stderr, "determined: %v\n", err)
 		os.Exit(2)
 	}
@@ -137,6 +137,11 @@ func main() {
 			if shouldExecuteAfterPlan(executing, *interactive, outcome) {
 				outcome = runLoop(ctx, selected, *budget, *maxStalled, *maxFailures, *maxIterationDuration, *verify, *specializedReviews, *gitCheckpoint, nil, clock, logs)
 			}
+		} else if *interactive {
+			executor := func(ctx context.Context, status services.ExecStatusReporter) models.Outcome {
+				return runLoop(ctx, selected, *budget, *maxStalled, *maxFailures, *maxIterationDuration, *verify, *specializedReviews, *gitCheckpoint, status, clock, logs)
+			}
+			outcome = runInteractiveExec(ctx, selected, *budget, *maxFailures, executor, clock, logs)
 		} else {
 			outcome = runLoop(ctx, selected, *budget, *maxStalled, *maxFailures, *maxIterationDuration, *verify, *specializedReviews, *gitCheckpoint, nil, clock, logs)
 		}
@@ -278,11 +283,10 @@ func validateCriteriaFlag(criteria, reviewing bool) error {
 	return nil
 }
 
-// validateInteractiveFlag rejects -interactive without -plan: the live status
-// page observes a planning session and has nothing to show otherwise.
-func validateInteractiveFlag(interactive, planning bool) error {
-	if interactive && !planning {
-		return fmt.Errorf("-interactive requires -plan")
+// validateInteractiveFlag rejects a status page without an explicit session.
+func validateInteractiveFlag(interactive, planning, executing bool) error {
+	if interactive && !planning && !executing {
+		return fmt.Errorf("-interactive requires -plan or -exec")
 	}
 	return nil
 }
@@ -306,6 +310,23 @@ func refinePasses(mode models.PlanMode, configured int) int {
 		return 0
 	}
 	return configured
+}
+
+// createPlanConfig builds the complete planning protocol configuration used by
+// both new plans and resumed interactive execution sessions.
+func createPlanConfig(tool models.Tool, goal string, mode models.PlanMode, budget time.Duration, maxStepPasses, maxFailures int) models.PlanConfig {
+	prompts := services.PlanningPrompts(mode)
+	return models.PlanConfig{
+		Operation: models.PlanOperationCreate, Goal: goal,
+		Invocation: tool.Invocation(prompts.Plan), Budget: budget,
+		AssessInvocation: tool.Invocation(prompts.Assess), RefineInvocation: tool.Invocation(prompts.Refine),
+		TestsInvocation: tool.Invocation(prompts.Tests), AlignInvocation: tool.Invocation(prompts.Align),
+		AnnotateInvocation: tool.Invocation(prompts.Annotate),
+		MaxRefinePasses:    refinePasses(mode, maxStepPasses), MaxConsecutiveFailures: maxFailures,
+		GoalFile: "GOAL.md", QuestionsFile: "QUESTIONS.md", AnswersFile: "ANSWERS.md",
+		PlanFile: "PLAN.md", StepsFile: "STEPS.md", TestsFile: "TESTS.md",
+		AssessmentFile: "REFINEMENTS.md", AnnotationFile: "ANNOTATION.md",
+	}
 }
 
 // planExecutor starts the execute loop for a planned session, streaming its
@@ -395,28 +416,7 @@ func runUpdateCommand() {
 // local web server shows the session live. Executing selects automatic live
 // execution; otherwise the page offers its Implement button after planning.
 func runPlan(ctx context.Context, tool models.Tool, goal string, mode models.PlanMode, budget time.Duration, maxStepPasses, maxFailures int, interactive, executing bool, execute planExecutor, clock services.Clock, logs services.LogSink) models.Outcome {
-	prompts := services.PlanningPrompts(mode)
-	cfg := models.PlanConfig{
-		Operation:              models.PlanOperationCreate,
-		Goal:                   goal,
-		Invocation:             tool.Invocation(prompts.Plan),
-		Budget:                 budget,
-		AssessInvocation:       tool.Invocation(prompts.Assess),
-		RefineInvocation:       tool.Invocation(prompts.Refine),
-		TestsInvocation:        tool.Invocation(prompts.Tests),
-		AlignInvocation:        tool.Invocation(prompts.Align),
-		AnnotateInvocation:     tool.Invocation(prompts.Annotate),
-		MaxRefinePasses:        refinePasses(mode, maxStepPasses),
-		MaxConsecutiveFailures: maxFailures,
-		GoalFile:               "GOAL.md",
-		QuestionsFile:          "QUESTIONS.md",
-		AnswersFile:            "ANSWERS.md",
-		PlanFile:               "PLAN.md",
-		StepsFile:              "STEPS.md",
-		TestsFile:              "TESTS.md",
-		AssessmentFile:         "REFINEMENTS.md",
-		AnnotationFile:         "ANNOTATION.md",
-	}
+	cfg := createPlanConfig(tool, goal, mode, budget, maxStepPasses, maxFailures)
 	orchestrator := services.NewPlanOrchestrator(
 		clients.NewExecCommandRunner(),
 		clients.NewOsFileStore(),
@@ -438,35 +438,70 @@ func runPlan(ctx context.Context, tool models.Tool, goal string, mode models.Pla
 // the user presses Enter or interrupts.
 func runInteractivePlan(ctx context.Context, orchestrator *services.PlanOrchestrator, tool models.ToolIdentity, executing bool, execute planExecutor, clock services.Clock) models.Outcome {
 	status := services.NewPlanStatusService(clock, clients.NewGitContextReader().Read(ctx), tool)
+	server, cleanup, ok := startStatusSession(status, clock)
+	if !ok {
+		return models.OutcomeDroidFailed
+	}
+	defer cleanup()
+	outcome := orchestrator.WithStatusReporter(status).Run(ctx)
+	if ctx.Err() != nil {
+		return outcome
+	}
+	switch postPlanActionFor(executing, outcome) {
+	case postPlanOffer:
+		return holdStatusPage(ctx, orchestrator, status, server.URL(), execute, outcome)
+	case postPlanAutoExec:
+		fmt.Fprintf(os.Stdout, "determined: plan ready — executing now; status page streaming at %s\n", server.URL())
+		hold := completedStatusPageHolder(server.URL(), os.Stdout, os.Stdin)
+		return runAutoExec(ctx, status, execute, hold)
+	}
+	return outcome
+}
+
+func startStatusSession(status *services.PlanStatusService, clock services.Clock) (*clients.PlanStatusServer, func(), bool) {
 	server := clients.NewPlanStatusServer(status, status, status, clock)
 	if err := server.Start(); err != nil {
 		fmt.Fprintf(os.Stderr, "determined: %v\n", err)
-		return models.OutcomeDroidFailed
+		return nil, func() {}, false
 	}
 	locator, located := sessionLocator()
 	if located {
 		locator.Remember(models.SessionRecord{PID: os.Getpid(), Port: server.Port()}) //nolint:errcheck // -link is a convenience; planning proceeds regardless
-		defer locator.Forget()                                                        //nolint:errcheck // best-effort cleanup on exit
 	}
-	fmt.Fprintf(os.Stdout, "determined: planning status page at %s\n", server.URL())
+	fmt.Fprintf(os.Stdout, "determined: status page at %s\n", server.URL())
 	fmt.Fprintf(os.Stdout, "determined: recover this link later with `determined -link`\n")
-
-	outcome := orchestrator.WithStatusReporter(status).Run(ctx)
-
-	if ctx.Err() == nil {
-		switch postPlanActionFor(executing, outcome) {
-		case postPlanOffer:
-			outcome = holdStatusPage(ctx, orchestrator, status, server.URL(), execute, outcome)
-		case postPlanAutoExec:
-			fmt.Fprintf(os.Stdout, "determined: plan ready — executing now; status page streaming at %s\n", server.URL())
-			hold := completedStatusPageHolder(server.URL(), os.Stdout, os.Stdin)
-			outcome = runAutoExec(ctx, status, execute, hold)
+	cleanup := func() {
+		if located {
+			locator.Forget() //nolint:errcheck // best-effort cleanup on exit
 		}
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		server.Shutdown(shutdownCtx) //nolint:errcheck // best-effort shutdown on exit
 	}
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	server.Shutdown(shutdownCtx) //nolint:errcheck // best-effort shutdown on exit
-	return outcome
+	return server, cleanup, true
+}
+
+func runInteractiveExec(ctx context.Context, tool models.Tool, budget time.Duration, maxFailures int, execute planExecutor, clock services.Clock, logs services.LogSink) models.Outcome {
+	cfg := createPlanConfig(tool, "", models.PlanModeStandard, budget, 0, maxFailures)
+	status := services.NewPlanStatusService(clock, clients.NewGitContextReader().Read(ctx), tool.Identity())
+	server, cleanup, ok := startStatusSession(status, clock)
+	if !ok {
+		return models.OutcomeDroidFailed
+	}
+	defer cleanup()
+	files := clients.NewOsFileStore()
+	orchestrator := services.NewPlanOrchestrator(
+		clients.NewExecCommandRunner(), files, clients.NewStdinPrompter(os.Stdout, os.Stdin),
+		clock, logs, os.Stdout, cfg,
+	).WithStatusReporter(status)
+	seedResumedSession(status, services.NewPlanDocumentPublisher(files, cfg))
+	outcome := execute(ctx, status)
+	if ctx.Err() != nil {
+		return outcome
+	}
+	status.OfferImplement()
+	fmt.Fprintf(os.Stdout, "determined: status page still serving at %s — annotate sections, click Implement to run again after a failure, or press Enter to exit\n", server.URL())
+	return serveFeedbackLoop(ctx, orchestrator, status, execute, outcome)
 }
 
 // completedStatusPageHolder drains terminal input during execution, then keeps
@@ -520,6 +555,10 @@ func holdStatusPage(ctx context.Context, orchestrator *services.PlanOrchestrator
 	fmt.Fprintf(os.Stdout,
 		"determined: status page still serving at %s — annotate sections to refine the plan, click Implement to execute it, or press Enter to exit\n",
 		url)
+	return serveFeedbackLoop(ctx, orchestrator, status, execute, outcome)
+}
+
+func serveFeedbackLoop(ctx context.Context, orchestrator *services.PlanOrchestrator, status *services.PlanStatusService, execute planExecutor, outcome models.Outcome) models.Outcome {
 	dismissed := dismissalChannel()
 	for orchestrator.ServeFeedback(ctx, dismissed) {
 		outcome = execute(ctx, status)

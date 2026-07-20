@@ -5,6 +5,7 @@ import (
 	"context"
 	"flag"
 	"io"
+	"strings"
 	"testing"
 	"time"
 
@@ -21,6 +22,16 @@ func (c fixedClock) Now() time.Time { return c.now }
 type fakePlanExecutor struct {
 	status  services.ExecStatusReporter
 	outcome models.Outcome
+}
+
+type fakeDocsPublisher struct{ published bool }
+
+func (p *fakeDocsPublisher) Publish(sink services.PlanDocumentSink) {
+	p.published = true
+	sink.SetGoal("resume the existing plan")
+	sink.SetPlan("# Plan")
+	sink.SetTests("# Tests")
+	sink.SetTaskSteps([]models.TaskStep{{Text: "retry execution"}})
 }
 
 func (f *fakePlanExecutor) Execute(_ context.Context, status services.ExecStatusReporter) models.Outcome {
@@ -421,19 +432,48 @@ func TestPlanInputKeepsQuotedValueWhenNoTrailingWords(t *testing.T) {
 }
 
 func TestUserCannotUseInteractiveWithoutPlan(t *testing.T) {
-	if err := validateInteractiveFlag(true, false); err == nil {
-		t.Fatal("expected -interactive without -plan to be rejected")
+	err := validateInteractiveFlag(true, false, false)
+	if err == nil {
+		t.Fatal("expected bare -interactive to be rejected")
+	}
+	if !strings.Contains(err.Error(), "-plan") || !strings.Contains(err.Error(), "-exec") {
+		t.Fatalf("error = %q, want both supported flags", err)
 	}
 }
 
 func TestUserCanUseInteractiveWithPlan(t *testing.T) {
-	if err := validateInteractiveFlag(true, true); err != nil {
+	if err := validateInteractiveFlag(true, true, false); err != nil {
 		t.Fatalf("expected -interactive with -plan to be accepted, got %v", err)
 	}
 }
 
+func TestUserCanUseInteractiveWithExec(t *testing.T) {
+	if err := validateInteractiveFlag(true, false, true); err != nil {
+		t.Fatalf("expected -interactive with -exec to be accepted, got %v", err)
+	}
+}
+
 func TestPlanWithoutInteractiveIsUnaffected(t *testing.T) {
-	if err := validateInteractiveFlag(false, true); err != nil {
+	if err := validateInteractiveFlag(false, true, false); err != nil {
 		t.Fatalf("expected plain -plan to be accepted, got %v", err)
+	}
+}
+
+func TestResumedSessionSeedsDocumentsAndShowsPlanningSucceeded(t *testing.T) {
+	now := time.Date(2026, 7, 20, 12, 0, 0, 0, time.UTC)
+	status := services.NewPlanStatusService(fixedClock{now: now}, models.GitContext{}, models.ToolIdentity{})
+	docs := &fakeDocsPublisher{}
+
+	seedResumedSession(status, docs)
+
+	snapshot := status.Snapshot()
+	if !docs.published {
+		t.Fatal("planning documents were not published")
+	}
+	if snapshot.Phase != models.PlanPhaseSucceeded {
+		t.Fatalf("phase = %q, want succeeded", snapshot.Phase)
+	}
+	if !snapshot.StartedAt.Equal(now) || !snapshot.EndedAt.Equal(now) {
+		t.Fatalf("planning timing = %v to %v, want %v", snapshot.StartedAt, snapshot.EndedAt, now)
 	}
 }

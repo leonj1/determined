@@ -198,6 +198,24 @@ test("status updates make the lifecycle scannable and identify browser-tab progr
   assert.equal(browser.run(`document.querySelectorAll("#tabs button")[6].dataset.state`), "empty");
 });
 
+test("failed execution restores Implement without allowing successful or running retries", () => {
+  const browser = createPageEnvironment();
+  const visible = (execPhase) => browser.run(`
+    render({
+      git: {}, tool: {}, phase: "succeeded", goal: "Goal", plan: "Plan", tests: "Tests",
+      taskSteps: [], log: [], steps: [], pendingAnnotations: [], execLog: [],
+      execPhase: ${JSON.stringify(execPhase)}, explainPhase: "", quizPhase: "",
+      implementOffered: true,
+    });
+    document.getElementById("implement").classList.contains("on");
+  `);
+
+  assert.equal(visible("failed"), true);
+  assert.equal(visible("running"), false);
+  assert.equal(visible("succeeded"), false);
+  assert.equal(visible(""), true);
+});
+
 test("only the current unfinished planning artifact is marked running", () => {
   const browser = createPageEnvironment();
   const states = browser.run(`tabStates({ phase: "running", goal: "Goal", taskSteps: [], log: [] })`);

@@ -13,6 +13,10 @@ type postPlanAction int
 // completedPageHolder keeps a finished interactive page available for review.
 type completedPageHolder func(ctx context.Context)
 
+type planDocumentPublisher interface {
+	Publish(services.PlanDocumentSink)
+}
+
 const (
 	postPlanDismiss postPlanAction = iota
 	postPlanOffer
@@ -37,4 +41,11 @@ func runAutoExec(ctx context.Context, status services.ExecStatusReporter, execut
 	outcome := execute(ctx, status)
 	hold(ctx)
 	return outcome
+}
+
+// seedResumedSession presents protocol files as a completed planning phase.
+func seedResumedSession(status *services.PlanStatusService, docs planDocumentPublisher) {
+	status.Start()
+	docs.Publish(status)
+	status.Finish(true)
 }
