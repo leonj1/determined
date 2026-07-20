@@ -150,3 +150,50 @@ Tests in `cmd/determined/main_test.go`:
 
 1 → 2 → 3 → 4 → 5. Steps 1–3 are each independently green; 4 depends on 3 (publisher/sink)
 and semantically on 1–2 for end-to-end retry.
+
+---
+
+# TODO: status page — expand left content column to fill up to the activity pane
+
+## Root cause
+
+The left column of the status page is deliberately capped at 70ch in two places, and a Go
+test locks that in:
+
+1. `src/clients/plan_status_page.html:156` — the `main` grid:
+   `grid-template-columns: minmax(0, 70ch) minmax(16rem, 22rem); justify-content: space-between;`
+   The left track can never exceed 70ch; on wide screens `space-between` pushes the activity
+   pane far right and leaves dead space between the columns instead of letting the left grow.
+2. `src/clients/plan_status_page.html:168` — `#content` repeats the cap: `max-width: 70ch;`.
+3. `tests/plan_status_server_test.go:223` — the editorial visual contract asserts the literal
+   string `grid-template-columns: minmax(0, 70ch)`.
+
+## Steps
+
+- [ ] **Widen the grid column** (`plan_status_page.html:154-158`): left track becomes
+  `minmax(0, 1fr)` and drop the now-meaningless `justify-content: space-between`:
+  ```css
+  main {
+    margin: 0; padding: 2rem 0 0;
+    display: grid; grid-template-columns: minmax(0, 1fr) minmax(16rem, 22rem); gap: 3rem;
+    align-items: start;
+  }
+  ```
+  The right pane keeps its 16rem–22rem band; the `1fr` left track absorbs everything from
+  the far left up to the 3rem gap.
+- [ ] **Remove the inner cap** (`plan_status_page.html:168`):
+  `#content { display: grid; gap: 2rem; min-width: 0; }` — keep `min-width: 0`; it lets wide
+  children (diff2html tables, code blocks) shrink instead of blowing out the grid.
+- [ ] **Update the contract test** (`plan_status_server_test.go:223`): marker
+  `"grid-template-columns: minmax(0, 70ch)"` → `"grid-template-columns: minmax(0, 1fr)"`.
+- [ ] **Verify**: `go test ./tests/...`; load the page on a wide window and confirm content
+  spans from the left edge (inside the body's 2rem padding) to the activity pane, diffs/code
+  blocks still scroll internally, and the `max-width: 50rem` mobile breakpoint (line 166)
+  still collapses to one column (already `1fr`, no change needed).
+
+## Note
+
+70ch is a readable-line-length cap and the page is prose-heavy (Georgia serif, editorial
+styling), so paragraphs will get long lines on wide monitors. If full-width panels with
+still-readable text is wanted later: keep `minmax(0, 1fr)` on the grid but apply `max-width`
+only to paragraph-like elements.

@@ -220,7 +220,7 @@ func assertPageServed(t *testing.T, url string) {
 		"border-radius: 0",
 		".doc a { color: var(--link); }",
 		":focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }",
-		"grid-template-columns: minmax(0, 70ch)",
+		"grid-template-columns: minmax(0, 1fr)",
 		"background: var(--ok-tint); color: var(--ok-fg)",
 		`content: "\2192"`,
 		`rx="0" class="seq-actor"`,

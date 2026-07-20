@@ -153,8 +153,8 @@
   }
   main {
     margin: 0; padding: 2rem 0 0;
-    display: grid; grid-template-columns: minmax(0, 70ch) minmax(16rem, 22rem); gap: 3rem;
-    align-items: start; justify-content: space-between;
+    display: grid; grid-template-columns: minmax(0, 1fr) minmax(16rem, 22rem); gap: 3rem;
+    align-items: start;
   }
   @media (max-width: 50rem) {
     body { padding-inline: 1rem; }
@@ -165,7 +165,7 @@
     nav#tabs { position: static; gap: 1rem; }
     main { grid-template-columns: 1fr; gap: 2rem; }
   }
-  #content { display: grid; gap: 2rem; min-width: 0; max-width: 70ch; }
+  #content { display: grid; gap: 2rem; min-width: 0; }
   #waiting, #disconnected {
     padding: 0.7rem 0.8rem; border: 0; border-left: 2px solid var(--accent); border-radius: 0;
     background: transparent; color: var(--fg);
