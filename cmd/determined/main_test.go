@@ -260,7 +260,7 @@ func TestInteractivePostPlanActionMatchesRequestedFlow(t *testing.T) {
 }
 
 func TestAutomaticExecutionUsesLiveStatusAndPropagatesOutcome(t *testing.T) {
-	status := services.NewPlanStatusService(fixedClock{}, models.GitContext{})
+	status := services.NewPlanStatusService(fixedClock{}, models.GitContext{}, models.ToolIdentity{})
 	executor := &fakePlanExecutor{outcome: models.OutcomeStalled}
 	held := false
 	hold := func(_ context.Context) { held = true }

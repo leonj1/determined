@@ -429,15 +429,15 @@ func runPlan(ctx context.Context, tool models.Tool, goal string, mode models.Pla
 	if !interactive {
 		return orchestrator.Run(ctx)
 	}
-	return runInteractivePlan(ctx, orchestrator, executing, execute, clock)
+	return runInteractivePlan(ctx, orchestrator, tool.Identity(), executing, execute, clock)
 }
 
 // runInteractivePlan wraps a planning run with the live status web server. A
 // bind failure aborts before the AI tool is ever invoked. A ready plan either
 // offers implementation or executes automatically, then stays viewable until
 // the user presses Enter or interrupts.
-func runInteractivePlan(ctx context.Context, orchestrator *services.PlanOrchestrator, executing bool, execute planExecutor, clock services.Clock) models.Outcome {
-	status := services.NewPlanStatusService(clock, clients.NewGitContextReader().Read(ctx))
+func runInteractivePlan(ctx context.Context, orchestrator *services.PlanOrchestrator, tool models.ToolIdentity, executing bool, execute planExecutor, clock services.Clock) models.Outcome {
+	status := services.NewPlanStatusService(clock, clients.NewGitContextReader().Read(ctx), tool)
 	server := clients.NewPlanStatusServer(status, status, status, clock)
 	if err := server.Start(); err != nil {
 		fmt.Fprintf(os.Stderr, "determined: %v\n", err)

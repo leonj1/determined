@@ -22,10 +22,18 @@ type ToolOptions struct {
 	Model ModelID
 }
 
+// ToolIdentity names the AI CLI and the model it runs, for display on the
+// interactive status page. An empty Model means the CLI's own default model.
+type ToolIdentity struct {
+	Name  ToolName `json:"name"`
+	Model ModelID  `json:"model"`
+}
+
 // Tool builds the command invocation for a specific AI coding CLI. It is pure
 // construction — given the prompt, it returns the Invocation to run.
 type Tool interface {
 	Name() string
+	Identity() ToolIdentity
 	Invocation(prompt string) Invocation
 }
 
@@ -41,6 +49,10 @@ type DroidTool struct {
 
 func (DroidTool) Name() string { return "droid" }
 
+func (t DroidTool) Identity() ToolIdentity {
+	return ToolIdentity{Name: ToolNameDroid, Model: t.Model}
+}
+
 func (t DroidTool) Invocation(prompt string) Invocation {
 	args := []string{"exec", prompt, "--auto", droidAutonomy}
 	return Invocation{Binary: "droid", Args: withModel(args, t.Model)}
@@ -50,6 +62,8 @@ func (t DroidTool) Invocation(prompt string) Invocation {
 type PiTool struct{}
 
 func (PiTool) Name() string { return "pi" }
+
+func (PiTool) Identity() ToolIdentity { return ToolIdentity{Name: ToolNamePi} }
 
 func (PiTool) Invocation(prompt string) Invocation {
 	return Invocation{Binary: "pi", Args: []string{"-p", prompt}}
@@ -67,6 +81,10 @@ type ClaudeTool struct {
 }
 
 func (ClaudeTool) Name() string { return "claude" }
+
+func (t ClaudeTool) Identity() ToolIdentity {
+	return ToolIdentity{Name: ToolNameClaude, Model: t.Model}
+}
 
 func (t ClaudeTool) Invocation(prompt string) Invocation {
 	args := []string{"-p", prompt, "--permission-mode", claudePermissionMode}

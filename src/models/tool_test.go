@@ -81,3 +81,25 @@ func TestPiRejectsModelOverride(t *testing.T) {
 		t.Fatal("expected pi to reject model overrides")
 	}
 }
+
+func TestToolIdentityCarriesNameAndModel(t *testing.T) {
+	cases := []struct {
+		tool  models.ToolName
+		model models.ModelID
+		want  models.ToolIdentity
+	}{
+		{"droid", "claude-opus-4-7", models.ToolIdentity{Name: models.ToolNameDroid, Model: "claude-opus-4-7"}},
+		{"claude", "opus", models.ToolIdentity{Name: models.ToolNameClaude, Model: "opus"}},
+		{"claude", "", models.ToolIdentity{Name: models.ToolNameClaude}},
+		{"pi", "", models.ToolIdentity{Name: models.ToolNamePi}},
+	}
+	for _, c := range cases {
+		tool, err := models.SelectTool(c.tool, models.ToolOptions{Model: c.model})
+		if err != nil {
+			t.Fatalf("%s: unexpected error: %v", c.tool, err)
+		}
+		if tool.Identity() != c.want {
+			t.Errorf("%s: identity = %+v, want %+v", c.tool, tool.Identity(), c.want)
+		}
+	}
+}

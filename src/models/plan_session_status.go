@@ -133,17 +133,20 @@ func (e LogEntry) WithBody(text string) LogEntry {
 // PlanSessionStatus is the full snapshot the interactive status page renders.
 // Each broadcast carries the whole snapshot; browsers re-render on receipt.
 type PlanSessionStatus struct {
-	Git             GitContext `json:"git"`
-	Goal            string     `json:"goal"`
-	Plan            string     `json:"plan"`
-	Tests           string     `json:"tests"`
-	Phase           PlanPhase  `json:"phase"`
-	WaitingForInput bool       `json:"waitingForInput"`
-	Steps           []PlanStep `json:"steps"`
-	TaskSteps       []TaskStep `json:"taskSteps"`
-	Log             []LogEntry `json:"log"`
-	StartedAt       time.Time  `json:"startedAt"`
-	EndedAt         time.Time  `json:"endedAt"`
+	Git GitContext `json:"git"`
+	// Tool names the AI CLI and model driving the session; the page header
+	// shows the model (or the CLI's default when none was selected).
+	Tool            ToolIdentity `json:"tool"`
+	Goal            string       `json:"goal"`
+	Plan            string       `json:"plan"`
+	Tests           string       `json:"tests"`
+	Phase           PlanPhase    `json:"phase"`
+	WaitingForInput bool         `json:"waitingForInput"`
+	Steps           []PlanStep   `json:"steps"`
+	TaskSteps       []TaskStep   `json:"taskSteps"`
+	Log             []LogEntry   `json:"log"`
+	StartedAt       time.Time    `json:"startedAt"`
+	EndedAt         time.Time    `json:"endedAt"`
 
 	// PendingAnnotations is the queue of user feedback submitted from the page
 	// and not yet applied by the AI tool.

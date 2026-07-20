@@ -368,7 +368,7 @@
   <button id="implement">▶ Implement</button>
   <div class="right">
     <div id="banner"><span class="mark" id="banner-mark"></span><span class="timing" id="banner-timing"></span></div>
-    <div class="git"><span id="remote">…</span> · <span id="branch" class="branch">…</span></div>
+    <div class="git"><span id="model" class="model">…</span> · <span id="remote">…</span> · <span id="branch" class="branch">…</span></div>
     <button id="theme-toggle" type="button" aria-label="Toggle theme">☾</button>
   </div>
 </header>
@@ -492,6 +492,13 @@
     const trimmed = remote.trim().replace(/\/+$/, "").replace(/\.git$/, "");
     const last = trimmed.split(/[/:]/).pop();
     return last || "";
+  }
+
+  // The model driving the session: the explicit --model value when one was
+  // given, otherwise the CLI's own default ("claude default").
+  function modelLabel(tool) {
+    if (!tool || !tool.name) return "";
+    return tool.model ? tool.model : tool.name + " default";
   }
 
   function setText(node, text, emptyText) {
@@ -1001,6 +1008,7 @@
   function render(status) {
     const repo = repoShortName(status.git.remote);
     el("title").textContent = repo ? repo + " — planning" : "planning";
+    setText(el("model"), modelLabel(status.tool), "no model");
     setText(el("remote"), status.git.remote, "no remote");
     setText(el("branch"), status.git.branch, "no branch");
     setDoc(el("goal"), status.goal, "Not written yet.");

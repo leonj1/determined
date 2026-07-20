@@ -22,12 +22,14 @@ type PlanStatusService struct {
 }
 
 // NewPlanStatusService wires a PlanStatusService with the session's git
-// context already resolved (see clients.GitContextReader).
-func NewPlanStatusService(clock Clock, git models.GitContext) *PlanStatusService {
+// context already resolved (see clients.GitContextReader) and the identity of
+// the AI tool driving the session.
+func NewPlanStatusService(clock Clock, git models.GitContext, tool models.ToolIdentity) *PlanStatusService {
 	return &PlanStatusService{
 		clock: clock,
 		status: models.PlanSessionStatus{
 			Git:   git,
+			Tool:  tool,
 			Phase: models.PlanPhaseRunning,
 			Steps: []models.PlanStep{},
 		},
