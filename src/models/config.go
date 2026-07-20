@@ -35,9 +35,11 @@ type Config struct {
 	// longer is killed and counts as a failed invocation toward
 	// MaxConsecutiveFailures. 0 means unlimited.
 	MaxIterationDuration time.Duration
-	// Verify runs an independent reviewer invocation after each newly checked
-	// step, which unchecks the step (and records why in FIXES.md) when its
-	// acceptance criterion is not genuinely met.
+	// Verify runs independent reviewer invocations after each newly checked
+	// step: a simplicity check first, then a correctness verification. Either
+	// unchecks the step (and records why in FIXES.md) when a materially
+	// simpler solution exists or its acceptance criterion is not genuinely
+	// met.
 	Verify bool
 	// SpecializedReviews runs independent security, performance, and
 	// reliability/maintainability reviews before the final whole-plan audit.

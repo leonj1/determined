@@ -54,7 +54,7 @@ func main() {
 	maxIterationDuration := flag.Duration("max-iteration-duration", 15*time.Minute,
 		"kill a single tool invocation after this long, counting it as a failed invocation; 0 means unlimited")
 	verify := flag.Bool("verify", true,
-		"after each newly checked step, run an independent verifier invocation that unchecks it (recording why in FIXES.md) if its acceptance criterion is not met")
+		"after each newly checked step, run independent reviewer invocations — a simplicity check, then a correctness verification — either of which unchecks it (recording why in FIXES.md) if a materially simpler solution exists or its acceptance criterion is not met")
 	specializedReviews := flag.Bool("specialized-reviews", true,
 		"before the final audit, run independent security, performance, and reliability/maintainability reviews")
 	gitCheckpoint := flag.Bool("git-checkpoint", true,

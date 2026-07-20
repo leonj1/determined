@@ -378,15 +378,16 @@ func (o *Orchestrator) appendTamperNote(path string) {
 	}
 }
 
-// verifyNewSteps runs an independent reviewer invocation over every step the
+// verifyNewSteps runs independent reviewer invocations over every step the
 // last iteration newly checked, comparing the steps file against its
-// pre-iteration snapshot. The verifier unchecks a step whose acceptance
-// criterion is not genuinely met (recording why in FIXES.md), so the loop
-// re-runs it. Ping-pong between worker and verifier is bounded because a
-// rejection leaves the completed count unchanged, which the stall counter
-// (checked right after this pass) treats as a no-progress iteration. A failed
-// verifier invocation counts toward the consecutive-failure cap like any
-// other; the step simply stays checked.
+// pre-iteration snapshot. Each step gets a simplicity check first, then a
+// correctness verification; either reviewer unchecks a step that fails its
+// standard (recording why in FIXES.md), so the loop re-runs it. Ping-pong
+// between worker and reviewers is bounded because a rejection leaves the
+// completed count unchanged, which the stall counter (checked right after
+// this pass) treats as a no-progress iteration. A failed reviewer invocation
+// counts toward the consecutive-failure cap like any other; the step simply
+// stays checked.
 func (o *Orchestrator) verifyNewSteps(ctx context.Context, before []Step) (models.Outcome, bool) {
 	if !o.cfg.Verify {
 		return models.OutcomeStopped, false
@@ -395,29 +396,51 @@ func (o *Orchestrator) verifyNewSteps(ctx context.Context, before []Step) (model
 		if !step.Completed || (i < len(before) && before[i].Completed) {
 			continue
 		}
-		progress := progressMessage(fmt.Sprintf("verifying step %d", i+1))
-		result := o.invoke(ctx, verifyPrompt(i+1, step), progress)
+		result := o.verifyStep(ctx, i, step)
 		if result.stop {
 			return result.outcome, true
 		}
 		if !result.succeeded {
 			return models.OutcomeStopped, false
 		}
-		o.markRejectedStep(i, result.entry)
 	}
 	return models.OutcomeStopped, false // outcome ignored when stop is false
 }
 
-// markRejectedStep tints a verifier's own log entry yellow when that verifier
-// unchecked the step it just reviewed. A rejection means the step was reported
-// done but was not, which is a warning about the run rather than a failure of
-// the verifier invocation — that invocation did its job.
-func (o *Orchestrator) markRejectedStep(i, entry int) {
+// verifyStep runs the reviewer invocations for one newly checked step: the
+// simplicity check first, then the correctness verification. A simplicity
+// rejection unchecks the step, so the correctness check is skipped — the
+// redone step is reviewed again on a later iteration.
+func (o *Orchestrator) verifyStep(ctx context.Context, i int, step Step) invocationResult {
+	progress := progressMessage(fmt.Sprintf("checking simplicity of step %d", i+1))
+	result := o.invoke(ctx, simplicityPrompt(i+1, step), progress)
+	if result.stop || !result.succeeded {
+		return result
+	}
+	if o.markRejectedStep(i, result.entry) {
+		return result
+	}
+	progress = progressMessage(fmt.Sprintf("verifying step %d", i+1))
+	result = o.invoke(ctx, verifyPrompt(i+1, step), progress)
+	if result.stop || !result.succeeded {
+		return result
+	}
+	o.markRejectedStep(i, result.entry)
+	return result
+}
+
+// markRejectedStep tints a reviewer's own log entry yellow when that reviewer
+// unchecked the step it just reviewed, and reports whether that rejection
+// happened. A rejection means the step was reported done but was not, which is
+// a warning about the run rather than a failure of the reviewer invocation —
+// that invocation did its job.
+func (o *Orchestrator) markRejectedStep(i, entry int) bool {
 	steps := o.parsedSteps()
 	if i >= len(steps) || steps[i].Completed {
-		return
+		return false
 	}
 	o.settleEntry(entry, models.EntryStateWarn)
+	return true
 }
 
 // specializedReview describes one independent whole-codebase review gate.
@@ -480,10 +503,9 @@ func specializedReviewPrompt(review specializedReview) string {
 	return fmt.Sprintf("Act as the independent %s specialist. Read PLAN.md, STEPS.md, and the implementation. Review the completed work specifically for %s. Run relevant checks when practical and report only concrete, actionable findings caused or exposed by this work. If you find a material issue, append the finding and evidence to FIXES.md, then reopen the most relevant step in STEPS.md; if no existing step fits, append a new unchecked remediation step with a `Done when:` criterion. If no material issue remains, do nothing. Do not implement fixes during this review.", review.name, review.focus)
 }
 
-// verifyPrompt builds the reviewer instruction for one newly checked step:
-// confirm the acceptance criterion actually holds, and reopen the step with an
-// explanation in FIXES.md when it does not.
-func verifyPrompt(n int, step Step) string {
+// stepClaim states one newly checked step — its text, purpose, and acceptance
+// criterion — as the shared preamble of the per-step reviewer prompts.
+func stepClaim(n int, step Step) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "Step %d claims complete: %s", n, sentence(step.Text))
 	if step.Purpose != "" {
@@ -494,10 +516,31 @@ func verifyPrompt(n int, step Step) string {
 		b.WriteString(" Acceptance criterion: ")
 		b.WriteString(sentence(step.DoneWhen))
 	}
-	b.WriteString(" Verify by reading the code and running the stated check. " +
-		"If not genuinely done, change the step's `[x]` back to `[ ]` in STEPS.md " +
-		"and append what is wrong to FIXES.md; if done, do nothing.")
 	return b.String()
+}
+
+// simplicityPrompt builds the reviewer instruction that runs before the
+// correctness verification for one newly checked step: judge whether the
+// implementation is the simplest solution that satisfies the step, and reopen
+// the step with the simpler approach recorded in FIXES.md when it is not.
+func simplicityPrompt(n int, step Step) string {
+	return stepClaim(n, step) +
+		" Review this step's implementation for simplicity: could the same acceptance " +
+		"criterion be satisfied with a materially simpler solution? Look for needless " +
+		"abstraction, speculative generality, duplicated or dead code, and complexity " +
+		"the criterion does not require. If a materially simpler solution exists, " +
+		"change the step's `[x]` back to `[ ]` in STEPS.md and append the simpler " +
+		"approach to FIXES.md; if the implementation is already reasonably simple, do nothing."
+}
+
+// verifyPrompt builds the reviewer instruction for one newly checked step:
+// confirm the acceptance criterion actually holds, and reopen the step with an
+// explanation in FIXES.md when it does not.
+func verifyPrompt(n int, step Step) string {
+	return stepClaim(n, step) +
+		" Verify by reading the code and running the stated check. " +
+		"If not genuinely done, change the step's `[x]` back to `[ ]` in STEPS.md " +
+		"and append what is wrong to FIXES.md; if done, do nothing."
 }
 
 // checkpointNewSteps git-commits the working tree once per step that this

@@ -129,9 +129,11 @@ with `--plan` and `-exec` (the session runs first); see
 4. **Invoke the tool** — stream output live and tee it to `logs/`. Kill an
    invocation after `--max-iteration-duration`, retry failures, and exit `1`
    after `--max-consecutive-failures` consecutive failures.
-5. **Verify completed work** — for every newly checked step, use a fresh
-   reviewer invocation to test its acceptance criterion. A failed verification
-   unchecks the step and records the reason in `FIXES.md`.
+5. **Verify completed work** — for every newly checked step, first use a fresh
+   reviewer invocation to check the implementation is the simplest solution
+   that satisfies the step, then another to test its acceptance criterion. A
+   rejection by either reviewer unchecks the step and records the reason in
+   `FIXES.md`.
 6. **Checkpoint verified work** — git-commit each newly checked step that
    survives verification.
 7. **Detect stalls** — exit `3` after `--max-stalled-iterations` consecutive
@@ -168,6 +170,7 @@ each one is for:
 | `refining plan` | Rework the plan to resolve the assessment's issues, then reassess — up to `--max-step-passes` rounds. |
 | `applying annotation` | Apply one user annotation from the plan page to the plan documents and republish them. |
 | `executing step N` | Invoke the tool with exactly the next unchecked step from `STEPS.md` and its acceptance criterion. |
+| `checking simplicity of step N` | Use a fresh reviewer invocation to judge whether the newly checked step's implementation is the simplest solution that satisfies it; a materially simpler alternative unchecks the step and records the simpler approach in `FIXES.md`. |
 | `verifying step N` | Use a fresh reviewer invocation to test the newly checked step's `Done when:` criterion; failure unchecks it and records why in `FIXES.md`. |
 | `checkpointing step N` | Git-commit the work of a step that survived verification. |
 | `updating project documentation` | Once all boxes are checked, bring the project's own docs in line with what the work changed, before any review gate. |
@@ -217,7 +220,7 @@ ideally a clean git checkout, so every change is reviewable and revertible.
 | `--max-iteration-duration` | `15m` | Kill a single tool invocation after this long; the timeout counts as a failed invocation. `0` = unlimited. |
 | `--max-consecutive-failures` | `3` | Abort after this many consecutive failed tool invocations; any success resets the count. |
 | `--max-stalled-iterations` | `3` | Stop (exit `3`) after this many consecutive iterations check no new step. `0` disables stall detection. |
-| `--verify`       | `true`   | After each newly checked step, run an independent verifier invocation that unchecks it (recording why in `FIXES.md`) if its acceptance criterion is not met. |
+| `--verify`       | `true`   | After each newly checked step, run independent reviewer invocations — a simplicity check, then a correctness verification — either of which unchecks it (recording why in `FIXES.md`) if a materially simpler solution exists or its acceptance criterion is not met. |
 | `--specialized-reviews` | `true` | Before the final audit, run independent security, performance, and reliability/maintainability review gates. |
 | `--git-checkpoint` | `true` | Git-commit the working tree after each verified step when running in a git repository. |
 | `--log-dir`      | `logs`   | Directory for per-iteration log files.                          |

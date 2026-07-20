@@ -50,10 +50,14 @@ itself every iteration; it never trusts the tool's own claim of completion.
    any success resets the count. Only when the cap is hit does the run abort
    with exit **1**. `SIGINT` / `SIGTERM` stop immediately with exit **1**.
 6. **Verification pass** (`--verify`, default **on**) — for every step this
-   iteration newly checked, a fresh reviewer invocation confirms the
-   acceptance criterion actually holds. If it does not, the reviewer unchecks
-   the step in `STEPS.md` and appends what is wrong to `FIXES.md`, so the loop
-   re-runs it.
+   iteration newly checked, a fresh reviewer invocation first checks the
+   implementation is the simplest solution that satisfies the step; a
+   materially simpler alternative unchecks the step and records the simpler
+   approach in `FIXES.md`, skipping the correctness check for that round.
+   Otherwise a second reviewer invocation confirms the acceptance criterion
+   actually holds. If it does not, the reviewer unchecks the step in
+   `STEPS.md` and appends what is wrong to `FIXES.md`, so the loop re-runs
+   it.
 7. **Git checkpoint** (`--git-checkpoint`, default **on**) — each newly
    checked step that survived verification is committed as
    `determined: step N: <step text>` (`git add -A && git commit`). Outside a

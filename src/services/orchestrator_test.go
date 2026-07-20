@@ -152,7 +152,7 @@ func TestUserCanSeeTimestampedExecutionStages(t *testing.T) {
 		if call == 1 {
 			fs.Write("STEPS.md", "- [x] "+step+"\n  Done when: tests pass.\n")
 		}
-		if call == 4 { // 3 is the docs update, 4 is the audit
+		if call == 5 { // 2 is simplicity, 3 is verify, 4 is the docs update, 5 is the audit
 			fs.Write("STOP.md", "approved")
 		}
 		return nil
@@ -167,7 +167,7 @@ func TestUserCanSeeTimestampedExecutionStages(t *testing.T) {
 	prefix := "==> [2026-07-11 09:30:00] "
 	for _, stage := range []string{
 		"executing step 1: Ship widget with automated integration tests",
-		"verifying step 1", "auditing the whole plan",
+		"checking simplicity of step 1", "verifying step 1", "auditing the whole plan",
 	} {
 		if !strings.Contains(terminal.String(), prefix+stage) {
 			t.Fatalf("expected visible stage %q, got:\n%s", stage, terminal.String())
@@ -515,9 +515,10 @@ func TestStepPurposeIsCarriedIntoWorkAndVerifyPrompts(t *testing.T) {
 		switch call {
 		case 1: // work: check the step
 			fs.Write("STEPS.md", checked)
-		case 2: // verifier approves
-		case 3: // docs update
-		case 4: // audit approves
+		case 2: // simplicity check approves
+		case 3: // verifier approves
+		case 4: // docs update
+		case 5: // audit approves
 			fs.Write("STOP.md", "audit: plan satisfied")
 		}
 		return nil
@@ -533,7 +534,11 @@ func TestStepPurposeIsCarriedIntoWorkAndVerifyPrompts(t *testing.T) {
 	if !strings.Contains(work, "Its purpose: Email messages are throttled to prevent DDOS.") {
 		t.Fatalf("expected the work prompt to carry the step's purpose, got:\n%s", work)
 	}
-	verify := runner.prompt(2)
+	simplicity := runner.prompt(2)
+	if !strings.Contains(simplicity, "Its purpose: Email messages are throttled to prevent DDOS.") {
+		t.Fatalf("expected the simplicity prompt to carry the step's purpose, got:\n%s", simplicity)
+	}
+	verify := runner.prompt(3)
 	if !strings.Contains(verify, "Its purpose: Email messages are throttled to prevent DDOS.") {
 		t.Fatalf("expected the verifier prompt to carry the step's purpose, got:\n%s", verify)
 	}
@@ -605,12 +610,14 @@ func TestVerifierApprovalLetsTheLoopAdvance(t *testing.T) {
 		switch call {
 		case 1: // work: check step 1
 			fs.Write("STEPS.md", twoStepsFirstChecked)
-		case 2: // verifier approves step 1 by doing nothing
-		case 3: // work: check step 2
+		case 2: // simplicity check approves step 1 by doing nothing
+		case 3: // verifier approves step 1 by doing nothing
+		case 4: // work: check step 2
 			fs.Write("STEPS.md", twoStepsAllChecked)
-		case 4: // verifier approves step 2
-		case 5: // the docs update
-		case 6: // the whole-plan audit approves
+		case 5: // simplicity check approves step 2
+		case 6: // verifier approves step 2
+		case 7: // the docs update
+		case 8: // the whole-plan audit approves
 			fs.Write("STOP.md", "audit: plan satisfied")
 		}
 		return nil
@@ -622,10 +629,21 @@ func TestVerifierApprovalLetsTheLoopAdvance(t *testing.T) {
 	if outcome != models.OutcomeStopped || outcome.ExitCode() != 0 {
 		t.Fatalf("expected a clean completion, got %v (exit %d)", outcome, outcome.ExitCode())
 	}
-	if runner.calls != 6 {
-		t.Fatalf("expected work + verify per step plus the docs update and the audit (6 runs), got %d", runner.calls)
+	if runner.calls != 8 {
+		t.Fatalf("expected work + simplicity + verify per step plus the docs update and the audit (8 runs), got %d", runner.calls)
 	}
-	verify := runner.prompt(2)
+	simplicity := runner.prompt(2)
+	for _, want := range []string{
+		"Step 1 claims complete: 1. Add the widget.",
+		"Acceptance criterion: widget tests pass.",
+		"materially simpler solution",
+		"FIXES.md",
+	} {
+		if !strings.Contains(simplicity, want) {
+			t.Fatalf("expected the simplicity prompt to contain %q, got:\n%s", want, simplicity)
+		}
+	}
+	verify := runner.prompt(3)
 	for _, want := range []string{
 		"Step 1 claims complete: 1. Add the widget.",
 		"Acceptance criterion: widget tests pass.",
@@ -636,8 +654,8 @@ func TestVerifierApprovalLetsTheLoopAdvance(t *testing.T) {
 			t.Fatalf("expected the verifier prompt to contain %q, got:\n%s", want, verify)
 		}
 	}
-	if !strings.Contains(runner.prompt(3), "2. Document the widget.") {
-		t.Fatalf("expected the loop to advance to step 2 after approval, got:\n%s", runner.prompt(3))
+	if !strings.Contains(runner.prompt(4), "2. Document the widget.") {
+		t.Fatalf("expected the loop to advance to step 2 after approval, got:\n%s", runner.prompt(4))
 	}
 }
 
@@ -650,18 +668,21 @@ func TestVerifierRejectionRerunsTheSameStep(t *testing.T) {
 		switch call {
 		case 1: // work: check step 1
 			fs.Write("STEPS.md", twoStepsFirstChecked)
-		case 2: // verifier rejects: uncheck step 1 and record why
+		case 2: // simplicity check approves
+		case 3: // verifier rejects: uncheck step 1 and record why
 			fs.Write("STEPS.md", twoStepsNoneChecked)
 			fs.Write("FIXES.md", "widget tests actually fail\n")
-		case 3: // work re-runs step 1 with FIXES.md present
+		case 4: // work re-runs step 1 with FIXES.md present
 			fixesAtRerun = fs.Exists("FIXES.md")
 			fs.Write("STEPS.md", twoStepsFirstChecked)
-		case 4: // verifier approves this time
-		case 5: // work: check step 2
+		case 5: // simplicity check approves again
+		case 6: // verifier approves this time
+		case 7: // work: check step 2
 			fs.Write("STEPS.md", twoStepsAllChecked)
-		case 6: // verifier approves
-		case 7: // the docs update
-		case 8: // the whole-plan audit approves
+		case 8: // simplicity check approves
+		case 9: // verifier approves
+		case 10: // the docs update
+		case 11: // the whole-plan audit approves
 			fs.Write("STOP.md", "audit: plan satisfied")
 		}
 		return nil
@@ -673,11 +694,60 @@ func TestVerifierRejectionRerunsTheSameStep(t *testing.T) {
 	if outcome != models.OutcomeStopped || outcome.ExitCode() != 0 {
 		t.Fatalf("expected the rejected step to be redone and the run to complete, got %v", outcome)
 	}
-	if runner.calls != 8 {
-		t.Fatalf("expected the rejected step to cost an extra work+verify round (8 runs with the docs update and the audit), got %d", runner.calls)
+	if runner.calls != 11 {
+		t.Fatalf("expected the rejected step to cost an extra work+simplicity+verify round (11 runs with the docs update and the audit), got %d", runner.calls)
 	}
-	if !strings.Contains(runner.prompt(3), "1. Add the widget.") {
-		t.Fatalf("expected the loop to re-run the unchecked step, got:\n%s", runner.prompt(3))
+	if !strings.Contains(runner.prompt(4), "1. Add the widget.") {
+		t.Fatalf("expected the loop to re-run the unchecked step, got:\n%s", runner.prompt(4))
+	}
+	if !fixesAtRerun {
+		t.Fatal("expected FIXES.md to exist when the step is re-run")
+	}
+}
+
+func TestSimplicityRejectionRerunsTheStepWithoutCorrectnessCheck(t *testing.T) {
+	cfg := config(0)
+	cfg.Verify = true
+	fs := stepsFileStore()
+	fixesAtRerun := false
+	runner := &fakeRunner{script: func(call int, _ io.Writer) error {
+		switch call {
+		case 1: // work: check step 1
+			fs.Write("STEPS.md", twoStepsFirstChecked)
+		case 2: // simplicity check rejects: uncheck step 1 and record the simpler approach
+			fs.Write("STEPS.md", twoStepsNoneChecked)
+			fs.Write("FIXES.md", "reuse the existing widget factory instead\n")
+		case 3: // work re-runs step 1 with FIXES.md present
+			fixesAtRerun = fs.Exists("FIXES.md")
+			fs.Write("STEPS.md", twoStepsFirstChecked)
+		case 4: // simplicity check approves this time
+		case 5: // verifier approves
+		case 6: // work: check step 2
+			fs.Write("STEPS.md", twoStepsAllChecked)
+		case 7: // simplicity check approves
+		case 8: // verifier approves
+		case 9: // the docs update
+		case 10: // the whole-plan audit approves
+			fs.Write("STOP.md", "audit: plan satisfied")
+		}
+		return nil
+	}}
+	o := services.NewOrchestrator(runner, fs, &fakeClock{now: time.Now()}, &fakeLogSink{}, io.Discard, cfg)
+
+	outcome := o.Run(context.Background())
+
+	if outcome != models.OutcomeStopped || outcome.ExitCode() != 0 {
+		t.Fatalf("expected the over-complicated step to be redone and the run to complete, got %v", outcome)
+	}
+	if runner.calls != 10 {
+		t.Fatalf("expected the simplicity rejection to skip the correctness check for that round (10 runs), got %d", runner.calls)
+	}
+	if !strings.Contains(runner.prompt(2), "materially simpler solution") {
+		t.Fatalf("expected call 2 to be the simplicity check, got:\n%s", runner.prompt(2))
+	}
+	rerun := runner.prompt(3)
+	if !strings.Contains(rerun, "1. Add the widget.") || strings.Contains(rerun, "claims complete") {
+		t.Fatalf("expected the rejected step to go straight back to work, not a reviewer, got:\n%s", rerun)
 	}
 	if !fixesAtRerun {
 		t.Fatal("expected FIXES.md to exist when the step is re-run")
@@ -690,9 +760,11 @@ func TestVerifierRejectionsCountTowardTheStallCap(t *testing.T) {
 	cfg.MaxStalledIterations = 2
 	fs := stepsFileStore()
 	runner := &fakeRunner{script: func(call int, _ io.Writer) error {
-		if call%2 == 1 { // work always claims step 1
+		switch call % 3 {
+		case 1: // work always claims step 1
 			fs.Write("STEPS.md", twoStepsFirstChecked)
-		} else { // verifier always rejects it
+		case 2: // the simplicity check approves
+		case 0: // the verifier always rejects it
 			fs.Write("STEPS.md", twoStepsNoneChecked)
 		}
 		return nil
@@ -704,8 +776,8 @@ func TestVerifierRejectionsCountTowardTheStallCap(t *testing.T) {
 	if outcome != models.OutcomeStalled || outcome.ExitCode() != 3 {
 		t.Fatalf("expected worker/verifier ping-pong to end as a stall, got %v (exit %d)", outcome, outcome.ExitCode())
 	}
-	if runner.calls != 4 {
-		t.Fatalf("expected 2 rejected rounds (work + verify each) before stalling, got %d", runner.calls)
+	if runner.calls != 6 {
+		t.Fatalf("expected 2 rejected rounds (work + simplicity + verify each) before stalling, got %d", runner.calls)
 	}
 }
 
@@ -1048,14 +1120,16 @@ func TestVerifiedStepIsGitCheckpointed(t *testing.T) {
 		switch call {
 		case 1: // work: check step 1
 			fs.Write("STEPS.md", twoStepsFirstChecked)
-		case 2: // verifier approves step 1
-		// 3, 4: git add + git commit checkpoint step 1
-		case 5: // work: check step 2
+		case 2: // simplicity check approves step 1
+		case 3: // verifier approves step 1
+		// 4, 5: git add + git commit checkpoint step 1
+		case 6: // work: check step 2
 			fs.Write("STEPS.md", twoStepsAllChecked)
-		case 6: // verifier approves step 2
-			// 7, 8: git add + git commit checkpoint step 2
-		// 9: the docs update
-		case 10: // the whole-plan audit approves
+		case 7: // simplicity check approves step 2
+		case 8: // verifier approves step 2
+			// 9, 10: git add + git commit checkpoint step 2
+		// 11: the docs update
+		case 12: // the whole-plan audit approves
 			fs.Write("STOP.md", "audit: plan satisfied")
 		}
 		return nil
@@ -1082,7 +1156,7 @@ func TestVerifiedStepIsGitCheckpointed(t *testing.T) {
 			t.Fatalf("git invocation %d: expected %q, got %q", i+1, strings.Join(want, " "), got)
 		}
 	}
-	if runner.invocations[2].Binary != "git" || runner.invocations[3].Binary != "git" {
+	if runner.invocations[3].Binary != "git" || runner.invocations[4].Binary != "git" {
 		t.Fatal("expected the checkpoint to run right after the verifier approves the step")
 	}
 }
@@ -1097,9 +1171,9 @@ func TestGitCheckpointDisabledIssuesNoGitCommands(t *testing.T) {
 		switch call {
 		case 1: // work: check step 1
 			fs.Write("STEPS.md", twoStepsFirstChecked)
-		case 3: // work: check step 2 (2 and 4 are verifier approvals)
+		case 4: // work: check step 2 (2-3 and 5-6 are simplicity + verifier approvals)
 			fs.Write("STEPS.md", twoStepsAllChecked)
-		case 6: // the whole-plan audit approves (5 is the docs update)
+		case 8: // the whole-plan audit approves (7 is the docs update)
 			fs.Write("STOP.md", "audit: plan satisfied")
 		}
 		return nil
@@ -1114,8 +1188,8 @@ func TestGitCheckpointDisabledIssuesNoGitCommands(t *testing.T) {
 	if got := runner.gitInvocations(); len(got) != 0 {
 		t.Fatalf("expected no git invocations with --git-checkpoint off, got %d", len(got))
 	}
-	if runner.calls != 6 {
-		t.Fatalf("expected only work + verify per step plus the docs update and the audit (6 runs), got %d", runner.calls)
+	if runner.calls != 8 {
+		t.Fatalf("expected only work + simplicity + verify per step plus the docs update and the audit (8 runs), got %d", runner.calls)
 	}
 }
 
@@ -1129,9 +1203,9 @@ func TestGitCheckpointSkippedOutsideGitRepository(t *testing.T) {
 		switch call {
 		case 1: // work: check step 1
 			fs.Write("STEPS.md", twoStepsFirstChecked)
-		case 3: // work: check step 2 (2 and 4 are verifier approvals)
+		case 4: // work: check step 2 (2-3 and 5-6 are simplicity + verifier approvals)
 			fs.Write("STEPS.md", twoStepsAllChecked)
-		case 6: // the whole-plan audit approves (5 is the docs update)
+		case 8: // the whole-plan audit approves (7 is the docs update)
 			fs.Write("STOP.md", "audit: plan satisfied")
 		}
 		return nil
@@ -1162,7 +1236,8 @@ func TestRejectedStepIsNotCheckpointed(t *testing.T) {
 		switch call {
 		case 1: // work: check step 1
 			fs.Write("STEPS.md", twoStepsFirstChecked)
-		case 2: // verifier rejects it
+		case 2: // simplicity check approves it
+		case 3: // verifier rejects it
 			fs.Write("STEPS.md", twoStepsNoneChecked)
 		}
 		return nil
