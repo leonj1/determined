@@ -286,6 +286,9 @@
   aside#activity ol { margin: 0; padding: 0; list-style: none; max-height: 70vh; overflow-y: auto; }
   aside#activity li { padding: 0.55rem 0; border-bottom: 1px solid var(--rule-light); font-size: 0.9rem; }
   aside#activity li:last-child { border-bottom: none; }
+  /* Entries for one step (executing, then verifying) read as one block; the
+     first entry of a new step gets extra space above it. */
+  aside#activity li.step-start { margin-top: 0.9rem; }
   aside#activity time { display: block; color: var(--muted); font: 0.68rem/1.4 ui-monospace, 'SF Mono', Menlo, monospace; letter-spacing: 0.08em; text-transform: uppercase; }
   #disconnected { display: none; color: var(--bad-fg); font-size: 0.85rem; }
   #disconnected.on { display: block; }
@@ -1370,14 +1373,26 @@
     target.classList.add("link-flash");
   }
 
+  // activityStepNumber returns the plan step an activity message belongs to,
+  // so entries about the same step (executing, then verifying) stay grouped
+  // and a new step visibly starts a new block.
+  function activityStepNumber(message) {
+    const match = message.match(/^(?:executing|verifying) step (\d+)/);
+    return match ? match[1] : null;
+  }
+
   function renderActivity(steps, running) {
     const list = el("activity-log");
     list.replaceChildren();
     const lastIndex = steps.length - 1;
     activeStartIso = null;
+    let previousStepNumber = null;
     steps.forEach((step, index) => {
       const li = document.createElement("li");
       li.classList.add("timed");
+      const stepNumber = activityStepNumber(step.message);
+      if (index > 0 && stepNumber !== previousStepNumber) li.classList.add("step-start");
+      previousStepNumber = stepNumber;
       const t = document.createElement("time");
       t.textContent = fmtTime(step.at);
       const body = document.createElement("span");
