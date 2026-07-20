@@ -28,13 +28,14 @@ class FakeNode {
     this.classList = new FakeClassList();
     this.children = [];
     this.listeners = {};
-    this.style = {};
+    this.style = { setProperty: (name, value) => { this.style[name] = value; } };
     this.dataset = {};
     this.scrolls = [];
     this.attributes = {};
     this._innerHTML = "";
     this._id = "";
     this.textContent = "";
+    this.offsetHeight = 0;
   }
 
   set id(value) { this._id = value; if (value) this.registry.set(value, this); }
@@ -87,6 +88,7 @@ function createTestTabNodes(registry) {
 function createFakeDocument(registry, tabs, panels, testTabs) {
   const document = {
     body: { scrollHeight: 0 },
+    title: "determined — planning",
     documentElement: new FakeNode("html", registry),
     createElement: (tagName) => new FakeNode(tagName, registry),
     getElementById: (id) => registry.get(id) || null,
@@ -177,4 +179,39 @@ test("direct explanation hashes scroll after markdown renders", () => {
   assert(heading.classList.contains("link-flash"));
   browser.run(`renderExplanation({ explainPhase: "succeeded", explanation: "Intro.\\n\\n## Widget behavior\\n\\nDetails." })`);
   assert.equal(heading.scrolls.length, 1);
+});
+
+test("status updates make the lifecycle scannable and identify browser-tab progress", () => {
+  const browser = createPageEnvironment();
+  browser.run(`render({
+    git: { remote: "https://github.com/leonj1/determined.git", branch: "master" },
+    tool: { name: "claude" }, phase: "succeeded", goal: "Goal", plan: "Plan", tests: "Tests",
+    taskSteps: [{ text: "Build", completed: false }], log: [{}], steps: [], pendingAnnotations: [],
+    execPhase: "running", execStartedAt: "2026-07-20T10:00:00Z", execLog: [],
+    explainPhase: "", quizPhase: "", implementOffered: false,
+  })`);
+  assert.equal(browser.registry.get("remote").textContent, "determined");
+  assert.equal(browser.registry.get("remote").title, "https://github.com/leonj1/determined.git");
+  assert.equal(browser.run(`document.title`), "▶ 50% — determined");
+  assert.equal(browser.run(`document.querySelectorAll("#tabs button")[0].dataset.state`), "succeeded");
+  assert.equal(browser.run(`document.querySelectorAll("#tabs button")[5].dataset.state`), "running");
+  assert.equal(browser.run(`document.querySelectorAll("#tabs button")[6].dataset.state`), "empty");
+});
+
+test("only the current unfinished planning artifact is marked running", () => {
+  const browser = createPageEnvironment();
+  const states = browser.run(`tabStates({ phase: "running", goal: "Goal", taskSteps: [], log: [] })`);
+  assert.deepEqual({ ...states }, {
+    goal: "succeeded", plan: "running", tests: "empty", steps: "empty", log: "empty",
+    exec: "empty", explain: "empty", quiz: "empty",
+  });
+});
+
+test("sticky offsets follow the rendered header and progress heights", () => {
+  const browser = createPageEnvironment();
+  browser.registry.get("page-header").offsetHeight = 72;
+  browser.registry.get("progress").offsetHeight = 31;
+  browser.run(`syncStickyOffsets()`);
+  assert.equal(browser.run(`document.documentElement.style["--header-height"]`), "72px");
+  assert.equal(browser.run(`document.documentElement.style["--progress-height"]`), "31px");
 });

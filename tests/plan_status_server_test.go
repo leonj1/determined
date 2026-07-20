@@ -135,6 +135,7 @@ func assertPageServed(t *testing.T, url string) {
 		"quizPhase", "Question ", "Score: ", "Retake quiz",
 		"slugify", "sourceSection", "quiz-source-link", "followQuizSource", `headingIds: true`,
 		"pendingExplanationHash", "restoreExplanationHash",
+		"syncStickyOffsets", "renderTabStates", "renderDocumentTitle",
 	} {
 		if !strings.Contains(page, marker) {
 			t.Errorf("page missing %q", marker)
@@ -185,7 +186,7 @@ func assertPageServed(t *testing.T, url string) {
 	// two dark blocks (:root[data-theme="dark"] and the media query) ---
 	for _, decl := range []string{
 		"--bg: #111111;", "--fg: #eeeeee;", "--card: #111111;",
-		"--muted: #8f8f8f;", "--border: #eeeeee;", "--rule-light: #343434;",
+		"--muted: #a3a3a3;", "--border: #eeeeee;", "--rule-light: #343434;",
 		"--ok-bg: #111714;", "--ok-fg: #82b995;", "--ok-border: #4f755b;",
 		"--bad-bg: #191211;", "--bad-fg: #d98d80;", "--bad-border: #87584f;",
 		"color-scheme: dark;",
@@ -202,7 +203,7 @@ func assertPageServed(t *testing.T, url string) {
 	for _, decl := range []string{
 		"color-scheme: light;",
 		"--bg: #ffffff;", "--fg: #111111;", "--card: #ffffff;",
-		"--muted: #9a9a9a;", "--border: #111111;", "--rule-light: #e5e5e5;", "--accent: #e05d38;",
+		"--muted: #767676;", "--border: #111111;", "--rule-light: #e5e5e5;", "--accent: #e05d38;",
 		"--ok-bg: #fbfdfb;", "--ok-fg: #39734f;", "--ok-border: #8eb99c;",
 		"--bad-bg: #fdfbfa;", "--bad-fg: #a04436;", "--bad-border: #d5a198;",
 	} {
@@ -217,7 +218,10 @@ func assertPageServed(t *testing.T, url string) {
 		"border-bottom: 1px solid var(--rule-light)",
 		"letter-spacing: 0.08em; text-transform: uppercase",
 		"border-radius: 0",
-		".doc a { color: var(--accent); }",
+		".doc a { color: var(--link); }",
+		":focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }",
+		"grid-template-columns: minmax(0, 70ch)",
+		"background: var(--ok-tint); color: var(--ok-fg)",
 		`content: "\2192"`,
 		`rx="0" class="seq-actor"`,
 	} {

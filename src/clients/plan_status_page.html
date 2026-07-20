@@ -8,8 +8,9 @@
 <style>
   :root {
     color-scheme: light;
-    --bg: #ffffff; --fg: #111111; --card: #ffffff; --muted: #9a9a9a;
+    --bg: #ffffff; --fg: #111111; --card: #ffffff; --muted: #767676;
     --border: #111111; --rule-light: #e5e5e5; --accent: #e05d38;
+    --link: #b94727; --header-height: 3.45rem; --progress-height: 1.95rem;
     --ok-bg: #fbfdfb; --ok-fg: #39734f; --ok-border: #8eb99c;
     --bad-bg: #fdfbfa; --bad-fg: #a04436; --bad-border: #d5a198;
     --warn-bg: #fdfcf8; --warn-fg: #8a6516; --warn-border: #cfb173;
@@ -22,8 +23,9 @@
      data-theme; without it, prefers-color-scheme decides. */
   :root[data-theme="dark"] {
     color-scheme: dark;
-    --bg: #111111; --fg: #eeeeee; --card: #111111; --muted: #8f8f8f;
+    --bg: #111111; --fg: #eeeeee; --card: #111111; --muted: #a3a3a3;
     --border: #eeeeee; --rule-light: #343434; --accent: #e05d38;
+    --link: #ef7656;
     --ok-bg: #111714; --ok-fg: #82b995; --ok-border: #4f755b;
     --bad-bg: #191211; --bad-fg: #d98d80; --bad-border: #87584f;
     --warn-bg: #17150f; --warn-fg: #cbab68; --warn-border: #7a6738;
@@ -32,8 +34,9 @@
   @media (prefers-color-scheme: dark) {
     :root:not([data-theme="light"]) {
       color-scheme: dark;
-      --bg: #111111; --fg: #eeeeee; --card: #111111; --muted: #8f8f8f;
+      --bg: #111111; --fg: #eeeeee; --card: #111111; --muted: #a3a3a3;
       --border: #eeeeee; --rule-light: #343434; --accent: #e05d38;
+      --link: #ef7656;
       --ok-bg: #111714; --ok-fg: #82b995; --ok-border: #4f755b;
       --bad-bg: #191211; --bad-fg: #d98d80; --bad-border: #87584f;
       --warn-bg: #17150f; --warn-fg: #cbab68; --warn-border: #7a6738;
@@ -41,6 +44,7 @@
     }
   }
   * { box-sizing: border-box; }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
   body {
     margin: 0; padding: 0 2rem 2rem;
     font: 15px/1.55 Georgia, 'Times New Roman', Times, serif;
@@ -83,7 +87,7 @@
   #implement:hover { background: var(--bg); color: var(--fg); }
   header .git {
     color: var(--muted); font: 0.7rem/1.4 ui-monospace, 'SF Mono', Menlo, monospace;
-    letter-spacing: 0.08em; text-transform: uppercase; overflow-wrap: anywhere; text-align: right;
+    letter-spacing: 0.08em; text-transform: uppercase; white-space: nowrap; text-align: right;
   }
   header .git .branch { color: var(--muted); font-weight: 600; }
   header .right { display: flex; align-items: center; gap: 0.75rem; }
@@ -99,7 +103,8 @@
   #banner .timing { color: var(--muted); }
   #theme-toggle {
     appearance: none; background: var(--bg); border: 1px solid var(--fg); border-radius: 0;
-    width: 2rem; height: 2rem; padding: 0; flex: none; font-size: 1rem; line-height: 1;
+    min-width: 3.6rem; height: 2rem; padding: 0 0.45rem; flex: none;
+    font: 700 0.65rem/1 ui-monospace, 'SF Mono', Menlo, monospace; text-transform: uppercase;
     color: var(--fg); cursor: pointer; display: inline-flex; align-items: center; justify-content: center;
   }
   #theme-toggle:hover { background: var(--fg); color: var(--bg); }
@@ -107,7 +112,7 @@
      milestone, execution the second half by completed step. */
   #progress {
     display: flex; align-items: center; gap: 0.8rem; padding: 0.55rem 0 0.5rem;
-    background: var(--bg); position: sticky; top: 3.45rem; z-index: 1;
+    background: var(--bg); position: sticky; top: var(--header-height); z-index: 1;
   }
   #progress-track {
     flex: 1; height: 3px; background: var(--rule-light); overflow: hidden;
@@ -125,7 +130,8 @@
   #progress.failed #progress-fill { background: var(--bad-fg); }
   nav#tabs {
     display: flex; gap: 1.5rem; padding: 0.65rem 0 0; background: var(--bg);
-    border-bottom: 1px solid var(--rule-light); position: sticky; top: 5.4rem; z-index: 1;
+    border-bottom: 1px solid var(--rule-light); position: sticky;
+    top: calc(var(--header-height) + var(--progress-height)); z-index: 1;
     overflow-x: auto;
   }
   nav#tabs button {
@@ -135,10 +141,20 @@
   }
   nav#tabs button.active { color: var(--fg); border-bottom-color: var(--fg); }
   nav#tabs button:hover { color: var(--fg); }
+  nav#tabs button::after {
+    content: ""; display: inline-block; width: 0.42rem; height: 0.42rem; margin-left: 0.42rem;
+    border-radius: 50%; background: var(--muted); vertical-align: 0.08rem;
+  }
+  nav#tabs button[data-state="running"]::after { background: var(--accent); }
+  nav#tabs button[data-state="succeeded"]::after { background: var(--ok-fg); }
+  nav#tabs button[data-state="failed"]::after { background: var(--bad-fg); }
+  nav#tabs button.phase-start {
+    margin-left: 0.25rem; padding-left: 1rem; border-left: 1px solid var(--rule-light);
+  }
   main {
     margin: 0; padding: 2rem 0 0;
-    display: grid; grid-template-columns: minmax(0, 1fr) minmax(16rem, 22rem); gap: 3rem;
-    align-items: start;
+    display: grid; grid-template-columns: minmax(0, 70ch) minmax(16rem, 22rem); gap: 3rem;
+    align-items: start; justify-content: space-between;
   }
   @media (max-width: 50rem) {
     body { padding-inline: 1rem; }
@@ -149,7 +165,7 @@
     nav#tabs { position: static; gap: 1rem; }
     main { grid-template-columns: 1fr; gap: 2rem; }
   }
-  #content { display: grid; gap: 2rem; min-width: 0; }
+  #content { display: grid; gap: 2rem; min-width: 0; max-width: 70ch; }
   #waiting, #disconnected {
     padding: 0.7rem 0.8rem; border: 0; border-left: 2px solid var(--accent); border-radius: 0;
     background: transparent; color: var(--fg);
@@ -170,6 +186,11 @@
   section > .panel-head > h2 { margin: 0; padding: 0; border: 0; }
   section.panel { display: none; }
   section.panel.active { display: block; }
+  .panel-title {
+    position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+    overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0;
+  }
+  section.panel > .panel-head { justify-content: flex-end; border-bottom: 0; margin-bottom: 0.5rem; }
   nav#tests-tabs { display: flex; gap: 1.25rem; border-bottom: 1px solid var(--rule-light); margin-bottom: 1rem; }
   nav#tests-tabs button {
     appearance: none; background: none; border: none; border-bottom: 2px solid transparent;
@@ -198,7 +219,7 @@
   .doc p { margin: 0.5rem 0; }
   .doc ul, .doc ol { margin: 0.5rem 0; padding-left: 1.5rem; }
   .doc li { margin: 0.2rem 0; }
-  .doc a { color: var(--accent); }
+  .doc a { color: var(--link); }
   .doc code { font: 0.85em ui-monospace, 'SF Mono', Menlo, monospace; background: var(--card); border: 1px solid var(--rule-light); border-radius: 0; padding: 0.05rem 0.3rem; }
   .doc pre { background: var(--card); border: 1px solid var(--rule-light); border-radius: 0; padding: 0.6rem 0.8rem; overflow-x: auto; }
   .doc pre code { background: none; border: none; padding: 0; }
@@ -248,8 +269,8 @@
   .quiz-choice { text-align: left; }
   .quiz-choice:hover:not(:disabled) { background: var(--fg); color: var(--bg); }
   .quiz-choice:disabled { cursor: default; opacity: 1; }
-  .quiz-choice.correct { background: var(--bg); color: var(--ok-fg); border-color: var(--ok-border); }
-  .quiz-choice.wrong { background: var(--bg); color: var(--bad-fg); border-color: var(--bad-border); }
+  .quiz-choice.correct { background: var(--ok-tint); color: var(--ok-fg); border-color: var(--ok-border); }
+  .quiz-choice.wrong { background: var(--bad-tint); color: var(--bad-fg); border-color: var(--bad-border); }
   .quiz-rationale { margin: 0; padding: 0.65rem 0.8rem; border-left: 2px solid var(--accent); background: transparent; }
   .quiz-next, .quiz-retake { justify-self: start; background: var(--fg); border-color: var(--fg); color: var(--bg); font-weight: 650; }
   .quiz-next:hover, .quiz-retake:hover { background: var(--bg); color: var(--fg); }
@@ -257,7 +278,10 @@
   .quiz-results li { margin: 0.4rem 0; }
   .quiz-results .correct { color: var(--ok-fg); }
   .quiz-results .wrong { color: var(--bad-fg); }
-  .log-entry { border: 0; border-bottom: 1px solid var(--rule-light); border-radius: 0; background: transparent; }
+  .log-entry {
+    border: 0; border-left: 2px solid transparent; border-bottom: 1px solid var(--rule-light);
+    border-radius: 0; padding-left: 0.7rem; background: transparent;
+  }
   .log-entry .log-head {
     display: flex; align-items: baseline; gap: 0.5rem; padding: 0.75rem 0 0.45rem;
     border: 0; font: 0.7rem/1.4 ui-monospace, 'SF Mono', Menlo, monospace;
@@ -274,7 +298,7 @@
      entry pulses its border instead, so the eye lands on the live step. */
   .log-entry.state-running, .log-entry.state-ok,
   .log-entry.state-warn, .log-entry.state-error {
-    border-left: 2px solid transparent; padding-left: 0.7rem;
+    border-left-color: transparent;
   }
   .log-entry.state-running { background: var(--card); border-left-color: var(--accent); }
   .log-entry.state-ok { background: var(--ok-tint); border-left-color: var(--ok-border); }
@@ -391,7 +415,7 @@
 </script>
 </head>
 <body>
-<header>
+<header id="page-header">
   <div class="title" id="title">planning</div>
   <button id="implement">▶ Implement</button>
   <div id="active-task" aria-live="polite">
@@ -403,7 +427,7 @@
   <div class="right">
     <div id="banner"><span class="mark" id="banner-mark"></span><span class="timing" id="banner-timing"></span></div>
     <div class="git"><span id="model" class="model">…</span> · <span id="remote">…</span> · <span id="branch" class="branch">…</span></div>
-    <button id="theme-toggle" type="button" aria-label="Toggle theme">☾</button>
+    <button id="theme-toggle" type="button" aria-label="Toggle theme">Auto</button>
   </div>
 </header>
 <div id="progress">
@@ -413,25 +437,25 @@
   <div id="progress-label"></div>
 </div>
 <nav id="tabs">
-  <button data-tab="goal" class="active">Goal</button>
-  <button data-tab="plan">Plan</button>
-  <button data-tab="tests">Tests</button>
-  <button data-tab="steps">Steps</button>
-  <button data-tab="log">Log</button>
-  <button data-tab="exec">Execution</button>
-  <button data-tab="explain">Explanation</button>
-  <button data-tab="quiz">Quiz</button>
+  <button data-tab="goal" data-state="empty" class="active">Goal</button>
+  <button data-tab="plan" data-state="empty">Plan</button>
+  <button data-tab="tests" data-state="empty">Tests</button>
+  <button data-tab="steps" data-state="empty">Steps</button>
+  <button data-tab="log" data-state="empty">Log</button>
+  <button data-tab="exec" data-state="empty" class="phase-start">Execution</button>
+  <button data-tab="explain" data-state="empty" class="phase-start">Explanation</button>
+  <button data-tab="quiz" data-state="empty">Quiz</button>
 </nav>
 <main>
   <div id="content">
     <div id="waiting">Waiting for your input on the terminal…</div>
     <div id="disconnected">Connection lost — the determined process may have exited.</div>
     <section class="panel active" id="panel-goal">
-      <div class="panel-head" id="goal-head"><h2>Goal</h2></div>
+      <div class="panel-head" id="goal-head"><h2 class="panel-title">Goal</h2></div>
       <div id="goal" class="doc empty">Not written yet.</div>
     </section>
     <section class="panel" id="panel-plan">
-      <div class="panel-head" id="plan-head"><h2>Plan</h2></div>
+      <div class="panel-head" id="plan-head"><h2 class="panel-title">Plan</h2></div>
       <div id="plan" class="doc empty">Not produced yet.</div>
     </section>
     <section class="panel" id="panel-tests">
@@ -448,20 +472,20 @@
         <div id="tests-bdd-doc" class="doc empty">Not produced yet.</div>
       </div>
     </section>
-    <section class="panel" id="panel-steps"><h2>Steps</h2><div id="steps"></div><div id="no-steps" class="empty">No steps yet.</div></section>
-    <section class="panel" id="panel-log"><h2>Log</h2><div id="log"></div><div id="no-log" class="empty">No log output yet.</div></section>
+    <section class="panel" id="panel-steps"><h2 class="panel-title">Steps</h2><div id="steps"></div><div id="no-steps" class="empty">No steps yet.</div></section>
+    <section class="panel" id="panel-log"><h2 class="panel-title">Log</h2><div id="log"></div><div id="no-log" class="empty">No log output yet.</div></section>
     <section class="panel" id="panel-exec">
-      <h2>Execution</h2>
+      <h2 class="panel-title">Execution</h2>
       <div id="exec-state" class="empty">Not started — the Implement button appears once planning completes.</div>
       <div id="exec-log"></div>
     </section>
     <section class="panel" id="panel-explain">
-      <h2>Explanation</h2>
+      <h2 class="panel-title">Explanation</h2>
       <div id="explain-state" class="empty">Available after execution completes.</div>
       <div id="explanation" class="doc"></div>
     </section>
     <section class="panel" id="panel-quiz">
-      <h2>Quiz</h2>
+      <h2 class="panel-title">Quiz</h2>
       <div id="quiz-state" class="empty">Available after the explanation is generated.</div>
       <div id="quiz-card"></div>
     </section>
@@ -488,9 +512,9 @@
   function renderThemeToggle() {
     const state = document.documentElement.dataset.theme;
     const toggle = el("theme-toggle");
-    if (state === "light") { toggle.textContent = "☀"; toggle.title = "Theme: light — click for dark"; }
-    else if (state === "dark") { toggle.textContent = "☾"; toggle.title = "Theme: dark — click for auto"; }
-    else { toggle.textContent = "◐"; toggle.title = "Theme: auto — click for light"; }
+    if (state === "light") { toggle.textContent = "Light"; toggle.title = "Theme: light — click for dark"; }
+    else if (state === "dark") { toggle.textContent = "Dark"; toggle.title = "Theme: dark — click for auto"; }
+    else { toggle.textContent = "Auto"; toggle.title = "Theme: auto — click for light"; }
     toggle.setAttribute("aria-label", toggle.title);
   }
   el("theme-toggle").addEventListener("click", () => {
@@ -508,6 +532,20 @@
     syncDiffTheme();
   });
   renderThemeToggle();
+
+  function syncStickyOffsets() {
+    const headerHeight = el("page-header").offsetHeight || 0;
+    const progressHeight = el("progress").offsetHeight || 0;
+    document.documentElement.style.setProperty("--header-height", headerHeight + "px");
+    document.documentElement.style.setProperty("--progress-height", progressHeight + "px");
+  }
+  syncStickyOffsets();
+  window.addEventListener("resize", syncStickyOffsets);
+  if (typeof ResizeObserver !== "undefined") {
+    const stickyObserver = new ResizeObserver(syncStickyOffsets);
+    stickyObserver.observe(el("page-header"));
+    stickyObserver.observe(el("progress"));
+  }
 
   function fmtTime(iso) {
     return new Date(iso).toLocaleTimeString([], { hour12: false });
@@ -830,6 +868,7 @@
   function selectTab(name) {
     for (const button of document.querySelectorAll("#tabs button")) {
       button.classList.toggle("active", button.dataset.tab === name);
+      button.setAttribute("aria-current", button.dataset.tab === name ? "page" : "false");
     }
     for (const panel of document.querySelectorAll("#content section.panel")) {
       panel.classList.toggle("active", panel.id === "panel-" + name);
@@ -1067,7 +1106,8 @@
     const repo = repoShortName(status.git.remote);
     el("title").textContent = repo ? repo + " — planning" : "planning";
     setText(el("model"), modelLabel(status.tool), "no model");
-    setText(el("remote"), status.git.remote, "no remote");
+    setText(el("remote"), repo, "no remote");
+    el("remote").title = status.git.remote || "no remote";
     setText(el("branch"), status.git.branch, "no branch");
     setDoc(el("goal"), status.goal, "Not written yet.");
     setDoc(el("plan"), status.plan, "Not produced yet.");
@@ -1088,7 +1128,9 @@
     renderActivity(activitySteps, active);
     renderAnnotations(status.pendingAnnotations || []);
     renderBanner(status);
-    renderProgress(status);
+    const progress = renderProgress(status);
+    renderTabStates(status);
+    renderDocumentTitle(progress, repo);
     el("implement").classList.toggle("on",
       !!status.implementOffered && status.phase === "succeeded" && !status.execPhase);
   }
@@ -1632,6 +1674,50 @@
     el("progress-track").setAttribute("aria-valuenow", String(state.percent));
     el("progress-track").setAttribute("aria-valuetext", state.label);
     el("progress-label").textContent = state.label;
+    return state;
+  }
+
+  function phaseTabState(phase) {
+    if (phase === "failed") return "failed";
+    if (phase === "succeeded") return "succeeded";
+    return phase ? "running" : "empty";
+  }
+
+  function planningTabState(value, index, currentIndex, status) {
+    if (value) return "succeeded";
+    if (index !== currentIndex || status.phase === "succeeded") return "empty";
+    return status.phase === "failed" ? "failed" : "running";
+  }
+
+  function planningTabStates(status) {
+    const values = [status.goal, status.plan, status.tests, (status.taskSteps || []).length];
+    const currentIndex = values.findIndex((value) => !value);
+    return values.map((value, index) => planningTabState(value, index, currentIndex, status));
+  }
+
+  function tabStates(status) {
+    const planning = planningTabStates(status);
+    const log = (status.log || []).length ? phaseTabState(status.phase) : "empty";
+    return {
+      goal: planning[0], plan: planning[1], tests: planning[2], steps: planning[3], log,
+      exec: phaseTabState(status.execPhase),
+      explain: phaseTabState(status.explainPhase),
+      quiz: phaseTabState(status.quizPhase),
+    };
+  }
+
+  function renderTabStates(status) {
+    const states = tabStates(status);
+    for (const button of document.querySelectorAll("#tabs button")) {
+      const state = states[button.dataset.tab];
+      button.dataset.state = state;
+      button.title = button.textContent + ": " + state;
+    }
+  }
+
+  function renderDocumentTitle(progress, repo) {
+    const mark = progress.tone === "done" ? "✓" : (progress.tone === "failed" ? "✗" : "▶");
+    document.title = mark + " " + progress.percent + "% — " + (repo || "determined");
   }
 
   function renderBanner(status) {
