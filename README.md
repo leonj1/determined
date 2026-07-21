@@ -190,9 +190,13 @@ command form with the prompt built for that iteration:
 | `pi`              | `pi -p "<prompt>"`                                                     |
 | `claude`          | `claude -p "<prompt>" --permission-mode acceptEdits [--model <model>]` |
 
-`--model` is optional and only applies to `droid` (Factory model ID, e.g.
-`claude-opus-4-7`) and `claude` (alias like `opus` or a full model name);
-`--tool pi --model ...` exits as a usage error.
+`--model` is optional and applies to planning, plan review, criteria capture,
+and interactive planning as well as execution. Set `--exec-model` to use a
+different model only for execution steps; when omitted, execution falls back
+to `--model` or the CLI's default. Both flags support `droid` (Factory model
+ID, e.g. `claude-opus-4-7`) and `claude` (alias like `opus` or a full model
+name). Using either model flag with `--tool pi` exits as a usage error, and
+`--exec-model` is rejected when the requested command has no execution phase.
 
 Both `droid --auto high` and `claude --permission-mode acceptEdits` exist for
 the same reason: the loop is unattended, so a permission prompt would stall
@@ -207,6 +211,7 @@ ideally a clean git checkout, so every change is reviewable and revertible.
 |------------------|----------|----------------------------------------------------------------|
 | `--tool`         | `droid`  | AI coding CLI to run (`droid`/`pi`/`claude`).                   |
 | `--model`        | —        | Optional model ID or alias for `droid` or `claude`; rejected with `pi`. |
+| `--exec-model`   | —        | Optional model ID or alias used only for execution steps; falls back to `--model` when empty, is rejected with `pi`, and requires an execution phase. |
 | `--plan`         | —        | Goal text or a file path to plan interactively; produces `PLAN.md` + `STEPS.md`. Add `-exec` to continue into execution once the plan is ready. |
 | `--exec`         | `false`  | Run the execute loop against `PLAN.md` + `STEPS.md`. Add `--interactive` to seed the live page from existing planning documents, stream execution, and annotate then retry a failed run. With `--plan`, execution follows successful planning; incompatible with `--review-plan`. Without `--plan` or `--exec`, `determined` prints the usage screen. |
 | `--review-plan`  | `false`  | Critique existing `PLAN.md` + `STEPS.md`, interview the user about consequential choices, and revise without executing. |

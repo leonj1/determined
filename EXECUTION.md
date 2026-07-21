@@ -12,6 +12,13 @@ prevent DDOS", not "Add message payloads to a queue") and ending with a
 time — the step still runs — but planning enforces one per step. The orchestrator parses this file
 itself every iteration; it never trusts the tool's own claim of completion.
 
+Use `--exec-model <model>` to select a model only for execute-loop
+invocations. Planning, plan review, criteria capture, and the interactive plan
+session continue to use `--model`; when `--exec-model` is omitted, execution
+also uses `--model` or the selected CLI's default. The execution model is
+supported by `droid` and `claude`, rejected with `pi`, and must accompany a
+command that has an execution phase.
+
 ## Startup
 
 - If `PLAN.md` or `STEPS.md` is missing, the run exits **1** immediately with a
@@ -168,5 +175,5 @@ to know before finishing. The file lives in the working directory alongside
 |------|----------------------------------------------------|
 | `0`  | All steps checked and the audit created `STOP.md` (execute), or `PLAN.md` + `STEPS.md` written (plan). |
 | `1`  | Any other termination: too many consecutive tool failures, budget exhausted, interrupted, missing `PLAN.md`/`STEPS.md` at startup, or a stalled plan round. |
-| `2`  | Usage error (e.g. an unsupported `--tool` or `--model` with `pi`). |
+| `2`  | Usage error (e.g. an unsupported `--tool`, a model flag with `pi`, or `--exec-model` without an execution phase). |
 | `3`  | Stalled: too many consecutive iterations without a newly checked step. |

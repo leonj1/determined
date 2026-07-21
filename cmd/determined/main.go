@@ -39,6 +39,7 @@ func main() {
 	logDir := flag.String("log-dir", "logs", "directory for per-iteration log files")
 	tool := flag.String("tool", "droid", "AI coding CLI to run (droid|pi|claude)")
 	model := flag.String("model", "", "model ID or alias to pass to droid or claude")
+	execModel := flag.String("exec-model", "", "model ID or alias used only for execution steps; falls back to -model when empty")
 	plan := flag.String("plan", "", "describe a goal to plan interactively, producing PLAN.md and STEPS.md")
 	exec := flag.Bool("exec", false, "run the execute loop against PLAN.md / STEPS.md; add -interactive for a live status page and failed-run retries")
 	reviewPlan := flag.Bool("review-plan", false, "critique and interactively revise existing PLAN.md and STEPS.md")
@@ -92,11 +93,21 @@ func main() {
 		os.Exit(2)
 	}
 	executing := executeRequested(*exec, *plan != "", *reviewPlan, *criteria)
+	if err := validateExecModelFlag(*execModel, executing); err != nil {
+		fmt.Fprintf(os.Stderr, "determined: %v\n", err)
+		os.Exit(2)
+	}
 
 	selected, err := models.SelectTool(
 		models.ToolName(*tool),
 		models.ToolOptions{Model: models.ModelID(*model)},
 	)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "determined: %v\n", err)
+		os.Exit(2)
+	}
+	executionTool, err := selectExecTool(
+		models.ToolName(*tool), models.ModelID(*execModel), selected)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "determined: %v\n", err)
 		os.Exit(2)
@@ -131,19 +142,19 @@ func main() {
 			outcome = runReviewPlan(ctx, selected, *budget, *maxStepPasses, *maxFailures, clock, logs)
 		} else if *plan != "" {
 			executor := func(ctx context.Context, status services.ExecStatusReporter) models.Outcome {
-				return runLoop(ctx, selected, *budget, *maxStalled, *maxFailures, *maxIterationDuration, *verify, *specializedReviews, *gitCheckpoint, status, clock, logs)
+				return runLoop(ctx, executionTool, *budget, *maxStalled, *maxFailures, *maxIterationDuration, *verify, *specializedReviews, *gitCheckpoint, status, clock, logs)
 			}
 			outcome = runPlan(ctx, selected, planInput(*plan, flag.Args()), planMode, *budget, *maxStepPasses, *maxFailures, *interactive, executing, executor, clock, logs)
 			if shouldExecuteAfterPlan(executing, *interactive, outcome) {
-				outcome = runLoop(ctx, selected, *budget, *maxStalled, *maxFailures, *maxIterationDuration, *verify, *specializedReviews, *gitCheckpoint, nil, clock, logs)
+				outcome = runLoop(ctx, executionTool, *budget, *maxStalled, *maxFailures, *maxIterationDuration, *verify, *specializedReviews, *gitCheckpoint, nil, clock, logs)
 			}
 		} else if *interactive {
 			executor := func(ctx context.Context, status services.ExecStatusReporter) models.Outcome {
-				return runLoop(ctx, selected, *budget, *maxStalled, *maxFailures, *maxIterationDuration, *verify, *specializedReviews, *gitCheckpoint, status, clock, logs)
+				return runLoop(ctx, executionTool, *budget, *maxStalled, *maxFailures, *maxIterationDuration, *verify, *specializedReviews, *gitCheckpoint, status, clock, logs)
 			}
 			outcome = runInteractiveExec(ctx, selected, *budget, *maxFailures, executor, clock, logs)
 		} else {
-			outcome = runLoop(ctx, selected, *budget, *maxStalled, *maxFailures, *maxIterationDuration, *verify, *specializedReviews, *gitCheckpoint, nil, clock, logs)
+			outcome = runLoop(ctx, executionTool, *budget, *maxStalled, *maxFailures, *maxIterationDuration, *verify, *specializedReviews, *gitCheckpoint, nil, clock, logs)
 		}
 	}
 
@@ -214,11 +225,31 @@ func selectPlanMode(planning, reviewing, mvp, prototype bool) (models.PlanMode, 
 	return models.PlanModeStandard, nil
 }
 
+func selectExecTool(name models.ToolName, execModel models.ModelID, fallback models.Tool) (models.Tool, error) {
+	if execModel.Empty() {
+		return fallback, nil
+	}
+	tool, err := models.SelectTool(name, models.ToolOptions{Model: execModel})
+	if err != nil {
+		return nil, fmt.Errorf("select -exec-model: %w", err)
+	}
+	return tool, nil
+}
+
 // validateExecFlag rejects -exec alongside -review-plan: review mode critiques
 // an existing plan and never enters the execute loop.
 func validateExecFlag(reviewing, executing bool) error {
 	if reviewing && executing {
 		return fmt.Errorf("-exec and -review-plan cannot be used together")
+	}
+	return nil
+}
+
+// validateExecModelFlag rejects an execution model when no execute loop can
+// run, so a user-provided model is never silently ignored.
+func validateExecModelFlag(execModel string, executing bool) error {
+	if execModel != "" && !executing {
+		return fmt.Errorf("-exec-model requires an execution phase")
 	}
 	return nil
 }

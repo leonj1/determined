@@ -5,6 +5,8 @@ import (
 	"context"
 	"flag"
 	"io"
+	"os"
+	"os/exec"
 	"strings"
 	"testing"
 	"time"
@@ -42,6 +44,33 @@ func (f *fakePlanExecutor) Execute(_ context.Context, status services.ExecStatus
 type fakeStdin struct {
 	reads   chan byte
 	started chan struct{}
+}
+
+const cliArgsEnvironment = "DETERMINED_TEST_CLI_ARGS"
+
+func TestCLIProcess(t *testing.T) {
+	encoded, requested := os.LookupEnv(cliArgsEnvironment)
+	if !requested {
+		return
+	}
+	flag.CommandLine = flag.NewFlagSet("determined", flag.ExitOnError)
+	os.Args = append([]string{"determined"}, strings.Split(encoded, "\t")...)
+	main()
+}
+
+func runCLI(t *testing.T, args ...string) (int, string) {
+	t.Helper()
+	command := exec.Command(os.Args[0], "-test.run=^TestCLIProcess$")
+	command.Env = append(os.Environ(), cliArgsEnvironment+"="+strings.Join(args, "\t"))
+	output, err := command.CombinedOutput()
+	if err == nil {
+		return 0, string(output)
+	}
+	exitError, ok := err.(*exec.ExitError)
+	if !ok {
+		t.Fatalf("run determined: %v", err)
+	}
+	return exitError.ExitCode(), string(output)
 }
 
 func newFakeStdin() *fakeStdin {
@@ -222,6 +251,85 @@ func TestUserCannotExecuteDuringReview(t *testing.T) {
 func TestUserCanCombinePlanningWithExecution(t *testing.T) {
 	if err := validateExecFlag(false, true); err != nil {
 		t.Fatalf("-exec without -review-plan should be accepted: %v", err)
+	}
+}
+
+func TestUserCanUseOneModelForPlanningAndAnotherForExecution(t *testing.T) {
+	planning, err := models.SelectTool("droid", models.ToolOptions{Model: "plan-model"})
+	if err != nil {
+		t.Fatalf("select planning model: %v", err)
+	}
+	execution, err := selectExecTool("droid", "exec-model", planning)
+	if err != nil {
+		t.Fatalf("select execution model: %v", err)
+	}
+	if planning.Identity().Model != "plan-model" {
+		t.Fatalf("planning model = %q, want plan-model", planning.Identity().Model)
+	}
+	if execution.Identity().Model != "exec-model" {
+		t.Fatalf("execution model = %q, want exec-model", execution.Identity().Model)
+	}
+}
+
+func TestExecutionFallsBackToPlanningTool(t *testing.T) {
+	planning, err := models.SelectTool("claude", models.ToolOptions{Model: "opus"})
+	if err != nil {
+		t.Fatalf("select planning model: %v", err)
+	}
+	execution, err := selectExecTool("claude", "", planning)
+	if err != nil {
+		t.Fatalf("select execution model: %v", err)
+	}
+	if execution != planning {
+		t.Fatal("execution should reuse the planning tool when -exec-model is empty")
+	}
+}
+
+func TestUserCannotSelectExecutionModelForPi(t *testing.T) {
+	planning, err := models.SelectTool("pi", models.ToolOptions{})
+	if err != nil {
+		t.Fatalf("select pi: %v", err)
+	}
+	if _, err := selectExecTool("pi", "opus", planning); err == nil {
+		t.Fatal("expected -exec-model with pi to be rejected")
+	}
+}
+
+func TestPiExecutionModelExitsAsUsageError(t *testing.T) {
+	code, output := runCLI(t, "-tool", "pi", "-exec-model", "opus")
+	if code != 2 {
+		t.Fatalf("exit code = %d, want 2; output: %s", code, output)
+	}
+	if !strings.Contains(output, "-exec-model") || !strings.Contains(output, "pi") {
+		t.Fatalf("usage error should identify -exec-model and pi: %s", output)
+	}
+}
+
+func TestUserCannotSelectExecutionModelWithoutExecution(t *testing.T) {
+	if err := validateExecModelFlag("opus", false); err == nil {
+		t.Fatal("expected -exec-model without execution to be rejected")
+	}
+}
+
+func TestExecutionModelWithoutExecutionExitsAsUsageError(t *testing.T) {
+	code, output := runCLI(t, "-review-plan", "-exec-model", "opus")
+	if code != 2 {
+		t.Fatalf("exit code = %d, want 2; output: %s", code, output)
+	}
+	if !strings.Contains(output, "-exec-model requires an execution phase") {
+		t.Fatalf("usage error should explain the missing execution phase: %s", output)
+	}
+}
+
+func TestUserCanSelectExecutionModelWhenExecuting(t *testing.T) {
+	if err := validateExecModelFlag("opus", true); err != nil {
+		t.Fatalf("expected -exec-model during execution to be accepted: %v", err)
+	}
+}
+
+func TestEmptyExecutionModelDoesNotRequireExecution(t *testing.T) {
+	if err := validateExecModelFlag("", false); err != nil {
+		t.Fatalf("empty -exec-model should not require execution: %v", err)
 	}
 }
 
