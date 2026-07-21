@@ -35,6 +35,12 @@ type Config struct {
 	// longer is killed and counts as a failed invocation toward
 	// MaxConsecutiveFailures. 0 means unlimited.
 	MaxIterationDuration time.Duration
+	// StepMaxRuntime bounds the cumulative wall-clock time the loop spends on
+	// a single step across its invocations. Like Budget it is checked between
+	// invocations, so a running invocation always finishes first; a step still
+	// unchecked past the cap ends the run with OutcomeStepTimeout. 0 means
+	// unlimited.
+	StepMaxRuntime time.Duration
 	// Verify runs independent reviewer invocations after each newly checked
 	// step: a simplicity check first, then a correctness verification. Either
 	// unchecks the step (and records why in FIXES.md) when a materially

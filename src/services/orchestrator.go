@@ -75,6 +75,12 @@ type Orchestrator struct {
 	// cfg.MaxConsecutiveFailures ends the run with OutcomeDroidFailed. Any
 	// successful invocation resets it.
 	failures int
+	// stepIndex is the index of the unchecked step the loop is currently
+	// aiming at (-1 before the first iteration or once every box is checked),
+	// and stepStarted is when it became the target. Together they bound one
+	// step's cumulative runtime by cfg.StepMaxRuntime.
+	stepIndex   int
+	stepStarted time.Time
 }
 
 // invocationResult distinguishes a successful tool run from a retryable
@@ -98,13 +104,14 @@ func NewOrchestrator(
 	cfg models.Config,
 ) *Orchestrator {
 	return &Orchestrator{
-		runner:   runner,
-		files:    files,
-		clock:    clock,
-		logs:     logs,
-		terminal: terminal,
-		guard:    NewTamperGuard(files, cfg.ProtectedFiles),
-		cfg:      cfg,
+		runner:    runner,
+		files:     files,
+		clock:     clock,
+		logs:      logs,
+		terminal:  terminal,
+		guard:     NewTamperGuard(files, cfg.ProtectedFiles),
+		cfg:       cfg,
+		stepIndex: -1,
 	}
 }
 
@@ -134,6 +141,12 @@ func (o *Orchestrator) loop(ctx context.Context) models.Outcome {
 			return outcome
 		}
 		before := o.parsedSteps()
+		if o.stepOverran(before) {
+			fmt.Fprintf(o.terminal,
+				"determined: step %d has been running for over %s without completing; stopping\n",
+				o.stepIndex+1, o.cfg.StepMaxRuntime)
+			return models.OutcomeStepTimeout
+		}
 		if outcome, stop := o.runOnce(ctx); stop {
 			return outcome
 		}
@@ -276,6 +289,30 @@ func (o *Orchestrator) stalledOut(completedBefore int) bool {
 // checked and the whole-plan audit's STOP.md approval present.
 func (o *Orchestrator) runComplete(steps []Step) bool {
 	return AllStepsComplete(steps) && o.files.Exists(o.cfg.StopFile)
+}
+
+// stepOverran tracks how long the loop has been aiming at the same unchecked
+// step and reports whether that step's cumulative runtime has exhausted
+// cfg.StepMaxRuntime. Like the budget, the cap is checked between invocations,
+// so a running invocation always finishes first. Whenever the target step
+// changes — checked complete, or an earlier step reopened — the timer
+// restarts; a step a reviewer unchecks again keeps its timer, so
+// worker/reviewer ping-pong on one step is time-bounded too.
+func (o *Orchestrator) stepOverran(steps []Step) bool {
+	if o.cfg.StepMaxRuntime <= 0 {
+		return false
+	}
+	i, ok := NextIncompleteStepIndex(steps)
+	if !ok {
+		o.stepIndex = -1
+		return false
+	}
+	if i != o.stepIndex {
+		o.stepIndex = i
+		o.stepStarted = o.clock.Now()
+		return false
+	}
+	return !o.clock.Now().Before(o.stepStarted.Add(o.cfg.StepMaxRuntime))
 }
 
 // runOnce runs a single work invocation aimed at the next unchecked step. It
@@ -833,6 +870,9 @@ func execStopReasonAdvice(outcome models.Outcome, cfg models.Config) (string, st
 	case models.OutcomeBudgetExceeded:
 		return "The wall-clock budget expired before every step completed.",
 			"Completed steps stay checked, so nothing is lost. Click Implement to resume the remaining steps, or rerun determined with a larger --budget."
+	case models.OutcomeStepTimeout:
+		return fmt.Sprintf("A single step ran for more than %s without completing, so the run stopped instead of grinding on it forever.", cfg.StepMaxRuntime),
+			"Completed steps stay checked, so nothing is lost. Split the oversized step into smaller ones in STEPS.md, or allow more time per step with a larger --step-max-runtime, then click Implement (or rerun determined) to resume."
 	case models.OutcomeInterrupted:
 		return "The run was interrupted by a signal before it could finish.",
 			"Click Implement (or rerun determined) to resume from the unchecked steps."

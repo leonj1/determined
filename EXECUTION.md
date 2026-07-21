@@ -74,7 +74,11 @@ field definitions and curl examples are in [USAGE.md](USAGE.md).
 4. **Invocation** — the tool's command runs, streaming its output live **and**
    teeing it to `logs/iter-NNNN-<timestamp>.log`. Each invocation is bounded
    by `--max-iteration-duration` (default **15m**, `0` = unlimited); a timed
-   out invocation counts as a failed invocation, not an interruption.
+   out invocation counts as a failed invocation, not an interruption. A single
+   step's cumulative runtime across invocations is bounded by
+   `--step-max-runtime` (default **15m**, `0` = unlimited); like the budget it
+   is checked between invocations, and a step still unchecked past the cap
+   stops the run with exit **1**.
    Each stage starts with a brief timestamped status such as
    `==> [2026-07-11 09:30:00] executing step 2`.
 5. **Failure handling** — a non-zero tool exit retries the same iteration

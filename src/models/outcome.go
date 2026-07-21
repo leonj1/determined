@@ -36,6 +36,9 @@ const (
 	// OutcomeCriteriaStalled means the tool produced no BDD test draft, so the
 	// criteria session could not make progress.
 	OutcomeCriteriaStalled
+	// OutcomeStepTimeout means a single step's cumulative runtime exceeded the
+	// per-step cap, so the run stopped instead of grinding on one step forever.
+	OutcomeStepTimeout
 )
 
 // ExitCode maps an outcome to a process exit code: 0 only when the work
@@ -82,6 +85,8 @@ func (o Outcome) String() string {
 		return "criteria cancelled (no BDD tests kept from this session)"
 	case OutcomeCriteriaStalled:
 		return "aborted (tool produced no BDD test draft)"
+	case OutcomeStepTimeout:
+		return "stopped (a single step exceeded its max runtime)"
 	default:
 		return "unknown"
 	}
