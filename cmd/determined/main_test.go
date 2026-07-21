@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -119,6 +120,86 @@ func TestUserCanSelectPrototypePlanning(t *testing.T) {
 	mode, err := selectPlanMode(true, false, false, true)
 	if err != nil || mode != models.PlanModePrototype {
 		t.Fatalf("expected prototype planning, got mode %q and error %v", mode, err)
+	}
+}
+
+func TestChatFlagValidation(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+	}{
+		{name: "chat alone", err: validateChatFlags(true, "", false, false, false, false, false)},
+		{name: "one shot", err: validateChatFlags(true, "status", false, false, false, false, false)},
+	}
+	for _, test := range tests {
+		if test.err != nil {
+			t.Errorf("%s: unexpected error %v", test.name, test.err)
+		}
+	}
+	for name, err := range map[string]error{
+		"message without chat":  validateChatFlags(false, "hello", false, false, false, false, false),
+		"chat with plan":        validateChatFlags(true, "", true, false, false, false, false),
+		"chat with exec":        validateChatFlags(true, "", false, true, false, false, false),
+		"chat with review":      validateChatFlags(true, "", false, false, true, false, false),
+		"chat with criteria":    validateChatFlags(true, "", false, false, false, true, false),
+		"chat with interactive": validateChatFlags(true, "", false, false, false, false, true),
+	} {
+		if err == nil {
+			t.Errorf("%s: expected usage error", name)
+		}
+	}
+}
+
+func TestMessageWithoutChatExitsAsUsageError(t *testing.T) {
+	code, output := runCLI(t, "-m", "hello")
+	if code != 2 || !strings.Contains(output, "-m requires -chat") {
+		t.Fatalf("code=%d output=%q, want usage error", code, output)
+	}
+}
+
+func TestChatWithExecutionExitsAsUsageError(t *testing.T) {
+	code, output := runCLI(t, "-chat", "-exec")
+	if code != 2 || !strings.Contains(output, "-chat cannot be combined") {
+		t.Fatalf("code=%d output=%q, want usage error", code, output)
+	}
+}
+
+func TestChatWithoutLiveSessionExitsOne(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	code, output := runCLI(t, "-chat", "-m", "status")
+	if code != 1 || !strings.Contains(output, "no running interactive session found") {
+		t.Fatalf("code=%d output=%q, want no-session failure", code, output)
+	}
+}
+
+func TestHeadlessExecutionReceivesLiveStatusAndCleansUpSession(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	tool, err := models.SelectTool(models.ToolNameDroid, models.ToolOptions{})
+	if err != nil {
+		t.Fatalf("select tool: %v", err)
+	}
+	executor := &fakePlanExecutor{outcome: models.OutcomeStopped}
+	outcome := runHeadlessExec(context.Background(), tool, executor.Execute, fixedClock{now: time.Now()})
+
+	if outcome != models.OutcomeStopped || executor.status == nil {
+		t.Fatalf("outcome=%v status=%v, want execution with live reporter", outcome, executor.status)
+	}
+	if _, err := os.Stat(filepath.Join(home, ".determined", "session.json")); !os.IsNotExist(err) {
+		t.Fatalf("session record remains after execution: %v", err)
+	}
+}
+
+func TestHeadlessExecutionContinuesWhenStatusServerCouldNotStart(t *testing.T) {
+	executor := &fakePlanExecutor{outcome: models.OutcomeStopped}
+	cleaned := false
+	outcome := continueHeadlessExec(context.Background(), nil, executor.Execute, func() { cleaned = true }, false, nil)
+
+	if outcome != models.OutcomeStopped || executor.status != nil {
+		t.Fatalf("outcome=%v status=%v, want unchanged execution without reporter", outcome, executor.status)
+	}
+	if cleaned {
+		t.Fatal("cleanup should not run for a server that never started")
 	}
 }
 

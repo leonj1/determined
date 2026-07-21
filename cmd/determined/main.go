@@ -45,6 +45,8 @@ func main() {
 	reviewPlan := flag.Bool("review-plan", false, "critique and interactively revise existing PLAN.md and STEPS.md")
 	criteria := flag.Bool("criteria", false, "interactively capture BDD journey tests into CRITERIA.md; with -plan or -exec, the session runs first and the tests become required acceptance criteria")
 	interactive := flag.Bool("interactive", false, "with -plan or -exec, serve a live HTML status page on a local web server")
+	chat := flag.Bool("chat", false, "connect to the running determined session for a persistent conversation")
+	message := flag.String("m", "", "ask one synchronous question (requires -chat)")
 	mvp := flag.Bool("mvp", false, "create a lean plan for the smallest usable outcome (plan mode only)")
 	prototype := flag.Bool("prototype", false, "create a fast experimental plan with minimal questioning and no refinement (plan mode only)")
 	maxStepPasses := registerMaxStepPassesFlag(flag.CommandLine)
@@ -64,6 +66,16 @@ func main() {
 	link := flag.Bool("link", false, "print the URL of the interactive status page served by a still-running determined process, and exit")
 	flag.Parse()
 
+	if err := validateChatFlags(*chat, *message, *plan != "", *exec, *reviewPlan, *criteria, *interactive); err != nil {
+		fmt.Fprintf(os.Stderr, "determined: %v\n", err)
+		os.Exit(2)
+	}
+	if *chat {
+		ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+		code := runChatCommand(ctx, *message, os.Stdin, os.Stdout, os.Stderr)
+		stop()
+		os.Exit(code)
+	}
 	if *link {
 		os.Exit(runLinkCommand(os.Stdout, os.Stderr))
 	}
@@ -138,23 +150,20 @@ func main() {
 			operationRequested(*plan != "", *reviewPlan, *exec, false)
 	}
 	if proceed {
+		executor := func(ctx context.Context, status services.ExecStatusReporter) models.Outcome {
+			return runLoop(ctx, executionTool, *budget, *maxStalled, *maxFailures, *maxIterationDuration, *verify, *specializedReviews, *gitCheckpoint, status, clock, logs)
+		}
 		if *reviewPlan {
 			outcome = runReviewPlan(ctx, selected, *budget, *maxStepPasses, *maxFailures, clock, logs)
 		} else if *plan != "" {
-			executor := func(ctx context.Context, status services.ExecStatusReporter) models.Outcome {
-				return runLoop(ctx, executionTool, *budget, *maxStalled, *maxFailures, *maxIterationDuration, *verify, *specializedReviews, *gitCheckpoint, status, clock, logs)
-			}
 			outcome = runPlan(ctx, selected, planInput(*plan, flag.Args()), planMode, *budget, *maxStepPasses, *maxFailures, *interactive, executing, executor, clock, logs)
 			if shouldExecuteAfterPlan(executing, *interactive, outcome) {
-				outcome = runLoop(ctx, executionTool, *budget, *maxStalled, *maxFailures, *maxIterationDuration, *verify, *specializedReviews, *gitCheckpoint, nil, clock, logs)
+				outcome = runHeadlessExec(ctx, executionTool, executor, clock)
 			}
 		} else if *interactive {
-			executor := func(ctx context.Context, status services.ExecStatusReporter) models.Outcome {
-				return runLoop(ctx, executionTool, *budget, *maxStalled, *maxFailures, *maxIterationDuration, *verify, *specializedReviews, *gitCheckpoint, status, clock, logs)
-			}
 			outcome = runInteractiveExec(ctx, selected, *budget, *maxFailures, executor, clock, logs)
 		} else {
-			outcome = runLoop(ctx, executionTool, *budget, *maxStalled, *maxFailures, *maxIterationDuration, *verify, *specializedReviews, *gitCheckpoint, nil, clock, logs)
+			outcome = runHeadlessExec(ctx, executionTool, executor, clock)
 		}
 	}
 
@@ -291,6 +300,41 @@ func runLinkCommand(stdout, stderr io.Writer) int {
 	}
 	fmt.Fprintf(stdout, "%s\n", link.URL)
 	return 0
+}
+
+const chatReplyTimeout = 10 * time.Second
+
+func runChatCommand(ctx context.Context, message string, input io.Reader, output, errors io.Writer) int {
+	locator, located := sessionLocator()
+	if !located {
+		fmt.Fprintln(errors, "determined: cannot locate the session record: home directory is unknown")
+		return 1
+	}
+	client := services.NewChatClient(locator, clients.NewWebSocketDialer(), input, output, chatReplyTimeout)
+	var err error
+	if message != "" {
+		err = client.Ask(ctx, message)
+	} else {
+		err = client.Converse(ctx)
+	}
+	if err != nil {
+		fmt.Fprintf(errors, "determined: %v\n", err)
+		return 1
+	}
+	return 0
+}
+
+func validateChatFlags(chat bool, message string, planning, executing, reviewing, criteria, interactive bool) error {
+	if message != "" && !chat {
+		return fmt.Errorf("-m requires -chat")
+	}
+	if !chat {
+		return nil
+	}
+	if planning || executing || reviewing || criteria || interactive {
+		return fmt.Errorf("-chat cannot be combined with -plan, -exec, -review-plan, -criteria, or -interactive")
+	}
+	return nil
 }
 
 // operationRequested reports whether the flags select any run operation.
@@ -491,7 +535,8 @@ func runInteractivePlan(ctx context.Context, orchestrator *services.PlanOrchestr
 }
 
 func startStatusSession(status *services.PlanStatusService, clock services.Clock) (*clients.PlanStatusServer, func(), bool) {
-	server := clients.NewPlanStatusServer(status, status, status, clock)
+	chat := services.NewChatService(status, clock)
+	server := clients.NewPlanStatusServer(status, status, status, clock).WithChatResponder(chat)
 	if err := server.Start(); err != nil {
 		fmt.Fprintf(os.Stderr, "determined: %v\n", err)
 		return nil, func() {}, false
@@ -511,6 +556,28 @@ func startStatusSession(status *services.PlanStatusService, clock services.Clock
 		server.Shutdown(shutdownCtx) //nolint:errcheck // best-effort shutdown on exit
 	}
 	return server, cleanup, true
+}
+
+// runHeadlessExec makes an unattended execution observable while preserving
+// execution as the primary outcome when the optional server cannot start.
+func runHeadlessExec(ctx context.Context, tool models.Tool, execute planExecutor, clock services.Clock) models.Outcome {
+	status := services.NewPlanStatusService(clock, clients.NewGitContextReader().Read(ctx), tool.Identity())
+	_, cleanup, ok := startStatusSession(status, clock)
+	if !ok {
+		return continueHeadlessExec(ctx, status, execute, cleanup, false, nil)
+	}
+	cfg := createPlanConfig(tool, "", models.PlanModeStandard, 0, 0, 0)
+	docs := services.NewPlanDocumentPublisher(clients.NewOsFileStore(), cfg)
+	return continueHeadlessExec(ctx, status, execute, cleanup, true, docs)
+}
+
+func continueHeadlessExec(ctx context.Context, status *services.PlanStatusService, execute planExecutor, cleanup func(), serving bool, docs planDocumentPublisher) models.Outcome {
+	if !serving {
+		return execute(ctx, nil)
+	}
+	defer cleanup()
+	seedResumedSession(status, docs)
+	return execute(ctx, status)
 }
 
 func runInteractiveExec(ctx context.Context, tool models.Tool, budget time.Duration, maxFailures int, execute planExecutor, clock services.Clock, logs services.LogSink) models.Outcome {

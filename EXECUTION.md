@@ -2,8 +2,8 @@
 
 Execute mode (`./determined -exec`) runs against a `PLAN.md` / `STEPS.md` pair
 in the current working directory. Combined with `--plan`, it starts as soon as
-planning succeeds; invoking `determined` with neither flag prints the usage
-screen instead. `STEPS.md` must be a markdown checkbox list — one `- [ ]` item per
+planning succeeds; invoking `determined` with neither flag defaults to execute
+mode. `STEPS.md` must be a markdown checkbox list — one `- [ ]` item per
 step, each carrying a `Purpose:` line stating the step's functional intent
 (the outcome it exists to achieve, e.g. "Email messages are throttled to
 prevent DDOS", not "Add message payloads to a queue") and ending with a
@@ -18,6 +18,31 @@ session continue to use `--model`; when `--exec-model` is omitted, execution
 also uses `--model` or the selected CLI's default. The execution model is
 supported by `droid` and `claude`, rejected with `pi`, and must accompany a
 command that has an execution phase.
+
+## Live status and agent chat
+
+Headless `-exec` starts the same ephemeral status server used by interactive
+sessions, prints its `http://localhost:<port>/` URL, writes the well-known
+session record, and streams execution progress into it. When execution ends,
+the server shuts down and its record is cleared. A bind failure is reported on
+stderr but does not alter the execute loop or its exit code.
+
+`determined -link` and `determined -chat` share verified discovery: the saved
+record is accepted only when its process is alive and its port answers as a
+determined status server. `-chat -m "status"` performs one WebSocket round trip;
+`-chat` subscribes to live phase, workflow-step, and log events while accepting
+questions from stdin.
+
+The WebSocket protocol uses JSON text frames:
+
+```json
+{"id":"1","type":"message","text":"status"}
+{"id":"1","type":"reply","text":"The session is execution running...","data":{"intent":"status","phase":"execution running"}}
+{"type":"event","event":"step","text":"verifying step 3","data":{"intent":"activity"}}
+```
+
+`POST /chat/ask` provides the same deterministic reply over plain HTTP. Full
+field definitions and curl examples are in [USAGE.md](USAGE.md).
 
 ## Startup
 
@@ -176,5 +201,9 @@ to know before finishing. The file lives in the working directory alongside
 |------|----------------------------------------------------|
 | `0`  | All steps checked and the audit created `STOP.md` (execute), or `PLAN.md` + `STEPS.md` written (plan). |
 | `1`  | Any other termination: too many consecutive tool failures, budget exhausted, interrupted, missing `PLAN.md`/`STEPS.md` at startup, or a stalled plan round. |
-| `2`  | Usage error (e.g. an unsupported `--tool`, a model flag with `pi`, or `--exec-model` without an execution phase). |
+| `2`  | Usage error (e.g. an unsupported `--tool`, `-m` without `-chat`, a run mode combined with `-chat`, a model flag with `pi`, or `--exec-model` without an execution phase). |
 | `3`  | Stalled: too many consecutive iterations without a newly checked step. |
+
+For chat commands, exit `0` means a one-shot reply arrived or an interactive
+connection closed cleanly; exit `1` means no verified live session, a timeout,
+or a transport failure; exit `2` means invalid flag usage.
