@@ -15,7 +15,7 @@ go build -o determined ./cmd/determined
 ./determined --plan "build a todo CLI" -exec # plan, then execute in one run
 ./determined --plan "try a todo UI" -prototype # fast experiment, minimal detail
 ./determined --review-plan              # interview, critique, and revise an existing plan
-./determined                       # neither -plan nor -exec: print the usage screen
+./determined                       # no operation flag: default to -exec
 ```
 
 ## Versioned release build

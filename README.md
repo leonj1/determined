@@ -71,6 +71,10 @@ becomes a git commit, and the run ends with an exit code: `0` success (audit
 approved), `1` failure/budget/interrupt, `2` usage error, `3` stalled (see
 [EXECUTION.md](EXECUTION.md)).
 
+Every unattended `-exec` run also starts the live status server, prints its
+URL, and records the session for `-link` and `-chat`. The execution still runs
+when that observer server cannot bind.
+
 ## What each mode does
 
 ### Planning mode (`--plan`, attended)
@@ -158,6 +162,22 @@ with `--plan` and `-exec` (the session runs first); see
 
 See [EXECUTION.md](EXECUTION.md) for details.
 
+### Agent chat (`-chat`)
+
+Ask the currently running planning or execution session about its live state.
+Answers are deterministic snapshots, not another AI invocation, and include a
+structured JSON payload on the wire:
+
+```bash
+determined -chat                                      # conversation + live events
+determined -chat -m "what is the status of this run?" # one reply, then exit
+```
+
+Chat uses the same verified session discovery as `-link`. The one-shot form
+prints only human-readable answer text; persistent chat labels pushed activity
+events. See [USAGE.md](USAGE.md) for the WebSocket and HTTP protocols, including
+runnable curl examples.
+
 ## Activity steps
 
 Every phase of a run reports itself as a timestamped activity entry (on the
@@ -217,11 +237,13 @@ ideally a clean git checkout, so every change is reviewable and revertible.
 | `--model`        | —        | Optional model ID or alias for `droid` or `claude`; rejected with `pi`. |
 | `--exec-model`   | —        | Optional model ID or alias used only for execution steps; falls back to `--model` when empty, is rejected with `pi`, and requires an execution phase. |
 | `--plan`         | —        | Goal text or a file path to plan interactively; produces `PLAN.md` + `STEPS.md`. Add `-exec` to continue into execution once the plan is ready. |
-| `--exec`         | `false`  | Run the execute loop against `PLAN.md` + `STEPS.md`. Add `--interactive` to seed the live page from existing planning documents, stream execution, and annotate then retry a failed run. With `--plan`, execution follows successful planning; incompatible with `--review-plan`. Without `--plan` or `--exec`, `determined` prints the usage screen. |
+| `--exec`         | `false`  | Run the execute loop against `PLAN.md` + `STEPS.md`. Add `--interactive` to seed the live page from existing planning documents, stream execution, and annotate then retry a failed run. With `--plan`, execution follows successful planning; incompatible with `--review-plan`. Without an operation flag, execution is the default. |
 | `--review-plan`  | `false`  | Critique existing `PLAN.md` + `STEPS.md`, interview the user about consequential choices, and revise without executing. |
 | `--criteria`     | `false`  | Interactively capture BDD journey tests into `CRITERIA.md` (accept / modify / skip / end / cancel per proposal). Runs before `--plan` / `-exec` when combined; incompatible with `--review-plan`. |
 | `--interactive`  | `false`  | With `--plan` or `--exec`, serve a live HTML status page showing planning documents and workflow steps. A trivial, self-contained UI change may include a generated demo beneath the Plan tab. For an existing plan, execution starts immediately; after failure, annotate the page and click Implement to retry in the same session. After success, the Explanation tab (`/explain`) shows an AI-generated walkthrough with colored diffs, followed by a five-question Quiz tab (`/quiz`) whose questions link to their source explanation sections. |
-| `--link`         | `false`  | Print the URL of the status page served by a still-running `--interactive` session, then exit. Recovers the link after the launching terminal is closed. Prints the URL on exit `0` only after confirming the recorded process is alive, its port is listening, and that port answers with the determined status page; otherwise reports no session and exits `1`. |
+| `--link`         | `false`  | Print the URL of the status page served by a live interactive or headless execution session, then exit. Prints the URL on exit `0` only after verifying the process, port, and determined status page; otherwise exits `1`. |
+| `--chat`         | `false`  | Connect to the verified live session over WebSocket, subscribe to events, and exchange stdin lines for replies. Incompatible with run/session mode flags. |
+| `-m`             | —        | With `--chat`, ask one question, print the reply text, and exit. Without `--chat`, exits with usage code `2`. |
 | `--mvp`          | `false`  | Use a reduced quality gate for the smallest usable outcome. Requires `--plan`; incompatible with `--prototype`. |
 | `--prototype`    | `false`  | Ask only blocking questions and skip quality refinement for fast experiments. Requires `--plan`; incompatible with `--mvp`. |
 | `--max-step-passes` | `2`   | Max quality assess/refine rounds during planning or review. `0` disables refinement. |
@@ -242,11 +264,10 @@ ideally a clean git checkout, so every change is reviewable and revertible.
 |---------------------|----------------------------------------------------------------|
 | `determined update` | Download the latest supported GitHub Release binary and replace the current executable. |
 
-### Recovering the status page URL
+### Recovering the live session URL
 
-An `--interactive` session prints its URL once, at startup, so the link is lost
-when that terminal closes even though the server keeps serving. Run
-`determined -link` from any terminal to get it back:
+Interactive sessions and unattended execution runs print a status URL at
+startup. Run `determined -link` from any terminal to recover it:
 
 ```
 $ determined -link
