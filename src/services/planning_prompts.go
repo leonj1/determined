@@ -29,6 +29,15 @@ const testsProtocol = "Read GOAL.md if it exists, PLAN.md, and STEPS.md. Write o
 	alignmentRequirement +
 	"Do not modify PLAN.md or STEPS.md, implement anything, or create STOP.md."
 
+const demoProtocol = "Read GOAL.md, PLAN.md, and STEPS.md after planning is complete. " +
+	"Decide whether the task includes a trivial UI change that can be usefully demonstrated as one small, " +
+	"self-contained HTML document. A trivial demo requires no backend, build step, package installation, " +
+	"external assets, or external network access. If and only if those conditions hold, write DEMO.html with " +
+	"the proposed UI demonstration, using only inline HTML, CSS, and optional JavaScript. Make the demo focused " +
+	"on the planned UI behavior and clearly label it as a demo. If the task has no UI change, the change is not " +
+	"trivial, or a useful self-contained demo is not possible, do not create DEMO.html. Do not modify GOAL.md, " +
+	"PLAN.md, STEPS.md, TESTS.md, or any implementation file, and do not create STOP.md."
+
 // alignProtocol re-judges an existing TESTS.md whose tests lack alignment
 // verdicts, adding them without rewriting the tests themselves.
 const alignProtocol = "Read GOAL.md if it exists, PLAN.md, STEPS.md, and TESTS.md. Assess each recommended test " +
@@ -93,6 +102,7 @@ func PlanningPrompts(mode models.PlanMode) models.PlanningPrompts {
 	}
 	return models.PlanningPrompts{
 		Plan:     "You are planning software before implementation. " + planProtocol + quality,
+		Demo:     demoProtocol,
 		Assess:   assessmentPrompt(mode),
 		Refine:   refinementPrompt(mode),
 		Tests:    testsProtocol,
@@ -105,6 +115,7 @@ func PlanningPrompts(mode models.PlanMode) models.PlanningPrompts {
 // existing plan before applying the resulting revisions.
 func ReviewPrompts() models.PlanningPrompts {
 	return models.PlanningPrompts{
+		Demo: demoProtocol,
 		Assess: "Read GOAL.md if it exists, PLAN.md, STEPS.md, and REVIEW_ANSWERS.md if it exists. " +
 			"Critique scope boundaries, assumptions, edge cases, risks, sequencing, dependencies, validation, and acceptance criteria. " +
 			"Write every specific actionable finding as a markdown list item in REFINEMENTS.md, or exactly NONE when the plan is sound. " +

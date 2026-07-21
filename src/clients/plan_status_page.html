@@ -227,6 +227,16 @@
   .doc hr { border: none; border-top: 1px solid var(--rule-light); margin: 1rem 0; }
   .doc table:not(.d2h-diff-table) { border-collapse: collapse; margin: 0.5rem 0; }
   .doc table:not(.d2h-diff-table) th, .doc table:not(.d2h-diff-table) td { border: 1px solid var(--rule-light); padding: 0.3rem 0.6rem; }
+  #plan-demo[hidden] { display: none; }
+  #plan-demo { margin-top: 2rem; }
+  #plan-demo h3 {
+    margin: 0 0 0.75rem; padding-bottom: 0.4rem; border-bottom: 1px solid var(--border);
+    font-size: 1.05rem;
+  }
+  #demo-frame {
+    display: block; width: 100%; min-height: 34rem; border: 1px solid var(--rule-light);
+    background: #ffffff;
+  }
   .tok-comment { color: var(--muted); font-style: italic; }
   .tok-string { color: var(--ok-fg); }
   .tok-keyword { color: var(--accent); font-weight: 600; }
@@ -457,6 +467,10 @@
     <section class="panel" id="panel-plan">
       <div class="panel-head" id="plan-head"><h2 class="panel-title">Plan</h2></div>
       <div id="plan" class="doc empty">Not produced yet.</div>
+      <div id="plan-demo" hidden>
+        <h3>UI demo</h3>
+        <iframe id="demo-frame" title="Planned UI demo" sandbox="allow-scripts"></iframe>
+      </div>
     </section>
     <section class="panel" id="panel-tests">
       <nav id="tests-tabs">
@@ -504,6 +518,7 @@
   "use strict";
   const el = (id) => document.getElementById(id);
   let quizAttempt = { payload: "", questions: [], questionIndex: 0, answers: [], results: false };
+  let renderedDemo = null;
   let pendingExplanationHash = window.location.hash;
 
   // Header theme toggle: cycles auto → light → dark → auto. A forced choice
@@ -865,6 +880,24 @@
     }
   }
 
+  function renderDemo(demo) {
+    const content = demo || "";
+    el("plan-demo").hidden = !content;
+    if (content === renderedDemo) return;
+    renderedDemo = content;
+    el("demo-frame").srcdoc = content ? isolatedDemoDocument(content) : "";
+  }
+
+  function isolatedDemoDocument(content) {
+    const policy = "<meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'; " +
+      "img-src data:; font-src data:; style-src 'unsafe-inline'; script-src 'unsafe-inline'\">";
+    const head = content.match(/<head(?:\s[^>]*)?>/i);
+    if (head) return content.replace(head[0], head[0] + policy);
+    const html = content.match(/<html(?:\s[^>]*)?>/i);
+    if (html) return content.replace(html[0], html[0] + "<head>" + policy + "</head>");
+    return "<!doctype html><html><head>" + policy + "</head><body>" + content + "</body></html>";
+  }
+
   function selectTab(name) {
     for (const button of document.querySelectorAll("#tabs button")) {
       button.classList.toggle("active", button.dataset.tab === name);
@@ -1111,6 +1144,7 @@
     setText(el("branch"), status.git.branch, "no branch");
     setDoc(el("goal"), status.goal, "Not written yet.");
     setDoc(el("plan"), status.plan, "Not produced yet.");
+    renderDemo(status.demo);
     const tests = splitTests(status.tests);
     renderTests(el("tests-journey-doc"), tests.journey, "Not produced yet.");
     renderTests(el("tests-bdd-doc"), tests.bdd, "Not produced yet.");

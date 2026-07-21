@@ -10,12 +10,14 @@ import (
 type fakeDocumentSink struct {
 	goals []string
 	plans []string
+	demos []string
 	tests []string
 	steps [][]models.TaskStep
 }
 
 func (s *fakeDocumentSink) SetGoal(goal string)                  { s.goals = append(s.goals, goal) }
 func (s *fakeDocumentSink) SetPlan(plan string)                  { s.plans = append(s.plans, plan) }
+func (s *fakeDocumentSink) SetDemo(demo string)                  { s.demos = append(s.demos, demo) }
 func (s *fakeDocumentSink) SetTests(tests string)                { s.tests = append(s.tests, tests) }
 func (s *fakeDocumentSink) SetTaskSteps(steps []models.TaskStep) { s.steps = append(s.steps, steps) }
 
@@ -23,6 +25,7 @@ func documentConfig() models.PlanConfig {
 	return models.PlanConfig{
 		GoalFile:  "GOAL.md",
 		PlanFile:  "PLAN.md",
+		DemoFile:  "DEMO.html",
 		TestsFile: "TESTS.md",
 		StepsFile: "STEPS.md",
 	}
@@ -32,6 +35,7 @@ func TestUserCanResumeWithAllPlanningDocuments(t *testing.T) {
 	files := newFakeFileStore()
 	files.data["GOAL.md"] = "ship the retry loop"
 	files.data["PLAN.md"] = "# Plan\n\nBuild it."
+	files.data["DEMO.html"] = "<button>Try it</button>"
 	files.data["TESTS.md"] = "# Tests\n\nRetry after failure."
 	files.data["STEPS.md"] = "- [x] Build status seeding\n- [ ] Add retries\n"
 	sink := &fakeDocumentSink{}
@@ -43,6 +47,9 @@ func TestUserCanResumeWithAllPlanningDocuments(t *testing.T) {
 	}
 	if len(sink.plans) != 1 || sink.plans[0] != files.data["PLAN.md"] {
 		t.Fatalf("plans = %#v, want exact PLAN.md", sink.plans)
+	}
+	if len(sink.demos) != 1 || sink.demos[0] != files.data["DEMO.html"] {
+		t.Fatalf("demos = %#v, want exact DEMO.html", sink.demos)
 	}
 	if len(sink.tests) != 1 || sink.tests[0] != files.data["TESTS.md"] {
 		t.Fatalf("tests = %#v, want exact TESTS.md", sink.tests)
@@ -63,7 +70,7 @@ func TestMissingPlanningDocumentsLeavePagePlaceholders(t *testing.T) {
 
 	services.NewPlanDocumentPublisher(newFakeFileStore(), documentConfig()).Publish(sink)
 
-	if len(sink.goals) != 0 || len(sink.plans) != 0 || len(sink.tests) != 0 || len(sink.steps) != 0 {
+	if len(sink.goals) != 0 || len(sink.plans) != 0 || len(sink.demos) != 0 || len(sink.tests) != 0 || len(sink.steps) != 0 {
 		t.Fatalf("published missing documents: %+v", sink)
 	}
 }
@@ -78,7 +85,7 @@ func TestGoalOnlyResumePublishesNothingElse(t *testing.T) {
 	if len(sink.goals) != 1 || sink.goals[0] != "goal only" {
 		t.Fatalf("goals = %#v, want goal only", sink.goals)
 	}
-	if len(sink.plans) != 0 || len(sink.tests) != 0 || len(sink.steps) != 0 {
+	if len(sink.plans) != 0 || len(sink.demos) != 0 || len(sink.tests) != 0 || len(sink.steps) != 0 {
 		t.Fatalf("published non-goal documents: %+v", sink)
 	}
 }

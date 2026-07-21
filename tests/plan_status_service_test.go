@@ -110,6 +110,20 @@ func TestPlanStatusServiceBroadcastsTests(t *testing.T) {
 	}
 }
 
+func TestPlanStatusServiceBroadcastsDemo(t *testing.T) {
+	service := services.NewPlanStatusService(newSteppingClock(planStart()), models.GitContext{}, models.ToolIdentity{})
+	snapshots, cancel := service.Subscribe()
+	defer cancel()
+	<-snapshots
+
+	service.SetDemo("<button>Try it</button>")
+
+	updated := <-snapshots
+	if updated.Demo != "<button>Try it</button>" {
+		t.Errorf("broadcast demo = %q, want the generated HTML", updated.Demo)
+	}
+}
+
 func TestPlanStatusServiceBroadcastsTaskSteps(t *testing.T) {
 	service := services.NewPlanStatusService(newSteppingClock(planStart()), models.GitContext{}, models.ToolIdentity{})
 	snapshots, cancel := service.Subscribe()

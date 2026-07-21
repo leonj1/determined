@@ -92,6 +92,14 @@ func (s *PlanStatusService) SetPlan(plan string) {
 	})
 }
 
+// SetDemo publishes the optional self-contained UI demonstration.
+func (s *PlanStatusService) SetDemo(demo string) {
+	s.update(func(st models.PlanSessionStatus) models.PlanSessionStatus {
+		st.Demo = demo
+		return st
+	})
+}
+
 // SetTests publishes the recommended tests text.
 func (s *PlanStatusService) SetTests(tests string) {
 	s.update(func(st models.PlanSessionStatus) models.PlanSessionStatus {

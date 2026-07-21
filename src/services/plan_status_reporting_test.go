@@ -17,6 +17,7 @@ type fakeStatusReporter struct {
 	events    []string
 	goal      string
 	plan      string
+	demo      string
 	tests     string
 	taskSteps []models.TaskStep
 	logOutput string
@@ -44,6 +45,10 @@ func (r *fakeStatusReporter) SetGoal(goal string) {
 func (r *fakeStatusReporter) SetPlan(plan string) {
 	r.plan = plan
 	r.events = append(r.events, "plan")
+}
+func (r *fakeStatusReporter) SetDemo(demo string) {
+	r.demo = demo
+	r.events = append(r.events, "demo")
 }
 func (r *fakeStatusReporter) SetTests(tests string) {
 	r.tests = tests
@@ -208,5 +213,90 @@ func TestPlanWithoutReporterRunsTerminalOnly(t *testing.T) {
 
 	if outcome := o.Run(context.Background()); outcome != models.OutcomePlanReady {
 		t.Fatalf("outcome = %v, want plan ready with nil reporter", outcome)
+	}
+}
+
+func TestInteractivePlanGeneratesEligibleDemoAfterPlan(t *testing.T) {
+	fs := newFakeFileStore()
+	fs.Write("PLAN.md", "add a compact theme toggle")
+	fs.Write("STEPS.md", "- [ ] add the toggle\n")
+	fs.Write("TESTS.md", validTestsDoc)
+	cfg := planConfig(0)
+	cfg.DemoFile = "DEMO.html"
+	cfg.DemoInvocation = models.Invocation{Binary: "claude", Args: []string{"-p", "demo"}}
+	runner := &fakeRunner{script: func(_ int, _ io.Writer) error {
+		return fs.Write("DEMO.html", "<button>Theme</button>")
+	}}
+	reporter := &fakeStatusReporter{}
+	orchestrator := services.NewPlanOrchestrator(
+		runner, fs, &fakePrompter{}, &fakeClock{now: time.Now()}, &fakeLogSink{}, io.Discard, cfg,
+	).WithStatusReporter(reporter)
+
+	if outcome := orchestrator.Run(context.Background()); outcome != models.OutcomePlanReady {
+		t.Fatalf("outcome = %v, want plan ready", outcome)
+	}
+	if runner.calls != 1 || reporter.demo != "<button>Theme</button>" {
+		t.Fatalf("calls = %d, demo = %q", runner.calls, reporter.demo)
+	}
+	assertDemoFollowsPlan(t, reporter.events)
+}
+
+func assertDemoFollowsPlan(t *testing.T, events []string) {
+	t.Helper()
+	planIndex, demoIndex := -1, -1
+	for i, event := range events {
+		if planIndex < 0 && event == "plan" {
+			planIndex = i
+		}
+		if event == "progress: generating UI demo" {
+			demoIndex = i
+		}
+	}
+	if planIndex < 0 || demoIndex <= planIndex {
+		t.Fatalf("demo generation must follow plan publication: %v", events)
+	}
+}
+
+func TestIneligibleDemoCheckClearsPreviousArtifact(t *testing.T) {
+	fs := newFakeFileStore()
+	fs.Write("PLAN.md", "replace the database engine")
+	fs.Write("STEPS.md", "- [ ] migrate the database\n")
+	fs.Write("TESTS.md", validTestsDoc)
+	fs.Write("DEMO.html", "<p>stale demo</p>")
+	cfg := planConfig(0)
+	cfg.DemoFile = "DEMO.html"
+	cfg.DemoInvocation = models.Invocation{Binary: "claude", Args: []string{"-p", "demo"}}
+	reporter := &fakeStatusReporter{}
+	orchestrator := services.NewPlanOrchestrator(
+		&fakeRunner{}, fs, &fakePrompter{}, &fakeClock{now: time.Now()}, &fakeLogSink{}, io.Discard, cfg,
+	).WithStatusReporter(reporter)
+
+	if outcome := orchestrator.Run(context.Background()); outcome != models.OutcomePlanReady {
+		t.Fatalf("outcome = %v, want plan ready", outcome)
+	}
+	if fs.Exists("DEMO.html") || reporter.demo != "" {
+		t.Fatalf("stale demo survived: file=%v status=%q", fs.Exists("DEMO.html"), reporter.demo)
+	}
+}
+
+func TestHeadlessPlanClearsStaleDemoWithoutGeneratingOne(t *testing.T) {
+	fs := newFakeFileStore()
+	fs.Write("PLAN.md", "the plan")
+	fs.Write("STEPS.md", "- [ ] the step\n")
+	fs.Write("TESTS.md", validTestsDoc)
+	fs.Write("DEMO.html", "<p>stale demo</p>")
+	cfg := planConfig(0)
+	cfg.DemoFile = "DEMO.html"
+	cfg.DemoInvocation = models.Invocation{Binary: "claude", Args: []string{"-p", "demo"}}
+	runner := &fakeRunner{}
+	orchestrator := services.NewPlanOrchestrator(
+		runner, fs, &fakePrompter{}, &fakeClock{now: time.Now()}, &fakeLogSink{}, io.Discard, cfg,
+	)
+
+	if outcome := orchestrator.Run(context.Background()); outcome != models.OutcomePlanReady {
+		t.Fatalf("outcome = %v, want plan ready", outcome)
+	}
+	if fs.Exists("DEMO.html") || runner.calls != 0 {
+		t.Fatalf("headless demo state: file=%v calls=%d", fs.Exists("DEMO.html"), runner.calls)
 	}
 }

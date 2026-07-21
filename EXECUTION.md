@@ -151,6 +151,7 @@ the quiz.
 | `FIXES.md` | Why a verifier, specialist, or audit reopened/added a step; appended by reviewer invocations. |
 | `CRITERIA.md` | Optional user-approved BDD journey tests from a `--criteria` session; enforced by the final audit. |
 | `TESTS.md` | Recommended journey/BDD tests from planning; enforced by the final audit. |
+| `DEMO.html` | Optional self-contained demo for a trivial planned UI change; shown beneath the interactive Plan tab and never used as execution input. |
 | `EXPLANATION.md` | Presentation-only walkthrough generated after a successful interactive execution; it does not gate the run outcome. |
 | `QUIZ.json` | Five-question quiz generated from a successful explanation; every question includes a `sourceSection` matching an explanation `##` heading and is validated before publication. It does not gate the run outcome. |
 

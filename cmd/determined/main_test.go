@@ -30,6 +30,7 @@ func (p *fakeDocsPublisher) Publish(sink services.PlanDocumentSink) {
 	p.published = true
 	sink.SetGoal("resume the existing plan")
 	sink.SetPlan("# Plan")
+	sink.SetDemo("<button>Demo</button>")
 	sink.SetTests("# Tests")
 	sink.SetTaskSteps([]models.TaskStep{{Text: "retry execution"}})
 }
@@ -472,6 +473,9 @@ func TestResumedSessionSeedsDocumentsAndShowsPlanningSucceeded(t *testing.T) {
 	}
 	if snapshot.Phase != models.PlanPhaseSucceeded {
 		t.Fatalf("phase = %q, want succeeded", snapshot.Phase)
+	}
+	if snapshot.Demo != "<button>Demo</button>" {
+		t.Fatalf("demo = %q, want the resumed DEMO.html", snapshot.Demo)
 	}
 	if !snapshot.StartedAt.Equal(now) || !snapshot.EndedAt.Equal(now) {
 		t.Fatalf("planning timing = %v to %v, want %v", snapshot.StartedAt, snapshot.EndedAt, now)

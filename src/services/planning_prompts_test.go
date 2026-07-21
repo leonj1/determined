@@ -28,6 +28,18 @@ func TestPlanRequiresRecommendedTestsFile(t *testing.T) {
 	}
 }
 
+func TestDemoPromptOnlyAllowsTrivialSelfContainedUIChanges(t *testing.T) {
+	prompt := services.PlanningPrompts(models.PlanModeStandard).Demo
+	for _, expected := range []string{
+		"after planning is complete", "trivial UI change", "self-contained HTML", "If and only if",
+		"DEMO.html", "no UI change", "do not create DEMO.html", "Do not modify GOAL.md",
+	} {
+		if !strings.Contains(prompt, expected) {
+			t.Fatalf("expected demo prompt to contain %q, got:\n%s", expected, prompt)
+		}
+	}
+}
+
 func TestTestsPromptBackfillsOnlyTheTestsFile(t *testing.T) {
 	for _, prompt := range []string{
 		services.PlanningPrompts(models.PlanModeStandard).Tests,

@@ -6,6 +6,7 @@ import "determined/src/models"
 type PlanDocumentSink interface {
 	SetGoal(goal string)
 	SetPlan(plan string)
+	SetDemo(demo string)
 	SetTests(tests string)
 	SetTaskSteps(steps []models.TaskStep)
 }
@@ -34,15 +35,25 @@ func (p *PlanDocumentPublisher) PublishGoal(sink PlanDocumentSink) {
 	}
 }
 
-// PublishPlan sends the plan, tests, and parsed task steps when available.
+// PublishPlan sends the plan, optional demo, tests, and parsed task steps.
 func (p *PlanDocumentPublisher) PublishPlan(sink PlanDocumentSink) {
 	if p.files.Exists(p.cfg.PlanFile) {
 		if plan, err := p.files.Read(p.cfg.PlanFile); err == nil {
 			sink.SetPlan(plan)
 		}
 	}
+	p.publishDemo(sink)
 	p.publishTests(sink)
 	p.publishTaskSteps(sink)
+}
+
+func (p *PlanDocumentPublisher) publishDemo(sink PlanDocumentSink) {
+	if p.cfg.DemoFile == "" || !p.files.Exists(p.cfg.DemoFile) {
+		return
+	}
+	if demo, err := p.files.Read(p.cfg.DemoFile); err == nil {
+		sink.SetDemo(demo)
+	}
 }
 
 func (p *PlanDocumentPublisher) publishTests(sink PlanDocumentSink) {

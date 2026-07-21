@@ -321,10 +321,11 @@ func createPlanConfig(tool models.Tool, goal string, mode models.PlanMode, budge
 		Invocation: tool.Invocation(prompts.Plan), Budget: budget,
 		AssessInvocation: tool.Invocation(prompts.Assess), RefineInvocation: tool.Invocation(prompts.Refine),
 		TestsInvocation: tool.Invocation(prompts.Tests), AlignInvocation: tool.Invocation(prompts.Align),
+		DemoInvocation:     tool.Invocation(prompts.Demo),
 		AnnotateInvocation: tool.Invocation(prompts.Annotate),
 		MaxRefinePasses:    refinePasses(mode, maxStepPasses), MaxConsecutiveFailures: maxFailures,
 		GoalFile: "GOAL.md", QuestionsFile: "QUESTIONS.md", AnswersFile: "ANSWERS.md",
-		PlanFile: "PLAN.md", StepsFile: "STEPS.md", TestsFile: "TESTS.md",
+		PlanFile: "PLAN.md", StepsFile: "STEPS.md", TestsFile: "TESTS.md", DemoFile: "DEMO.html",
 		AssessmentFile: "REFINEMENTS.md", AnnotationFile: "ANNOTATION.md",
 	}
 }
@@ -610,6 +611,7 @@ func runReviewPlan(ctx context.Context, tool models.Tool, budget time.Duration, 
 		AssessInvocation:       tool.Invocation(prompts.Assess),
 		RefineInvocation:       tool.Invocation(prompts.Refine),
 		TestsInvocation:        tool.Invocation(prompts.Tests),
+		DemoInvocation:         tool.Invocation(prompts.Demo),
 		AlignInvocation:        tool.Invocation(prompts.Align),
 		MaxRefinePasses:        maxStepPasses,
 		MaxConsecutiveFailures: maxFailures,
@@ -619,6 +621,7 @@ func runReviewPlan(ctx context.Context, tool models.Tool, budget time.Duration, 
 		PlanFile:               "PLAN.md",
 		StepsFile:              "STEPS.md",
 		TestsFile:              "TESTS.md",
+		DemoFile:               "DEMO.html",
 		AssessmentFile:         "REFINEMENTS.md",
 	}
 	orchestrator := services.NewPlanOrchestrator(
