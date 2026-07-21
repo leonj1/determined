@@ -80,3 +80,23 @@ When the planning phase ends, the status page SHALL display a clear banner indic
 #### Scenario: Timing accuracy
 - **WHEN** planning starts at T0 and ends at T1 per the injected clock
 - **THEN** the banner shows T0 as start, T1 as end, and T1−T0 as duration
+
+### Requirement: Optional trivial UI demo
+After the final plan is generated, an interactive planning session SHALL run a
+distinct demo-generation step. The step SHALL create `DEMO.html` only when the
+plan contains a trivial UI change that can be demonstrated in one
+self-contained HTML document without external dependencies or network access.
+When created, the page SHALL show the demo beneath the Plan tab in a sandboxed,
+network-isolated frame.
+
+#### Scenario: Trivial UI change
+- **WHEN** the final plan contains a useful UI change that can be demonstrated in one self-contained HTML file
+- **THEN** the post-plan step creates `DEMO.html` and the Plan tab displays it beneath the plan
+
+#### Scenario: Non-trivial or absent UI change
+- **WHEN** the plan has no UI change or demonstrating it would require a backend, build step, package, external asset, or network access
+- **THEN** the post-plan step does not create `DEMO.html` and the Plan tab shows no demo frame
+
+#### Scenario: Revised plan is no longer eligible
+- **WHEN** a plan annotation or goal rebuild makes a previously eligible plan ineligible
+- **THEN** the stale demo is removed before the post-plan eligibility check and no old demo remains visible

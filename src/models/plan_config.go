@@ -17,6 +17,7 @@ type PlanConfig struct {
 	AssessInvocation   Invocation // reviews plan and step quality, writing AssessmentFile
 	RefineInvocation   Invocation // resolves assessment findings in PlanFile and StepsFile
 	TestsInvocation    Invocation // backfills TestsFile when a plan exists without it
+	DemoInvocation     Invocation // optionally creates a trivial UI demo after planning
 	AlignInvocation    Invocation // judges each test in TestsFile against the plan's functional goal
 	AnnotateInvocation Invocation // applies one AnnotationFile feedback item to its plan document
 	MaxRefinePasses    int        // cap on assess/refine rounds; 0 disables refinement
@@ -32,6 +33,7 @@ type PlanConfig struct {
 	PlanFile       string // a finished plan output (PLAN.md)
 	StepsFile      string // a finished step list output (STEPS.md)
 	TestsFile      string // recommended journey/BDD tests output (TESTS.md)
+	DemoFile       string // optional trivial UI demo output (DEMO.html)
 	AssessmentFile string // where the assessor lists planning issues (REFINEMENTS.md)
 	AnnotationFile string // where one page annotation is staged for the tool (ANNOTATION.md)
 }

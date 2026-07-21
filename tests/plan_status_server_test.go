@@ -121,6 +121,7 @@ func assertPageServed(t *testing.T, url string) {
 		"log-entry", "renderLog", `data-tab="log"`,
 		"renderTable", "unflattenTables", "isSeparatorRow",
 		`data-tab="tests"`, `data-tests-tab="journey"`, `data-tests-tab="bdd"`,
+		`id="plan-demo"`, `id="demo-frame"`, `sandbox="allow-scripts"`, "renderDemo", "status.demo",
 		"splitTests", "status.tests",
 		"renderTests", "alignmentOf", "test-card",
 		"align-aligned", "align-partial", "align-misaligned", "align-note",

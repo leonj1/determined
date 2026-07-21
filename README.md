@@ -88,7 +88,10 @@ approved), `1` failure/budget/interrupt, `2` usage error, `3` stalled (see
    task-specific template, ordering, step size, and acceptance criteria. Write
    issues to `REFINEMENTS.md`, refine the plan, and reassess for up to
    `--max-step-passes` rounds (skipped in prototype mode).
-6. **Finish planning** — leave `PLAN.md` and `STEPS.md` in place and exit `0`,
+6. **Generate an optional UI demo** — in interactive mode, run a distinct
+   post-plan check. Only a trivial UI change that fits in one self-contained
+   HTML file produces `DEMO.html`; when present, it appears beneath the Plan tab.
+7. **Finish planning** — leave `PLAN.md` and `STEPS.md` in place and exit `0`,
    ready for `./determined -exec` to execute them. With `-exec` on the same
    command line, execution starts immediately after planning succeeds.
 
@@ -168,6 +171,7 @@ each one is for:
 | `answering planning questions` | Relay each question from `QUESTIONS.md` to you on the terminal and record your responses in `ANSWERS.md` for the next planner pass. |
 | `assessing plan` | Independently grade the drafted plan for completeness, ordering, step size, and concrete `Done when:` criteria, writing issues to `REFINEMENTS.md`. |
 | `refining plan` | Rework the plan to resolve the assessment's issues, then reassess — up to `--max-step-passes` rounds. |
+| `generating UI demo` | After the plan is final, create `DEMO.html` only when its UI change is trivial and can be shown without external dependencies. |
 | `applying annotation` | Apply one user annotation from the plan page to the plan documents and republish them. |
 | `executing step N` | Invoke the tool with exactly the next unchecked step from `STEPS.md` and its acceptance criterion. |
 | `checking simplicity of step N` | Use a fresh reviewer invocation to judge whether the newly checked step's implementation is the simplest solution that satisfies it; a materially simpler alternative unchecks the step and records the simpler approach in `FIXES.md`. |
@@ -216,7 +220,7 @@ ideally a clean git checkout, so every change is reviewable and revertible.
 | `--exec`         | `false`  | Run the execute loop against `PLAN.md` + `STEPS.md`. Add `--interactive` to seed the live page from existing planning documents, stream execution, and annotate then retry a failed run. With `--plan`, execution follows successful planning; incompatible with `--review-plan`. Without `--plan` or `--exec`, `determined` prints the usage screen. |
 | `--review-plan`  | `false`  | Critique existing `PLAN.md` + `STEPS.md`, interview the user about consequential choices, and revise without executing. |
 | `--criteria`     | `false`  | Interactively capture BDD journey tests into `CRITERIA.md` (accept / modify / skip / end / cancel per proposal). Runs before `--plan` / `-exec` when combined; incompatible with `--review-plan`. |
-| `--interactive`  | `false`  | With `--plan` or `--exec`, serve a live HTML status page showing planning documents and workflow steps. For an existing plan, execution starts immediately; after failure, annotate the page and click Implement to retry in the same session. After success, the Explanation tab (`/explain`) shows an AI-generated walkthrough with colored diffs, followed by a five-question Quiz tab (`/quiz`) whose questions link to their source explanation sections. |
+| `--interactive`  | `false`  | With `--plan` or `--exec`, serve a live HTML status page showing planning documents and workflow steps. A trivial, self-contained UI change may include a generated demo beneath the Plan tab. For an existing plan, execution starts immediately; after failure, annotate the page and click Implement to retry in the same session. After success, the Explanation tab (`/explain`) shows an AI-generated walkthrough with colored diffs, followed by a five-question Quiz tab (`/quiz`) whose questions link to their source explanation sections. |
 | `--link`         | `false`  | Print the URL of the status page served by a still-running `--interactive` session, then exit. Recovers the link after the launching terminal is closed. Prints the URL on exit `0` only after confirming the recorded process is alive, its port is listening, and that port answers with the determined status page; otherwise reports no session and exits `1`. |
 | `--mvp`          | `false`  | Use a reduced quality gate for the smallest usable outcome. Requires `--plan`; incompatible with `--prototype`. |
 | `--prototype`    | `false`  | Ask only blocking questions and skip quality refinement for fast experiments. Requires `--plan`; incompatible with `--mvp`. |
@@ -258,8 +262,8 @@ determined status page rather than an unrelated server. If any check fails it
 prints nothing to stdout, reports no running session on stderr, exits `1`, and
 deletes the stale record so it cannot mislead a later call.
 
-The protocol filenames (`PLAN.md` / `STEPS.md` / `STOP.md` / `NOTES.md` /
-`FIXES.md` / `EXPLANATION.md`) are hardcoded; the prompt is rebuilt each
+The protocol filenames (`PLAN.md` / `STEPS.md` / `DEMO.html` / `STOP.md` /
+`NOTES.md` / `FIXES.md` / `EXPLANATION.md`) are hardcoded; the prompt is rebuilt each
 iteration from the next unchecked step in `STEPS.md`. `EXPLANATION.md` is a
 presentation artifact created only after successful interactive execution and
 does not affect the run outcome.

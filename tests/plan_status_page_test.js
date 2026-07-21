@@ -216,6 +216,21 @@ test("failed execution restores Implement without allowing successful or running
   assert.equal(visible(""), true);
 });
 
+test("the Plan tab renders a generated demo in a network-isolated frame", () => {
+  const browser = createPageEnvironment();
+  browser.run(`renderDemo("<!doctype html><button>Try it</button>")`);
+
+  assert.equal(browser.run(`document.getElementById("plan-demo").hidden`), false);
+  const srcdoc = browser.run(`document.getElementById("demo-frame").srcdoc`);
+  assert.match(srcdoc, /Content-Security-Policy/);
+  assert.match(srcdoc, /default-src 'none'/);
+  assert.match(srcdoc, /<button>Try it<\/button>/);
+
+  browser.run(`renderDemo("")`);
+  assert.equal(browser.run(`document.getElementById("plan-demo").hidden`), true);
+  assert.equal(browser.run(`document.getElementById("demo-frame").srcdoc`), "");
+});
+
 test("only the current unfinished planning artifact is marked running", () => {
   const browser = createPageEnvironment();
   const states = browser.run(`tabStates({ phase: "running", goal: "Goal", taskSteps: [], log: [] })`);

@@ -37,6 +37,7 @@ type PlanStatusReporter interface {
 	AppendLogOutput(text string)
 	SetGoal(goal string)
 	SetPlan(plan string)
+	SetDemo(demo string)
 	SetTests(tests string)
 	SetTaskSteps(steps []models.TaskStep)
 	WaitForInput()
@@ -108,8 +109,33 @@ func (o *PlanOrchestrator) Run(ctx context.Context) models.Outcome {
 		fmt.Fprintf(o.terminal, "determined: unsupported plan operation %q\n", o.cfg.Operation)
 		outcome = models.OutcomeDroidFailed
 	}
+	if planSucceeded(outcome) {
+		o.refreshDemo(ctx)
+	}
 	o.reportFinish(outcome)
 	return outcome
+}
+
+func planSucceeded(outcome models.Outcome) bool {
+	return outcome == models.OutcomePlanReady || outcome == models.OutcomePlanReviewed
+}
+
+// refreshDemo clears any prior artifact after a finished plan. Interactive
+// sessions then run the eligibility gate as a distinct post-plan step.
+func (o *PlanOrchestrator) refreshDemo(ctx context.Context) {
+	if o.cfg.DemoInvocation.Binary == "" || o.cfg.DemoFile == "" {
+		return
+	}
+	if o.status != nil {
+		o.status.SetDemo("")
+	}
+	o.files.Remove(o.cfg.DemoFile)
+	if o.status == nil {
+		return
+	}
+	if _, stop := o.runInvocation(ctx, o.cfg.DemoInvocation, "generating UI demo"); stop {
+		return
+	}
 }
 
 func (o *PlanOrchestrator) create(ctx context.Context, deadline time.Time) models.Outcome {
@@ -644,12 +670,14 @@ func (o *PlanOrchestrator) applyAnnotation(ctx context.Context, annotation model
 		o.rebuildFromGoal(ctx)
 		return
 	}
+	if annotation.Section == models.AnnotationSectionPlan {
+		o.refreshDemo(ctx)
+	}
 	o.reportPlan()
 }
 
-// rebuildFromGoal discards the plan, steps, and tests derived from the previous
-// goal and regenerates them from the revised one, so the page never shows a plan
-// that answers a goal the user has since changed.
+// rebuildFromGoal discards the plan documents and demo derived from the
+// previous goal, then regenerates them from the revised one.
 func (o *PlanOrchestrator) rebuildFromGoal(ctx context.Context) {
 	fmt.Fprintf(o.terminal,
 		"determined: the goal changed; rebuilding %s, %s, and %s\n",
@@ -657,6 +685,10 @@ func (o *PlanOrchestrator) rebuildFromGoal(ctx context.Context) {
 	o.files.Remove(o.cfg.PlanFile)
 	o.files.Remove(o.cfg.StepsFile)
 	o.files.Remove(o.cfg.TestsFile)
+	if o.cfg.DemoFile != "" {
+		o.status.SetDemo("")
+		o.files.Remove(o.cfg.DemoFile)
+	}
 	if _, stop := o.runInvocation(ctx, o.cfg.Invocation, "replanning for the revised goal"); stop {
 		return
 	}
@@ -671,6 +703,7 @@ func (o *PlanOrchestrator) rebuildFromGoal(ctx context.Context) {
 		o.reportPlan()
 		return
 	}
+	o.refreshDemo(ctx)
 	o.reportPlan()
 }
 
@@ -734,6 +767,6 @@ func (o *PlanOrchestrator) reportFinish(outcome models.Outcome) {
 		return
 	}
 	o.reportPlan()
-	succeeded := outcome == models.OutcomePlanReady || outcome == models.OutcomePlanReviewed
+	succeeded := planSucceeded(outcome)
 	o.status.Finish(succeeded)
 }
