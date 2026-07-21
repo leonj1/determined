@@ -36,6 +36,7 @@ type ExecStatusReporter interface {
 	AppendExecLogOutput(text string)
 	SettleExecLogEntryAt(i int, state models.EntryState)
 	SetTaskSteps(steps []models.TaskStep)
+	SetExecStopReason(reason, advice string)
 	FinishExecution(succeeded bool)
 	StartExplanation()
 	SetExplanation(text string)
@@ -808,10 +809,39 @@ func (o *Orchestrator) reportFinish(ctx context.Context, outcome models.Outcome)
 		return
 	}
 	o.reportTaskSteps()
+	if outcome != models.OutcomeStopped {
+		reason, advice := execStopReasonAdvice(outcome, o.cfg)
+		o.status.SetExecStopReason(reason, advice)
+	}
 	o.status.FinishExecution(outcome == models.OutcomeStopped)
 	if outcome == models.OutcomeStopped {
 		o.explainRun(ctx)
 	}
+}
+
+// execStopReasonAdvice maps a failed run outcome to the plain-language reason
+// and the remediation recommendation the status page shows. Unknown outcomes
+// fall back to generic text so a failed run never renders a blank alert.
+func execStopReasonAdvice(outcome models.Outcome, cfg models.Config) (string, string) {
+	switch outcome {
+	case models.OutcomeStalled:
+		return fmt.Sprintf("No step was checked in %d consecutive iterations, so the run stopped instead of looping forever. This usually means the worker and the reviewers kept disagreeing about the same step: the worker marked it done and a reviewer unchecked it again.", cfg.MaxStalledIterations),
+			"Read FIXES.md for the reviewers' objections and NOTES.md for the worker's reasoning, then break the tie yourself: apply the requested fix or adjust the step's `Done when:` criterion in STEPS.md. Then click Implement (or rerun determined) to resume from the unchecked steps."
+	case models.OutcomeDroidFailed:
+		return fmt.Sprintf("The AI tool failed %d consecutive invocations, so the run aborted.", cfg.MaxConsecutiveFailures),
+			"Check the terminal output and the iteration logs for the tool's error — rate limit, authentication, or a crash. Fix the cause, then click Implement (or rerun determined) to retry."
+	case models.OutcomeBudgetExceeded:
+		return "The wall-clock budget expired before every step completed.",
+			"Completed steps stay checked, so nothing is lost. Click Implement to resume the remaining steps, or rerun determined with a larger --budget."
+	case models.OutcomeInterrupted:
+		return "The run was interrupted by a signal before it could finish.",
+			"Click Implement (or rerun determined) to resume from the unchecked steps."
+	case models.OutcomeMissingFiles:
+		return "Execution started without the required PLAN.md / STEPS.md protocol files.",
+			"Run `determined --plan \"<goal>\"` to produce them, then start execution again."
+	}
+	return "The run ended without completing the plan.",
+		"Check the terminal output and the iteration logs, then click Implement (or rerun determined) to retry."
 }
 
 func (o *Orchestrator) explainRun(ctx context.Context) {

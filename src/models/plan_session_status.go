@@ -165,6 +165,13 @@ type PlanSessionStatus struct {
 	ExecStartedAt time.Time  `json:"execStartedAt"`
 	ExecEndedAt   time.Time  `json:"execEndedAt"`
 
+	// ExecStopReason explains why a failed execute run ended (stall, tool
+	// failure, budget, interruption) and ExecAdvice is the remediation the
+	// status page recommends to the user. Both are empty while execution runs
+	// and after a successful run.
+	ExecStopReason string `json:"execStopReason"`
+	ExecAdvice     string `json:"execAdvice"`
+
 	// Explanation is the post-execution walkthrough shown after a successful
 	// execute run; ExplainPhase describes its generation state.
 	Explanation  string       `json:"explanation"`

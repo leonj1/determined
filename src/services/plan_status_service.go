@@ -248,6 +248,8 @@ func (s *PlanStatusService) StartExecution() {
 		st.ExecPhase = models.ExecPhaseRunning
 		st.ExecStartedAt = s.clock.Now()
 		st.ExecEndedAt = time.Time{}
+		st.ExecStopReason = ""
+		st.ExecAdvice = ""
 		return st
 	})
 }
@@ -265,6 +267,16 @@ func (s *PlanStatusService) FinishExecution(succeeded bool) {
 			st.ExecPhase = models.ExecPhaseFailed
 		}
 		return st.WithoutRunningExecEntries(stateFor(succeeded))
+	})
+}
+
+// SetExecStopReason publishes why a failed execute run ended and what the user
+// should do about it, which the status page renders as a prominent alert.
+func (s *PlanStatusService) SetExecStopReason(reason, advice string) {
+	s.update(func(st models.PlanSessionStatus) models.PlanSessionStatus {
+		st.ExecStopReason = reason
+		st.ExecAdvice = advice
+		return st
 	})
 }
 

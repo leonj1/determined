@@ -101,6 +101,16 @@
   #banner.succeeded .mark { color: var(--ok-fg); }
   #banner.failed .mark { color: var(--bad-fg); }
   #banner .timing { color: var(--muted); }
+  #stopped-flag {
+    display: none; appearance: none; border: 1px solid var(--bad-fg); border-radius: 0;
+    padding: 0.42rem 0.9rem; font: 700 0.7rem/1.2 ui-monospace, 'SF Mono', Menlo, monospace;
+    letter-spacing: 0.08em; text-transform: uppercase; cursor: pointer; white-space: nowrap;
+    background: var(--bad-fg); color: var(--bg); margin-right: auto;
+    animation: stopped-pulse 1.6s ease-in-out infinite;
+  }
+  #stopped-flag.on { display: inline-block; }
+  @keyframes stopped-pulse { 50% { opacity: 0.55; } }
+  @media (prefers-reduced-motion: reduce) { #stopped-flag { animation: none; } }
   #theme-toggle {
     appearance: none; background: var(--bg); border: 1px solid var(--fg); border-radius: 0;
     min-width: 3.6rem; height: 2rem; padding: 0 0.45rem; flex: none;
@@ -302,6 +312,23 @@
   #exec-state.empty, #explain-state.empty, #quiz-state.empty { font-weight: 400; }
   #exec-state.succeeded, #explain-state.succeeded, #quiz-state.succeeded { color: var(--ok-fg); }
   #exec-state.failed, #explain-state.failed, #quiz-state.failed { color: var(--bad-fg); }
+  #exec-stuck {
+    margin-bottom: 1rem; padding: 0.85rem 1rem;
+    border: 1px solid var(--bad-fg); border-left-width: 5px;
+    background: color-mix(in srgb, var(--bad-fg) 9%, var(--bg));
+  }
+  #exec-stuck .stuck-title {
+    font: 700 0.8rem/1.4 ui-monospace, 'SF Mono', Menlo, monospace;
+    letter-spacing: 0.08em; text-transform: uppercase; color: var(--bad-fg);
+    margin-bottom: 0.5rem;
+  }
+  #exec-stuck p { margin: 0 0 0.6rem; }
+  #exec-stuck p:last-child { margin-bottom: 0; }
+  #exec-stuck .stuck-how {
+    font: 700 0.7rem/1.4 ui-monospace, 'SF Mono', Menlo, monospace;
+    letter-spacing: 0.08em; text-transform: uppercase; color: var(--fg);
+    margin-bottom: 0.25rem;
+  }
   #quiz-card { display: grid; gap: 0.9rem; }
   .quiz-meta { display: flex; justify-content: space-between; gap: 1rem; color: var(--muted); font: 700 0.7rem/1.4 ui-monospace, 'SF Mono', Menlo, monospace; letter-spacing: 0.08em; text-transform: uppercase; }
   .quiz-question { margin: 0; font-size: 1.05rem; font-weight: 650; }
@@ -465,6 +492,7 @@
 <header id="page-header">
   <div class="title" id="title">planning</div>
   <button id="implement">▶ Implement</button>
+  <button id="stopped-flag" type="button">■ Stopped — action needed</button>
   <div id="active-task" aria-live="polite">
     <span class="spinner" aria-hidden="true"></span>
     <span class="label">Active</span>
@@ -536,6 +564,12 @@
     <section class="panel" id="panel-exec">
       <h2 class="panel-title">Execution</h2>
       <div id="exec-state" class="empty">Not started — the Implement button appears once planning completes.</div>
+      <div id="exec-stuck" hidden role="alert">
+        <div class="stuck-title">⚠ Execution stopped — action needed</div>
+        <p id="exec-stuck-reason"></p>
+        <p class="stuck-how">How to fix</p>
+        <p id="exec-stuck-advice"></p>
+      </div>
       <div id="exec-log"></div>
     </section>
     <section class="panel" id="panel-explain">
@@ -1268,6 +1302,13 @@
     });
   });
 
+  // The header's stopped flag jumps to the Execution tab, where the stuck-run
+  // alert explains the failure and how to remediate it.
+  el("stopped-flag").addEventListener("click", () => {
+    history.pushState(null, "", "/exec");
+    selectTab("exec");
+  });
+
   function render(status) {
     const repo = repoShortName(status.git.remote);
     el("title").textContent = repo ? repo + " — planning" : "planning";
@@ -1301,6 +1342,7 @@
     el("implement").classList.toggle("on",
       !!status.implementOffered && status.phase === "succeeded" &&
       (!status.execPhase || status.execPhase === "failed"));
+    el("stopped-flag").classList.toggle("on", status.execPhase === "failed");
   }
 
   function renderLog(entries) {
@@ -1326,9 +1368,24 @@
       state.classList.add(phase);
       state.textContent = (phase === "succeeded"
         ? "✓ Execution completed"
-        : "✗ Execution ended without completing the plan") +
+        : "✗ Execution stopped without completing the plan") +
         " · Duration " + fmtDuration(status.execStartedAt, status.execEndedAt);
     }
+    renderExecStuck(status);
+  }
+
+  // Renders the stuck-run alert on the Execution tab: why the run stopped and
+  // what the user should do about it. A missing spinner is a poor signal, so a
+  // failed run gets an explicit, loud explanation instead.
+  function renderExecStuck(status) {
+    const box = el("exec-stuck");
+    const failed = status.execPhase === "failed";
+    box.hidden = !failed;
+    if (!failed) return;
+    el("exec-stuck-reason").textContent = status.execStopReason ||
+      "The run stopped before completing every step.";
+    el("exec-stuck-advice").textContent = status.execAdvice ||
+      "Check the terminal output and the iteration logs, then click Implement (or rerun determined) to retry.";
   }
 
   function renderExplanation(status) {
@@ -1888,13 +1945,18 @@
     document.title = mark + " " + progress.percent + "% — " + (repo || "determined");
   }
 
+  // The header banner reflects the session's worst-known state: a failed
+  // execute run must read as failed even though planning succeeded, so a
+  // stopped run is never dressed in a green check.
   function renderBanner(status) {
     const banner = el("banner");
     banner.classList.remove("on", "succeeded", "failed");
     const running = status.execPhase === "requested" || status.execPhase === "running";
-    if (!running && status.phase !== "succeeded" && status.phase !== "failed") return;
-    banner.classList.add("on", running || status.phase === "succeeded" ? "succeeded" : "failed");
-    el("banner-mark").textContent = running ? "⚙" : (status.phase === "succeeded" ? "✓" : "✗");
+    const execFailed = status.execPhase === "failed";
+    if (!running && !execFailed && status.phase !== "succeeded" && status.phase !== "failed") return;
+    const good = running || (status.phase === "succeeded" && !execFailed);
+    banner.classList.add("on", good ? "succeeded" : "failed");
+    el("banner-mark").textContent = running ? "⚙" : (good ? "✓" : "✗");
     el("banner-timing").textContent =
       fmtTime(status.startedAt) + " · " + fmtDuration(status.startedAt, status.endedAt);
   }

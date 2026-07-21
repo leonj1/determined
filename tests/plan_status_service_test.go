@@ -384,6 +384,36 @@ func TestPlanStatusServiceExecutionFailureMarksFailedPhase(t *testing.T) {
 	}
 }
 
+func TestPlanStatusServicePublishesExecStopReasonAndAdvice(t *testing.T) {
+	service := implementReadyService(newSteppingClock(planStart()))
+	service.StartExecution()
+	service.SetExecStopReason("no step checked in 3 iterations", "read FIXES.md, then click Implement")
+	service.FinishExecution(false)
+
+	snapshot := service.Snapshot()
+	if snapshot.ExecStopReason != "no step checked in 3 iterations" {
+		t.Errorf("execStopReason = %q, want the stall reason", snapshot.ExecStopReason)
+	}
+	if snapshot.ExecAdvice != "read FIXES.md, then click Implement" {
+		t.Errorf("execAdvice = %q, want the remediation advice", snapshot.ExecAdvice)
+	}
+}
+
+func TestStartExecutionClearsPriorStopReasonAndAdvice(t *testing.T) {
+	service := implementReadyService(newSteppingClock(planStart()))
+	service.StartExecution()
+	service.SetExecStopReason("stalled", "fix STEPS.md")
+	service.FinishExecution(false)
+
+	service.StartExecution()
+
+	snapshot := service.Snapshot()
+	if snapshot.ExecStopReason != "" || snapshot.ExecAdvice != "" {
+		t.Errorf("retry kept stale stop reason %q / advice %q, want both cleared",
+			snapshot.ExecStopReason, snapshot.ExecAdvice)
+	}
+}
+
 func TestUserCanRequestImplementationAgainAfterFailedExecution(t *testing.T) {
 	service := implementReadyService(newSteppingClock(planStart()))
 	service.StartExecution()

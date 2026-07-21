@@ -26,6 +26,10 @@ type fakeExecReporter struct {
 	// settled with, so tests can assert which entry got which state.
 	entries []string
 	states  map[int]models.EntryState
+	// stopReason and stopAdvice capture the failure explanation published for
+	// the status page's stuck-run alert.
+	stopReason string
+	stopAdvice string
 }
 
 // stateOf reports the outcome the entry at i was settled with, or the empty
@@ -52,6 +56,11 @@ func (r *fakeExecReporter) AppendExecLogOutput(text string) { r.logOutput += tex
 func (r *fakeExecReporter) SetTaskSteps(steps []models.TaskStep) {
 	r.taskSteps = steps
 	r.events = append(r.events, "task-steps")
+}
+func (r *fakeExecReporter) SetExecStopReason(reason, advice string) {
+	r.stopReason = reason
+	r.stopAdvice = advice
+	r.events = append(r.events, "exec-stop-reason")
 }
 func (r *fakeExecReporter) FinishExecution(succeeded bool) {
 	if succeeded {
@@ -195,6 +204,65 @@ func TestVerifierRejectionSettlesTheVerifyEntryAsWarn(t *testing.T) {
 		t.Errorf("verify entry state = %q, want %q: the verifier rejected the step",
 			got, models.EntryStateWarn)
 	}
+}
+
+func TestStalledRunPublishesStopReasonAndAdviceBeforeFinishing(t *testing.T) {
+	fs := plannedFileStore("- [ ] 1. Add the widget.\n  Done when: widget tests pass.\n")
+	cfg := execConfig()
+	cfg.MaxStalledIterations = 1
+	// The worker never checks the step, so the very first iteration stalls out.
+	runner := &fakeRunner{script: func(call int, out io.Writer) error { return nil }}
+	reporter := &fakeExecReporter{}
+	o := services.NewOrchestrator(runner, fs, &fakeClock{now: time.Now()}, &fakeLogSink{}, io.Discard, cfg).
+		WithStatusReporter(reporter)
+
+	outcome := o.Run(context.Background())
+
+	if outcome != models.OutcomeStalled {
+		t.Fatalf("outcome = %v, want stalled", outcome)
+	}
+	if !strings.Contains(reporter.stopReason, "1 consecutive iterations") {
+		t.Errorf("stopReason = %q, want it to state the stall cap that ended the run", reporter.stopReason)
+	}
+	for _, want := range []string{"FIXES.md", "STEPS.md", "Implement"} {
+		if !strings.Contains(reporter.stopAdvice, want) {
+			t.Errorf("stopAdvice = %q, want it to mention %s", reporter.stopAdvice, want)
+		}
+	}
+	// The reason must be published before the run is finished, so the page
+	// renders the alert in the same snapshot that flips the phase to failed.
+	if !reflect.DeepEqual(lastTwo(reporter.events), []string{"exec-stop-reason", "finish-execution: failed"}) {
+		t.Errorf("final events = %v, want exec-stop-reason then finish-execution: failed",
+			lastTwo(reporter.events))
+	}
+}
+
+func TestSuccessfulRunPublishesNoStopReason(t *testing.T) {
+	fs := plannedFileStore("- [ ] 1. Add the widget.\n  Done when: widget tests pass.\n")
+	runner := &fakeRunner{script: func(call int, out io.Writer) error {
+		fs.Write("STEPS.md", "- [x] 1. Add the widget.\n  Done when: widget tests pass.\n")
+		fs.Write("STOP.md", "audit: plan satisfied")
+		return nil
+	}}
+	reporter := &fakeExecReporter{}
+	o := services.NewOrchestrator(runner, fs, &fakeClock{now: time.Now()}, &fakeLogSink{}, io.Discard, execConfig()).
+		WithStatusReporter(reporter)
+
+	o.Run(context.Background())
+
+	if reporter.stopReason != "" || reporter.stopAdvice != "" {
+		t.Errorf("successful run published stop reason %q / advice %q, want none",
+			reporter.stopReason, reporter.stopAdvice)
+	}
+}
+
+// lastTwo returns the final two recorded events, so ordering assertions stay
+// focused on the finish sequence.
+func lastTwo(events []string) []string {
+	if len(events) < 2 {
+		return events
+	}
+	return events[len(events)-2:]
 }
 
 func TestVerifierApprovalLeavesTheVerifyEntryOK(t *testing.T) {
