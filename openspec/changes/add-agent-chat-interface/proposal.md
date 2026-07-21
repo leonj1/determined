@@ -10,6 +10,8 @@
 - New `-m <message>` flag (valid only with `-chat`): synchronous one-shot — connect, send the single message, print the reply, close the connection, exit. Exit code reflects success (`0`), no live session or transport failure (`1`), usage error (`2`).
 - The interactive status server gains a `/chat` WebSocket endpoint speaking a JSON message protocol. Replies are deterministic, derived from the live session snapshot (phase, current step, task checklist, recent activity, plan/goal text) — the binary reports state; the agent on the other end supplies the intelligence. Every reply carries both human-readable text and the structured data it was derived from.
 - Persistent connections may subscribe to live events: step progress, log entries, phase transitions are pushed as they happen.
+- A curl-friendly `POST /chat/ask` HTTP endpoint answers a single question with the same JSON reply the WebSocket produces, so shell scripts and minimal HTTP clients need no WebSocket support.
+- New USAGE.md at the repo root documents the chat interface end to end — discovery, both CLI modes, the JSON protocol, and runnable curl examples with sample responses.
 - Headless `-exec` runs (no `-interactive`) also start the status server and write the session record, so agents can chat with unattended executions — the primary "what is the status of this run?" use case. The server URL line is printed as it is for interactive runs.
 - Minimal RFC 6455 WebSocket support (server and client, text frames, loopback use) implemented in `src/clients` with the standard library, preserving the project's zero-dependency `go.mod`.
 
@@ -32,5 +34,5 @@
 - `src/services`: new chat service answering queries from `PlanStatusService` snapshots and forwarding its subscription events.
 - `src/models`: chat protocol message types.
 - `tests/`: protocol, handshake, discovery-reuse, and one-shot flow coverage following the existing fake-driven style.
-- Docs: README (`-chat` usage), EXECUTION.md (exit codes for chat mode).
+- Docs: README (`-chat` usage), EXECUTION.md (exit codes for chat mode), new USAGE.md (protocol reference and curl examples).
 - Dependencies: none added (stdlib-only WebSocket implementation).

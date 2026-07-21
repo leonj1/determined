@@ -19,6 +19,7 @@
 
 - [ ] 4.1 Mount `/chat` on `PlanStatusServer` (`src/clients/plan_status_server.go`): upgrade, then a read loop dispatching to an injected chat responder; `subscribe` attaches the status subscription and forwards snapshot-diff events (new step, new log entry, phase change) as `event` frames; malformed JSON answered with an `error` frame; write deadline per send so a stalled client cannot block
 - [ ] 4.2 Tests in `tests/plan_status_server_chat_test.go`: end-to-end over a real listener — upgrade, message/reply correlation, subscribe then trigger a status change and observe the event frame, malformed payload keeps the connection open
+- [ ] 4.3 Mount `POST /chat/ask` on `PlanStatusServer`: accept a JSON `ChatRequest` body (or bare `{"text": ...}`), answer with the same JSON `ChatResponse` the WebSocket reply would carry, reject non-POST with 405 and malformed JSON with 400 — the curl-friendly one-shot; add request/response tests alongside 4.2
 
 ## 5. Chat client mode
 
@@ -35,3 +36,4 @@
 
 - [ ] 7.1 README: `-chat` section with the persistent and one-shot (`-chat -m "..."`) examples, note that headless `-exec` now serves the status page/chat endpoint
 - [ ] 7.2 EXECUTION.md: chat exit codes, discovery behavior shared with `-link`, and the protocol sketch (message/reply/event JSON) for agent authors
+- [ ] 7.3 Add USAGE.md at the repo root detailing how the chat interface works end to end: session discovery (`determined -link`), the two CLI modes (`-chat`, `-chat -m "..."`), the JSON message/reply/event protocol with field-by-field explanations, and runnable curl examples — `curl -s -X POST http://localhost:<port>/chat/ask -d '{"text":"what is the status of this run?"}'` for a one-shot answer, `curl -N http://localhost:<port>/events` for the live SSE stream, a WebSocket handshake check with `curl -i -H "Upgrade: websocket" ...` plus a `curl --include ws://localhost:<port>/chat` note for curl builds with WebSocket support, and sample JSON responses for each

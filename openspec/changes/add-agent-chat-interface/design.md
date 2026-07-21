@@ -61,6 +61,8 @@ Server → client:
 
 *Alternative considered:* plain text lines — simpler, but forces the agent to parse prose and cannot label events vs replies.
 
+Alongside the WebSocket, `POST /chat/ask` answers a single question over plain HTTP with the identical `reply` JSON (no `id`, no events). It reuses `ChatService.Answer` verbatim, so it costs one thin handler and gives curl and minimal HTTP clients a fully runnable one-shot path — which also keeps USAGE.md's curl examples honest, since curl's native WebSocket support is still experimental. The `-chat` CLI keeps using the WebSocket for both modes; `/chat/ask` exists for third-party and shell callers.
+
 ### D4: Deterministic answers from the snapshot via a small intent table
 
 A new `services.ChatService` takes the `PlanStatusService` (through a narrow `ChatStatusSource` interface: `Snapshot()` + `Subscribe()`) and a clock. Incoming `message` text is matched against intents by keyword:

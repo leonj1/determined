@@ -90,6 +90,24 @@ With `-chat` and no `-m`, the client SHALL subscribe to live events and enter a 
 - **WHEN** the serving session shuts down while a chat client is connected
 - **THEN** the client reports the closed session and exits with code 0
 
+### Requirement: HTTP one-shot ask endpoint
+The status server SHALL serve `POST /chat/ask` accepting a JSON body with a `text` field and answering with the same JSON reply structure the WebSocket protocol uses (`text` plus structured `data`), so any HTTP client — curl included — can ask a one-shot question without speaking WebSocket. Non-POST methods SHALL be answered with 405 and malformed JSON with 400.
+
+#### Scenario: curl asks for status
+- **WHEN** a client runs `curl -s -X POST http://localhost:<port>/chat/ask -d '{"text":"what is the status of this run?"}'` against a live session
+- **THEN** the response is a JSON reply with a human-readable `text` answer and the structured `data` payload
+
+#### Scenario: Malformed body
+- **WHEN** a client POSTs a body that is not valid JSON to `/chat/ask`
+- **THEN** the server responds with status 400
+
+### Requirement: Usage documentation
+The repository SHALL include a USAGE.md documenting the chat interface end to end: session discovery, both CLI modes (`-chat` and `-chat -m`), the JSON message/reply/event protocol with field explanations, and runnable curl examples covering the `/chat/ask` one-shot, the `/events` SSE stream, and the WebSocket handshake, each with a sample JSON response.
+
+#### Scenario: Agent author follows USAGE.md
+- **WHEN** a reader runs the documented `/chat/ask` curl example against a live session
+- **THEN** the command succeeds as written and the response matches the documented sample shape
+
 ### Requirement: Headless execution serves chat
 A headless `-exec` run (without `-interactive`) SHALL start the status server, print its URL, and record the session so `-chat` and `-link` can reach it, and SHALL stream its execution status to that server. A server bind failure SHALL NOT fail the run: the run SHALL proceed without a server after reporting the bind error. The session record SHALL be cleared and the server shut down when the run ends.
 
