@@ -149,85 +149,45 @@ func assertPageServed(t *testing.T, url string) {
 		}
 	}
 
-	// --- theme contract: presence markers (byte-identical to the page source) ---
-	for _, marker := range []string{
-		`id="theme-toggle"`,
-		`:root[data-theme="dark"]`,
-		`:root:not([data-theme="light"])`,
-		`localStorage.getItem("theme")`,
-		`localStorage.setItem("theme", next)`,
-		`localStorage.removeItem("theme")`,
-		"renderThemeToggle",
-	} {
-		if !strings.Contains(page, marker) {
-			t.Errorf("page missing theme marker %q", marker)
-		}
-	}
-
-	// --- theme contract: the two-state implementation must be gone ---
-	for _, gone := range []string{"effectiveTheme", "darkQuery"} {
-		if strings.Contains(page, gone) {
-			t.Errorf("page still contains removed two-state code %q", gone)
-		}
-	}
-
-	// --- anti-flash script must run before the body renders ---
-	flashIdx := strings.Index(page, `localStorage.getItem("theme")`)
-	bodyIdx := strings.Index(page, "<body>")
-	if flashIdx == -1 || bodyIdx == -1 || flashIdx >= bodyIdx {
-		t.Errorf("anti-flash script at byte %d, <body> at byte %d — want script before body", flashIdx, bodyIdx)
-	}
-
-	// --- storage access must be exception-safe in both scripts ---
-	if n := strings.Count(page, "} catch (e) {}"); n < 2 {
-		t.Errorf("} catch (e) {} count = %d, want at least 2 (anti-flash IIFE + toggle handler)", n)
-	}
-
-	// --- dark palette sync: every declaration must appear in exactly the
-	// two dark blocks (:root[data-theme="dark"] and the media query) ---
-	for _, decl := range []string{
-		"--bg: #111111;", "--fg: #eeeeee;", "--card: #111111;",
-		"--muted: #a3a3a3;", "--border: #eeeeee;", "--rule-light: #343434;",
-		"--ok-bg: #111714;", "--ok-fg: #82b995;", "--ok-border: #4f755b;",
-		"--bad-bg: #191211;", "--bad-fg: #d98d80;", "--bad-border: #87584f;",
-		"color-scheme: dark;",
-	} {
-		if n := strings.Count(page, decl); n != 2 {
-			t.Errorf("dark declaration %q count = %d, want exactly 2", decl, n)
-		}
-	}
-	if n := strings.Count(page, "--accent: #e05d38;"); n != 3 {
-		t.Errorf("shared accent declaration count = %d, want light plus two dark blocks", n)
-	}
-
-	// --- light editorial palette ---
+	// --- fixed light palette ---
 	for _, decl := range []string{
 		"color-scheme: light;",
-		"--bg: #ffffff;", "--fg: #111111;", "--card: #ffffff;",
-		"--muted: #767676;", "--border: #111111;", "--rule-light: #e5e5e5;", "--accent: #e05d38;",
-		"--ok-bg: #fbfdfb;", "--ok-fg: #39734f;", "--ok-border: #8eb99c;",
-		"--bad-bg: #fdfbfa;", "--bad-fg: #a04436;", "--bad-border: #d5a198;",
+		"--text: #1a1a1a;", "--text-muted: #6b6b6b;", "--accent: #d97757;",
+		"--bg: #ffffff;", "--bg-muted: #f7f7f8;", "--border: #e5e5e5;",
 	} {
 		if !strings.Contains(page, decl) {
-			t.Errorf(":root light declaration missing or changed: %s", decl)
+			t.Errorf(":root palette declaration missing or changed: %s", decl)
 		}
 	}
 
-	// --- editorial visual contract ---
+	// --- typography and component contract ---
 	for _, marker := range []string{
-		"Georgia, 'Times New Roman', Times, serif",
-		"border-bottom: 1px solid var(--rule-light)",
-		"letter-spacing: 0.08em; text-transform: uppercase",
-		"border-radius: 0",
-		".doc a { color: var(--link); }",
-		":focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }",
+		"font-family: system-ui, -apple-system, sans-serif;",
+		"input, textarea, button { font: inherit; }",
+		"outline: none;",
+		"border-color: var(--accent);",
+		"font-variant-numeric: tabular-nums;",
+		"border-radius: 8px",
+		"font-size: 1.5rem; text-align: center",
+		"font-size: 0.85rem; font-weight: 400; line-height: 1.5",
 		"grid-template-columns: minmax(0, 1fr)",
-		"background: var(--ok-tint); color: var(--ok-fg)",
+		"#2ea043",
+		"#e5484d",
 		`content: "\2192"`,
 		`rx="0" class="seq-actor"`,
 	} {
 		if !strings.Contains(page, marker) {
-			t.Errorf("page missing editorial style marker %q", marker)
+			t.Errorf("page missing typography style marker %q", marker)
+		}
+	}
+
+	for _, gone := range []string{
+		`id="theme-toggle"`, `data-theme="dark"`, "prefers-color-scheme: dark",
+		"Georgia", "ui-monospace", "SF Mono", "Menlo, monospace",
+		"font-weight: 500", "font-weight: 650", "font-weight: 700",
+	} {
+		if strings.Contains(page, gone) {
+			t.Errorf("page still contains conflicting style %q", gone)
 		}
 	}
 }
