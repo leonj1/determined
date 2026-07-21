@@ -66,7 +66,9 @@ func (WebSocketDialer) Connect(ctx context.Context, address models.ChatURL) (mod
 
 // WebSocketAcceptKey computes Sec-WebSocket-Accept as required by RFC 6455.
 func WebSocketAcceptKey(key string) string {
-	digest := sha1.Sum([]byte(key + webSocketGUID))
+	// RFC 6455 section 4.2.2 requires SHA-1 here as a wire-format operation;
+	// Sec-WebSocket-Accept is not a password hash or security signature.
+	digest := sha1.Sum([]byte(key + webSocketGUID)) // #nosec G505 -- protocol-mandated SHA-1
 	return base64.StdEncoding.EncodeToString(digest[:])
 }
 
@@ -89,6 +91,10 @@ func UpgradeWebSocket(w http.ResponseWriter, request *http.Request) (*WebSocketC
 	if err := writeUpgradeResponse(stream, request.Header.Get("Sec-WebSocket-Key")); err != nil {
 		conn.Close() //nolint:errcheck
 		return nil, err
+	}
+	if err := conn.SetDeadline(time.Time{}); err != nil {
+		conn.Close() //nolint:errcheck
+		return nil, fmt.Errorf("clear websocket handshake deadline: %w", err)
 	}
 	return &WebSocketConn{conn: conn, reader: stream.Reader, expectMask: true}, nil
 }

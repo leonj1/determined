@@ -14,6 +14,13 @@ import (
 	"determined/src/models"
 )
 
+const (
+	statusServerReadHeaderTimeout = 5 * time.Second
+	statusServerReadTimeout       = 15 * time.Second
+	statusServerWriteTimeout      = 15 * time.Second
+	statusServerIdleTimeout       = 60 * time.Second
+)
+
 //go:embed plan_status_page.html
 var planStatusPage []byte
 
@@ -94,7 +101,13 @@ func (s *PlanStatusServer) Start() error {
 	mux.HandleFunc("/implement", s.serveImplement)
 	mux.HandleFunc("/chat", s.serveChat)
 	mux.HandleFunc("/chat/ask", s.serveChatAsk)
-	s.server = &http.Server{Handler: mux}
+	s.server = &http.Server{
+		Handler:           mux,
+		ReadHeaderTimeout: statusServerReadHeaderTimeout,
+		ReadTimeout:       statusServerReadTimeout,
+		WriteTimeout:      statusServerWriteTimeout,
+		IdleTimeout:       statusServerIdleTimeout,
+	}
 	go s.server.Serve(listener) //nolint:errcheck // Serve always returns on Shutdown/Close
 
 	return nil
@@ -152,6 +165,9 @@ func (s *PlanStatusServer) serveEvents(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "streaming unsupported", http.StatusInternalServerError)
 		return
 	}
+	// SSE responses intentionally remain open. Each heartbeat proves the
+	// connection is still live, so the general HTTP write timeout does not fit.
+	http.NewResponseController(w).SetWriteDeadline(time.Time{}) //nolint:errcheck
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-store")
 
