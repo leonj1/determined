@@ -139,12 +139,56 @@ test("slug output matches the anchor contract", () => {
   assert.equal(browser.run(`slugify("Café behavior")`), "caf-behavior");
 });
 
-test("only explanation markdown receives heading ids", () => {
+test("heading ids use the requested document anchor contract", () => {
   const browser = createPageEnvironment();
   const plain = browser.run(`markdownToHtml("## Widget behavior")`);
   const explanation = browser.run(`markdownToHtml("## Widget behavior", { headingIds: true })`);
+  const plan = browser.run(`markdownToHtml("## Widget behavior", {
+    headingIds: true, headingPrefix: "plan--", headingLevels: [2, 3, 4]
+  })`);
   assert.equal(plain, "<h2>Widget behavior</h2>");
   assert.equal(explanation, '<h2 id="explain--widget-behavior">Widget behavior</h2>');
+  assert.equal(plan, '<h2 id="plan--widget-behavior">Widget behavior</h2>');
+});
+
+test("the Plan tab has links to each plan section", () => {
+  const browser = createPageEnvironment();
+  const plan = "# Delivery plan\n\n## User flow\n\nDetails.\n\n### Empty state\n\nMore.\n\n" +
+    "## User flow\n\nAgain.\n\n```md\n## Example only\n```";
+  browser.run("renderPlan(" + JSON.stringify(plan) + ")");
+
+  const links = collectDescendants(browser.registry.get("plan-section-list"))
+    .filter((node) => node.tagName === "A");
+  assert.deepEqual(links.map((link) => link.textContent), ["User flow", "Empty state", "User flow"]);
+  assert.deepEqual(links.map((link) => link.href), [
+    "/plan#plan--user-flow",
+    "/plan#plan--empty-state",
+    "/plan#plan--user-flow-2",
+  ]);
+  assert.equal(browser.registry.get("plan-sections").hidden, false);
+});
+
+test("a plan section link opens and scrolls to its section", () => {
+  const browser = createPageEnvironment({ pathname: "/goal", hash: "" });
+  browser.run(`renderPlan("## User flow\\n\\nDetails.")`);
+  const link = collectDescendants(browser.registry.get("plan-section-list"))
+    .find((node) => node.tagName === "A");
+
+  link.listeners.click({ preventDefault: () => {} });
+
+  assert.equal(browser.historyCalls.at(-1), "/plan#plan--user-flow");
+  assert(browser.registry.get("panel-plan").classList.contains("active"));
+  assert.equal(browser.registry.get("plan--user-flow").scrolls.length, 1);
+});
+
+test("direct plan hashes scroll after plan markdown renders", () => {
+  const browser = createPageEnvironment({ pathname: "/plan", hash: "#plan--user-flow" });
+  browser.run(`renderPlan("## User flow\\n\\nDetails.")`);
+  const heading = browser.registry.get("plan--user-flow");
+  assert.equal(heading.scrolls.length, 1);
+  assert(heading.classList.contains("link-flash"));
+  browser.run(`renderPlan("## User flow\\n\\nDetails.")`);
+  assert.equal(browser.registry.get("plan--user-flow").scrolls.length, 0);
 });
 
 test("a missing source still opens the explanation tab", () => {
@@ -244,7 +288,9 @@ test("sticky offsets follow the rendered header and progress heights", () => {
   const browser = createPageEnvironment();
   browser.registry.get("page-header").offsetHeight = 72;
   browser.registry.get("progress").offsetHeight = 31;
+  browser.registry.get("tabs").offsetHeight = 44;
   browser.run(`syncStickyOffsets()`);
   assert.equal(browser.run(`document.documentElement.style["--header-height"]`), "72px");
   assert.equal(browser.run(`document.documentElement.style["--progress-height"]`), "31px");
+  assert.equal(browser.run(`document.documentElement.style["--tabs-height"]`), "44px");
 });

@@ -58,6 +58,16 @@ The status page SHALL display the planning Goal, the Plan, and the sequence of w
 - **WHEN** the AI tool produces `PLAN.md`
 - **THEN** the page's Plan section shows the plan contents
 
+### Requirement: Plan section navigation
+The Plan tab SHALL display a left pane containing links to the plan's markdown
+sections. Selecting a link SHALL take the user to that section of the rendered
+plan.
+
+#### Scenario: Navigate to a plan section
+- **WHEN** `PLAN.md` contains section headings and the user opens the Plan tab
+- **THEN** the left pane lists those sections as links
+- **AND** selecting a link scrolls the corresponding plan section into view
+
 #### Scenario: Waiting for terminal input
 - **WHEN** the session is prompting the user with clarifying questions on the terminal
 - **THEN** the page shows a step entry indicating input is awaited on the terminal
