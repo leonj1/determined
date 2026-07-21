@@ -10,7 +10,7 @@
     color-scheme: light;
     --bg: #ffffff; --fg: #111111; --card: #ffffff; --muted: #767676;
     --border: #111111; --rule-light: #e5e5e5; --accent: #e05d38;
-    --link: #b94727; --header-height: 3.45rem; --progress-height: 1.95rem;
+    --link: #b94727; --header-height: 3.45rem; --progress-height: 1.95rem; --tabs-height: 2.8rem;
     --ok-bg: #fbfdfb; --ok-fg: #39734f; --ok-border: #8eb99c;
     --bad-bg: #fdfbfa; --bad-fg: #a04436; --bad-border: #d5a198;
     --warn-bg: #fdfcf8; --warn-fg: #8a6516; --warn-border: #cfb173;
@@ -227,6 +227,43 @@
   .doc hr { border: none; border-top: 1px solid var(--rule-light); margin: 1rem 0; }
   .doc table:not(.d2h-diff-table) { border-collapse: collapse; margin: 0.5rem 0; }
   .doc table:not(.d2h-diff-table) th, .doc table:not(.d2h-diff-table) td { border: 1px solid var(--rule-light); padding: 0.3rem 0.6rem; }
+  #plan-layout {
+    display: grid; grid-template-columns: minmax(10rem, 14rem) minmax(0, 1fr);
+    gap: 2rem; align-items: start;
+  }
+  #plan-sections[hidden] { display: none; }
+  #plan-sections {
+    position: sticky; top: calc(var(--header-height) + var(--progress-height) + var(--tabs-height) + 1rem);
+    max-height: calc(100vh - var(--header-height) - var(--progress-height) - var(--tabs-height) - 2rem);
+    overflow-y: auto; padding-right: 1rem; border-right: 1px solid var(--rule-light);
+  }
+  #plan-sections-title {
+    margin-bottom: 0.55rem; color: var(--muted);
+    font: 700 0.68rem/1.4 ui-monospace, 'SF Mono', Menlo, monospace;
+    letter-spacing: 0.08em; text-transform: uppercase;
+  }
+  #plan-section-list { margin: 0; padding: 0; list-style: none; }
+  #plan-section-list li { margin: 0; }
+  .plan-section-link {
+    display: block; padding: 0.3rem 0; color: var(--muted); line-height: 1.3;
+    text-decoration: none; overflow-wrap: anywhere;
+  }
+  .plan-section-link:hover { color: var(--accent); text-decoration: underline; text-underline-offset: 2px; }
+  .plan-section-link[data-level="2"] { color: var(--fg); font-weight: 650; }
+  .plan-section-link[data-level="3"] { padding-left: 0.8rem; font-size: 0.92em; }
+  .plan-section-link[data-level="4"] { padding-left: 1.6rem; font-size: 0.85em; }
+  #plan h2, #plan h3, #plan h4 {
+    scroll-margin-top: calc(var(--header-height) + var(--progress-height) + var(--tabs-height) + 1rem);
+  }
+  @media (max-width: 50rem) {
+    #plan-layout { grid-template-columns: 1fr; gap: 1rem; }
+    #plan-sections {
+      position: static; max-height: none; padding: 0 0 0.75rem;
+      border-right: 0; border-bottom: 1px solid var(--rule-light);
+    }
+    #plan-section-list { display: flex; flex-wrap: wrap; gap: 0.35rem 1rem; }
+    .plan-section-link[data-level] { padding: 0; font-size: 0.9em; }
+  }
   #plan-demo[hidden] { display: none; }
   #plan-demo { margin-top: 2rem; }
   #plan-demo h3 {
@@ -466,10 +503,18 @@
     </section>
     <section class="panel" id="panel-plan">
       <div class="panel-head" id="plan-head"><h2 class="panel-title">Plan</h2></div>
-      <div id="plan" class="doc empty">Not produced yet.</div>
-      <div id="plan-demo" hidden>
-        <h3>UI demo</h3>
-        <iframe id="demo-frame" title="Planned UI demo" sandbox="allow-scripts"></iframe>
+      <div id="plan-layout">
+        <nav id="plan-sections" aria-label="Plan sections" hidden>
+          <div id="plan-sections-title">Sections</div>
+          <ol id="plan-section-list"></ol>
+        </nav>
+        <div id="plan-body">
+          <div id="plan" class="doc empty">Not produced yet.</div>
+          <div id="plan-demo" hidden>
+            <h3>UI demo</h3>
+            <iframe id="demo-frame" title="Planned UI demo" sandbox="allow-scripts"></iframe>
+          </div>
+        </div>
       </div>
     </section>
     <section class="panel" id="panel-tests">
@@ -520,6 +565,7 @@
   let quizAttempt = { payload: "", questions: [], questionIndex: 0, answers: [], results: false };
   let renderedDemo = null;
   let pendingExplanationHash = window.location.hash;
+  let pendingPlanHash = window.location.hash;
 
   // Header theme toggle: cycles auto → light → dark → auto. A forced choice
   // is stored under the "theme" key; auto removes it and the page follows
@@ -551,8 +597,10 @@
   function syncStickyOffsets() {
     const headerHeight = el("page-header").offsetHeight || 0;
     const progressHeight = el("progress").offsetHeight || 0;
+    const tabsHeight = el("tabs").offsetHeight || 0;
     document.documentElement.style.setProperty("--header-height", headerHeight + "px");
     document.documentElement.style.setProperty("--progress-height", progressHeight + "px");
+    document.documentElement.style.setProperty("--tabs-height", tabsHeight + "px");
   }
   syncStickyOffsets();
   window.addEventListener("resize", syncStickyOffsets);
@@ -807,9 +855,24 @@
       .replace(/^-+|-+$/g, "");
   }
 
+  function uniqueHeadingSlug(headingText, counts) {
+    const slug = slugify(headingText) || "section";
+    counts[slug] = (counts[slug] || 0) + 1;
+    return slug + (counts[slug] > 1 ? "-" + counts[slug] : "");
+  }
+
+  function headingIdAttribute(options, level, headingText, counts) {
+    if (!options.headingIds) return "";
+    const levels = options.headingLevels || [2];
+    if (!levels.includes(level)) return "";
+    const prefix = options.headingPrefix || "explain--";
+    return ' id="' + prefix + uniqueHeadingSlug(headingText, counts) + '"';
+  }
+
   function markdownToHtml(text, options = {}) {
     const lines = unflattenTables(text).split("\n");
     const out = [];
+    const headingCounts = {};
     let index = 0;
     while (index < lines.length) {
       const line = lines[index];
@@ -823,9 +886,7 @@
       } else if (/^#{1,6}\s+/.test(line)) {
         const level = line.match(/^#+/)[0].length;
         const headingText = line.replace(/^#+\s+/, "");
-        const id = options.headingIds && level === 2
-          ? ' id="explain--' + slugify(headingText) + '"'
-          : "";
+        const id = headingIdAttribute(options, level, headingText, headingCounts);
         out.push("<h" + level + id + ">" + renderInline(headingText) + "</h" + level + ">");
         index++;
       } else if (/^\s*([-*+]|\d+\.)\s+/.test(line)) {
@@ -878,6 +939,76 @@
       node.textContent = text;
       node.classList.add("plain");
     }
+  }
+
+  function planSections(text) {
+    const sections = [];
+    const counts = {};
+    let inFence = false;
+    for (const line of unflattenTables(text || "").split("\n")) {
+      if (line.startsWith("```")) { inFence = !inFence; continue; }
+      if (inFence) continue;
+      const match = line.match(/^(#{2,4})\s+(.+)/);
+      if (!match) continue;
+      sections.push({
+        id: "plan--" + uniqueHeadingSlug(match[2], counts),
+        level: match[1].length,
+        title: match[2],
+      });
+    }
+    return sections;
+  }
+
+  function renderPlanSections(sections) {
+    const pane = el("plan-sections");
+    const list = el("plan-section-list");
+    list.replaceChildren(...sections.map(planSectionEntry));
+    pane.hidden = sections.length === 0;
+  }
+
+  function planSectionEntry(section) {
+    const item = document.createElement("li");
+    const link = document.createElement("a");
+    link.className = "plan-section-link";
+    link.dataset.level = String(section.level);
+    link.href = "/plan#" + section.id;
+    link.textContent = section.title;
+    link.addEventListener("click", (event) => {
+      event.preventDefault();
+      followPlanSection(section.id);
+    });
+    item.append(link);
+    return item;
+  }
+
+  function renderPlan(plan) {
+    setDoc(el("plan"), plan, "Not produced yet.", {
+      headingIds: true,
+      headingPrefix: "plan--",
+      headingLevels: [2, 3, 4],
+    });
+    renderPlanSections(planSections(plan));
+    restorePlanHash();
+  }
+
+  function followPlanSection(sectionId) {
+    history.pushState(null, "", "/plan#" + sectionId);
+    selectTab("plan");
+    scrollToPlanSection(sectionId);
+  }
+
+  function scrollToPlanSection(sectionId) {
+    const target = el(sectionId);
+    if (!target) return;
+    target.scrollIntoView({ behavior: "smooth", block: "start" });
+    flashTarget(target);
+  }
+
+  function restorePlanHash() {
+    if (!pendingPlanHash.startsWith("#plan--")) return;
+    const targetId = pendingPlanHash.slice(1);
+    pendingPlanHash = "";
+    scrollToPlanSection(targetId);
   }
 
   function renderDemo(demo) {
@@ -939,8 +1070,10 @@
 
   window.addEventListener("popstate", () => {
     pendingExplanationHash = window.location.hash;
+    pendingPlanHash = window.location.hash;
     selectTab(tabFromPath());
     selectTestsTab(testsTabFromPath());
+    restorePlanHash();
     restoreExplanationHash();
   });
   selectTab(tabFromPath());
@@ -1143,7 +1276,7 @@
     el("remote").title = status.git.remote || "no remote";
     setText(el("branch"), status.git.branch, "no branch");
     setDoc(el("goal"), status.goal, "Not written yet.");
-    setDoc(el("plan"), status.plan, "Not produced yet.");
+    renderPlan(status.plan);
     renderDemo(status.demo);
     const tests = splitTests(status.tests);
     renderTests(el("tests-journey-doc"), tests.journey, "Not produced yet.");
