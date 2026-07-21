@@ -132,7 +132,8 @@ with `--plan` and `-exec` (the session runs first); see
    is exhausted.
 3. **Select the next step** — re-parse `STEPS.md`, choose exactly the next
    unchecked checkbox, and build a prompt containing its `Done when:`
-   criterion plus the `NOTES.md` memory instructions.
+   criterion plus the `NOTES.md` memory instructions. Exit `1` when the same
+   step has consumed more than `--step-max-runtime` across invocations.
 4. **Invoke the tool** — stream output live and tee it to `logs/`. Kill an
    invocation after `--max-iteration-duration`, retry failures, and exit `1`
    after `--max-consecutive-failures` consecutive failures.
@@ -249,6 +250,7 @@ ideally a clean git checkout, so every change is reviewable and revertible.
 | `--max-step-passes` | `2`   | Max quality assess/refine rounds during planning or review. `0` disables refinement. |
 | `--max-duration`, `-t` | `1h` | Wall-clock budget, checked between iterations. `0` = unlimited. |
 | `--max-iteration-duration` | `15m` | Kill a single tool invocation after this long; the timeout counts as a failed invocation. `0` = unlimited. |
+| `--step-max-runtime` | `15m` | Stop (exit `1`) when a single step's total runtime across invocations exceeds this, checked between invocations. `0` = unlimited. |
 | `--max-consecutive-failures` | `3` | Abort after this many consecutive failed tool invocations; any success resets the count. |
 | `--max-stalled-iterations` | `3` | Stop (exit `3`) after this many consecutive iterations check no new step. `0` disables stall detection. |
 | `--verify`       | `true`   | After each newly checked step, run independent reviewer invocations — a simplicity check, then a correctness verification — either of which unchecks it (recording why in `FIXES.md`) if a materially simpler solution exists or its acceptance criterion is not met. |

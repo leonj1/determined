@@ -56,6 +56,8 @@ func main() {
 		"abort with exit 1 after this many consecutive failed tool invocations; a success resets the count")
 	maxIterationDuration := flag.Duration("max-iteration-duration", 15*time.Minute,
 		"kill a single tool invocation after this long, counting it as a failed invocation; 0 means unlimited")
+	stepMaxRuntime := flag.Duration("step-max-runtime", 15*time.Minute,
+		"stop the run when a single step's total runtime across invocations exceeds this, checked between invocations; 0 means unlimited")
 	verify := flag.Bool("verify", true,
 		"after each newly checked step, run independent reviewer invocations — a simplicity check, then a correctness verification — either of which unchecks it (recording why in FIXES.md) if a materially simpler solution exists or its acceptance criterion is not met")
 	specializedReviews := flag.Bool("specialized-reviews", true,
@@ -151,7 +153,7 @@ func main() {
 	}
 	if proceed {
 		executor := func(ctx context.Context, status services.ExecStatusReporter) models.Outcome {
-			return runLoop(ctx, executionTool, *budget, *maxStalled, *maxFailures, *maxIterationDuration, *verify, *specializedReviews, *gitCheckpoint, status, clock, logs)
+			return runLoop(ctx, executionTool, *budget, *maxStalled, *maxFailures, *maxIterationDuration, *stepMaxRuntime, *verify, *specializedReviews, *gitCheckpoint, status, clock, logs)
 		}
 		if *reviewPlan {
 			outcome = runReviewPlan(ctx, selected, *budget, *maxStepPasses, *maxFailures, clock, logs)
@@ -411,7 +413,7 @@ type planExecutor func(ctx context.Context, status services.ExecStatusReporter) 
 
 // runLoop runs the unattended execute loop against PLAN.md / STEPS.md. A
 // non-nil status reporter streams the run to the interactive status page.
-func runLoop(ctx context.Context, tool models.Tool, budget time.Duration, maxStalled, maxFailures int, maxIterationDuration time.Duration, verify, specializedReviews, gitCheckpoint bool, status services.ExecStatusReporter, clock services.Clock, logs services.LogSink) models.Outcome {
+func runLoop(ctx context.Context, tool models.Tool, budget time.Duration, maxStalled, maxFailures int, maxIterationDuration, stepMaxRuntime time.Duration, verify, specializedReviews, gitCheckpoint bool, status services.ExecStatusReporter, clock services.Clock, logs services.LogSink) models.Outcome {
 	cfg := models.Config{
 		StopFile:               "STOP.md",
 		PlanFile:               "PLAN.md",
@@ -424,6 +426,7 @@ func runLoop(ctx context.Context, tool models.Tool, budget time.Duration, maxSta
 		MaxStalledIterations:   maxStalled,
 		MaxConsecutiveFailures: maxFailures,
 		MaxIterationDuration:   maxIterationDuration,
+		StepMaxRuntime:         stepMaxRuntime,
 		Verify:                 verify,
 		SpecializedReviews:     specializedReviews,
 		GitCheckpoint:          gitCheckpoint,

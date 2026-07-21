@@ -357,6 +357,60 @@ func TestRunStopsWhenTimeBudgetExhausted(t *testing.T) {
 	}
 }
 
+func TestRunStopsWhenOneStepExceedsItsMaxRuntime(t *testing.T) {
+	cfg := config(0)
+	cfg.StepMaxRuntime = 10 * time.Minute
+	clock := &fakeClock{now: time.Now()}
+	var terminal bytes.Buffer
+	runner := &fakeRunner{script: func(int, io.Writer) error {
+		clock.advance(6 * time.Minute)
+		return nil // never checks the step
+	}}
+	o := services.NewOrchestrator(runner, stepsFileStore(), clock, &fakeLogSink{}, &terminal, cfg)
+
+	outcome := o.Run(context.Background())
+
+	if outcome != models.OutcomeStepTimeout || outcome.ExitCode() != 1 {
+		t.Fatalf("expected a step-timeout stop with exit 1, got %v (exit %d)", outcome, outcome.ExitCode())
+	}
+	if runner.calls != 2 {
+		t.Fatalf("expected the in-flight invocation to finish before the cap stops the run, got %d", runner.calls)
+	}
+	if !strings.Contains(terminal.String(), "step 1 has been running for over 10m0s") {
+		t.Fatalf("expected a terminal message naming the overrunning step, got:\n%s", terminal.String())
+	}
+}
+
+func TestStepMaxRuntimeRestartsWithEachNewStep(t *testing.T) {
+	cfg := config(0)
+	cfg.StepMaxRuntime = 10 * time.Minute
+	clock := &fakeClock{now: time.Now()}
+	fs := stepsFileStore()
+	runner := &fakeRunner{script: func(call int, _ io.Writer) error {
+		clock.advance(6 * time.Minute) // 24m total, but under 10m per step
+		switch call {
+		case 1:
+			fs.Write("STEPS.md", twoStepsFirstChecked)
+		case 2:
+			fs.Write("STEPS.md", twoStepsAllChecked)
+		case 3: // the docs update
+		case 4: // the whole-plan audit approves
+			fs.Write("STOP.md", "audit: plan satisfied")
+		}
+		return nil
+	}}
+	o := services.NewOrchestrator(runner, fs, clock, &fakeLogSink{}, io.Discard, cfg)
+
+	outcome := o.Run(context.Background())
+
+	if outcome != models.OutcomeStopped || outcome.ExitCode() != 0 {
+		t.Fatalf("expected each step's timer to restart so the run completes, got %v (exit %d)", outcome, outcome.ExitCode())
+	}
+	if runner.calls != 4 {
+		t.Fatalf("expected all 4 invocations to run, got %d", runner.calls)
+	}
+}
+
 func TestRunStallsAfterConsecutiveIterationsWithoutProgress(t *testing.T) {
 	cfg := config(0)
 	cfg.MaxStalledIterations = 3
