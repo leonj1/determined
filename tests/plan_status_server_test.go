@@ -134,7 +134,7 @@ func assertPageServed(t *testing.T, url string) {
 		`href="/assets/diff2html.min.css"`, `src="/assets/diff2html.min.js"`,
 		`src="/assets/marked.min.js"`,
 		`data-tab="quiz"`, `id="quiz-state"`, `id="quiz-card"`, "renderQuiz",
-		"quizPhase", "Question ", "Score: ", "Retake quiz",
+		"quizPhase", "Question ", "Score: ", "Retake quiz", "shuffleQuizQuestions",
 		"slugify", "sourceSection", "quiz-source-link", "followQuizSource", `headingIds: true`,
 		"pendingExplanationHash", "restoreExplanationHash",
 		"syncStickyOffsets", "renderTabStates", "renderDocumentTitle",

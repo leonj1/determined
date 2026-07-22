@@ -283,6 +283,25 @@ test("quiz results retain links to every source section", () => {
   ]);
 });
 
+test("the interactive quiz randomizes choices without losing the correct answer", () => {
+  const browser = createPageEnvironment();
+  browser.run(`
+    Math.random = () => 0;
+    renderQuiz({ quizPhase: "succeeded", quiz: [{
+      question: "What changed?",
+      choices: ["Correct", "Second", "Third", "Fourth"],
+      correctIndex: 0,
+      rationale: "The explanation identifies the correct change.",
+      sourceSection: "Widget behavior"
+    }] });
+  `);
+
+  assert.equal(browser.run(`quizAttempt.questions[0].choices.join(",")`), "Second,Third,Fourth,Correct");
+  assert.equal(browser.run(`quizAttempt.questions[0].correctIndex`), 3);
+  browser.run(`answerQuiz(3)`);
+  assert.equal(browser.run(`quizScore()`), 1);
+});
+
 test("direct explanation hashes scroll after markdown renders", () => {
   const browser = createPageEnvironment({ pathname: "/explain", hash: "#explain--widget-behavior" });
   browser.run(`renderExplanation({ explainPhase: "succeeded", explanation: "Intro.\\n\\n## Widget behavior\\n\\nDetails." })`);

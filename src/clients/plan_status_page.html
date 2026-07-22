@@ -1332,8 +1332,29 @@
     const questions = status.quiz || [];
     const payload = JSON.stringify(questions);
     if (payload === quizAttempt.payload) return;
-    quizAttempt = { payload, questions, questionIndex: 0, answers: [], results: false };
+    quizAttempt = {
+      payload, questions: shuffleQuizQuestions(questions), questionIndex: 0, answers: [], results: false
+    };
     renderQuizAttempt();
+  }
+
+  function shuffleQuizQuestions(questions, random = Math.random) {
+    return questions.map((question) => shuffleQuizQuestion(question, random));
+  }
+
+  function shuffleQuizQuestion(question, random) {
+    const choices = question.choices.map((text, index) => ({
+      text, correct: index === question.correctIndex
+    }));
+    for (let index = choices.length - 1; index > 0; index--) {
+      const swapIndex = Math.floor(random() * (index + 1));
+      [choices[index], choices[swapIndex]] = [choices[swapIndex], choices[index]];
+    }
+    return {
+      ...question,
+      choices: choices.map((choice) => choice.text),
+      correctIndex: choices.findIndex((choice) => choice.correct),
+    };
   }
 
   function showQuizPhase(state, phase) {
@@ -1476,7 +1497,13 @@
   }
 
   function retakeQuiz() {
-    quizAttempt = { ...quizAttempt, questionIndex: 0, answers: [], results: false };
+    quizAttempt = {
+      ...quizAttempt,
+      questions: shuffleQuizQuestions(quizAttempt.questions),
+      questionIndex: 0,
+      answers: [],
+      results: false,
+    };
     renderQuizAttempt();
   }
 
