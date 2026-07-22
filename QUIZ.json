@@ -1,0 +1,64 @@
+{
+  "questions": [
+    {
+      "question": "In the rewritten markdownToHtml, why does the lexer run separately from the parser instead of calling md.parse directly?",
+      "choices": [
+        "So top-level heading tokens can be tagged plansectionEligible before rendering, since the renderer alone cannot tell a top-level heading from one nested in a blockquote",
+        "Because marked's parse method does not support renderer overrides",
+        "To allow the highlighter to run asynchronously on code tokens",
+        "Because unflattenTables must run between lexing and parsing"
+      ],
+      "correctIndex": 0,
+      "rationale": "The explanation says the lexer runs separately so top-level heading tokens can be tagged plansectionEligible, which the renderer alone cannot determine.",
+      "sourceSection": "Rewrite markdownToHtml onto marked renderer overrides"
+    },
+    {
+      "question": "What desync problem did the old planSections line scan have that the marked-lexer rewrite fixes?",
+      "choices": [
+        "Its naive ``` fence toggle could desync from the renderer on tilde (~~~) and indented fences, producing TOC anchors pointing at ids the body never emitted",
+        "It counted setext headings that the renderer ignored",
+        "It generated slugs with a different counter format like plan--a-1",
+        "It scanned headings of every depth instead of depths 2 through 4"
+      ],
+      "correctIndex": 0,
+      "rationale": "The old scan's naive fence toggle could disagree with the renderer on tilde and indented fences, causing TOC anchors and body ids to mismatch.",
+      "sourceSection": "Derive planSections from the marked lexer"
+    },
+    {
+      "question": "How does isSafeUrl defeat bypasses like a java\\tscript: scheme?",
+      "choices": [
+        "It normalizes away control characters that browsers strip before scheme parsing",
+        "It resolves the URL against the page origin before checking the scheme",
+        "It rejects any URL containing a backslash",
+        "It uses the URL constructor and catches parse exceptions"
+      ],
+      "correctIndex": 0,
+      "rationale": "isSafeUrl normalizes away control characters browsers strip before scheme parsing, so split schemes like java\\tscript: are still caught.",
+      "sourceSection": "Block dangerous URL schemes in links and images"
+    },
+    {
+      "question": "Which helper survives the deletion of the hand-rolled inline and table renderers, and why?",
+      "choices": [
+        "unflattenTables, because it still preprocesses one-line-flattened tables into proper multi-line input for marked's GFM table tokenizer",
+        "renderInline, because marked cannot handle code-span stashing",
+        "renderTable, because GFM tables need custom row splitting",
+        "isSeparatorRow, because marked has no separator-row detection"
+      ],
+      "correctIndex": 0,
+      "rationale": "unflattenTables remains as a string preprocessor so flattened tables reach marked's GFM table tokenizer as multi-line input, while the inline and table helpers are removed as dead code.",
+      "sourceSection": "Delete the hand-rolled inline and table renderers"
+    },
+    {
+      "question": "How is the marked library delivered to the plan status page?",
+      "choices": [
+        "Vendored as a pinned UMD bundle at version 16.4.2, embedded in the Go server's embed.FS, and served from /assets/marked.min.js with no CDN or build step",
+        "Fetched at runtime from a CDN with a subresource integrity hash",
+        "Bundled into the page script by a new npm build step",
+        "Installed as a Go module dependency compiled into the server binary"
+      ],
+      "correctIndex": 0,
+      "rationale": "The library is vendored as a pinned marked@16.4.2 UMD bundle, added to embed.FS, and served from /assets/marked.min.js with no CDN or build step.",
+      "sourceSection": "Vendor, embed, and serve the marked asset"
+    }
+  ]
+}
