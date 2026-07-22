@@ -47,6 +47,14 @@ type ImplementSink interface {
 	RequestImplement()
 }
 
+// TaskControlSink receives the page's Skip and Stop commands for the active
+// task, reporting whether an active task existed to act on. The real
+// implementation is services.PlanStatusService.
+type TaskControlSink interface {
+	RequestSkipActiveTask() bool
+	RequestStopRun() bool
+}
+
 // ChatResponder answers requests and derives pushed events from status diffs.
 type ChatResponder interface {
 	Answer(models.ChatRequest) models.ChatResponse
@@ -60,6 +68,7 @@ type PlanStatusServer struct {
 	source      PlanStatusSource
 	annotations AnnotationSink
 	implement   ImplementSink
+	taskControl TaskControlSink
 	clock       clock
 	listener    net.Listener
 	server      *http.Server
@@ -75,6 +84,12 @@ func NewPlanStatusServer(source PlanStatusSource, annotations AnnotationSink, im
 		source: source, annotations: annotations, implement: implement, clock: clock,
 		connections: make(map[*WebSocketConn]struct{}),
 	}
+}
+
+// WithTaskControl enables the page's Skip and Stop commands on the active task.
+func (s *PlanStatusServer) WithTaskControl(sink TaskControlSink) *PlanStatusServer {
+	s.taskControl = sink
+	return s
 }
 
 // WithChatResponder enables the read-only chat endpoints.
@@ -99,6 +114,8 @@ func (s *PlanStatusServer) Start() error {
 	mux.HandleFunc("/events", s.serveEvents)
 	mux.HandleFunc("/annotate", s.serveAnnotate)
 	mux.HandleFunc("/implement", s.serveImplement)
+	mux.HandleFunc("/task/skip", s.serveTaskSkip)
+	mux.HandleFunc("/task/stop", s.serveTaskStop)
 	mux.HandleFunc("/chat", s.serveChat)
 	mux.HandleFunc("/chat/ask", s.serveChatAsk)
 	s.server = &http.Server{
@@ -226,6 +243,37 @@ func (s *PlanStatusServer) serveImplement(w http.ResponseWriter, r *http.Request
 		return
 	}
 	s.implement.RequestImplement()
+	w.WriteHeader(http.StatusAccepted)
+}
+
+// serveTaskSkip relays the page's confirmed Skip: abort the active task and
+// let the run move on.
+func (s *PlanStatusServer) serveTaskSkip(w http.ResponseWriter, r *http.Request) {
+	s.serveTaskAction(w, r, func(sink TaskControlSink) bool { return sink.RequestSkipActiveTask() })
+}
+
+// serveTaskStop relays the page's confirmed Stop: abort the active task and
+// end the whole run.
+func (s *PlanStatusServer) serveTaskStop(w http.ResponseWriter, r *http.Request) {
+	s.serveTaskAction(w, r, func(sink TaskControlSink) bool { return sink.RequestStopRun() })
+}
+
+// serveTaskAction applies one task command, answering 409 when no active task
+// exists to act on — the invocation may have finished between the page's last
+// snapshot and the click.
+func (s *PlanStatusServer) serveTaskAction(w http.ResponseWriter, r *http.Request, request func(TaskControlSink) bool) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if s.taskControl == nil {
+		http.Error(w, "task control unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	if !request(s.taskControl) {
+		http.Error(w, "no active task", http.StatusConflict)
+		return
+	}
 	w.WriteHeader(http.StatusAccepted)
 }
 

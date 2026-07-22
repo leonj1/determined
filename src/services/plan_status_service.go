@@ -1,6 +1,7 @@
 package services
 
 import (
+	"context"
 	"sync"
 	"time"
 
@@ -20,6 +21,13 @@ type PlanStatusService struct {
 	subscribers []chan models.PlanSessionStatus
 	annotations chan struct{}
 	implement   chan struct{}
+
+	// taskCancel kills the tool invocation currently running, and taskAction
+	// records the page's verdict on it (skip or stop) for the orchestrator to
+	// collect once the invocation settles. Both are nil/none between
+	// invocations, when the page's Skip and Stop have nothing to act on.
+	taskCancel context.CancelFunc
+	taskAction models.TaskAction
 }
 
 // NewPlanStatusService wires a PlanStatusService with the session's git
@@ -196,6 +204,68 @@ func (s *PlanStatusService) TakeAnnotation() (models.Annotation, bool) {
 // per burst of submissions.
 func (s *PlanStatusService) AnnotationSignal() <-chan struct{} {
 	return s.annotations
+}
+
+// BeginTask registers the cancel function that kills the tool invocation now
+// running, clearing any stale verdict, and advertises the page's Skip and Stop
+// controls on the active activity entry.
+func (s *PlanStatusService) BeginTask(cancel context.CancelFunc) {
+	s.update(func(st models.PlanSessionStatus) models.PlanSessionStatus {
+		s.taskCancel = cancel
+		s.taskAction = models.TaskActionNone
+		st.TaskControlAvailable = true
+		return st
+	})
+}
+
+// EndTask deregisters the finished invocation, hiding the page's Skip and Stop
+// controls; requests arriving after this are rejected rather than recorded.
+func (s *PlanStatusService) EndTask() {
+	s.update(func(st models.PlanSessionStatus) models.PlanSessionStatus {
+		s.taskCancel = nil
+		st.TaskControlAvailable = false
+		return st
+	})
+}
+
+// TakeTaskAction returns the page's verdict on the invocation that just
+// settled and clears it, so one click never bleeds into a later invocation.
+func (s *PlanStatusService) TakeTaskAction() models.TaskAction {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	action := s.taskAction
+	s.taskAction = models.TaskActionNone
+	return action
+}
+
+// RequestSkipActiveTask asks the run to abort the active task and move on. It
+// reports whether an active task existed to act on.
+func (s *PlanStatusService) RequestSkipActiveTask() bool {
+	return s.requestTaskAction(models.TaskActionSkip)
+}
+
+// RequestStopRun asks the run to abort the active task and end the whole run.
+// It reports whether an active task existed to act on.
+func (s *PlanStatusService) RequestStopRun() bool {
+	return s.requestTaskAction(models.TaskActionStop)
+}
+
+// requestTaskAction records the verdict and kills the active invocation. A
+// stop already recorded is never downgraded by a racing skip click, since
+// ending the run is the stronger promise made to the user.
+func (s *PlanStatusService) requestTaskAction(action models.TaskAction) bool {
+	s.mu.Lock()
+	cancel := s.taskCancel
+	if cancel == nil {
+		s.mu.Unlock()
+		return false
+	}
+	if s.taskAction != models.TaskActionStop {
+		s.taskAction = action
+	}
+	s.mu.Unlock()
+	cancel()
+	return true
 }
 
 // OfferImplement marks the session as accepting an Implement request from the

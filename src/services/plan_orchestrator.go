@@ -58,12 +58,18 @@ type PlanOrchestrator struct {
 	logs     LogSink
 	terminal io.Writer
 	status   PlanStatusReporter
+	control  TaskController
 	cfg      models.PlanConfig
 	docs     *PlanDocumentPublisher
 
 	iteration  int
 	goalSeeded bool
 	failures   int
+	// lastSkipped reports whether the most recent invocation was aborted by
+	// the user's Skip on the status page: the loop treats it as done, and
+	// callers that need the invocation's artifact decide what its absence
+	// means.
+	lastSkipped bool
 }
 
 // NewPlanOrchestrator wires a PlanOrchestrator from its dependencies.
@@ -92,6 +98,13 @@ func NewPlanOrchestrator(
 // orchestrator for chaining. Without one the session runs terminal-only.
 func (o *PlanOrchestrator) WithStatusReporter(status PlanStatusReporter) *PlanOrchestrator {
 	o.status = status
+	return o
+}
+
+// WithTaskControl attaches the status page's task controller and returns the
+// orchestrator for chaining. Without one the page cannot skip or stop tasks.
+func (o *PlanOrchestrator) WithTaskControl(control TaskController) *PlanOrchestrator {
+	o.control = control
 	return o
 }
 
@@ -328,6 +341,12 @@ func (o *PlanOrchestrator) refine(ctx context.Context, deadline time.Time) model
 			ctx, o.cfg.AssessInvocation, o.assessmentProgress()); stop {
 			return outcome
 		}
+		if o.lastSkipped {
+			// The user skipped the assessment: accept the plan as it stands
+			// rather than failing on the report the assessor never wrote.
+			o.files.Remove(o.cfg.AssessmentFile)
+			return models.OutcomePlanReady
+		}
 		content, err := o.files.Read(o.cfg.AssessmentFile)
 		if err != nil {
 			fmt.Fprintf(o.terminal, "determined: could not read %s: %v\n", o.cfg.AssessmentFile, err)
@@ -361,22 +380,46 @@ func (o *PlanOrchestrator) refine(ctx context.Context, deadline time.Time) model
 }
 
 // runInvocation runs a tool invocation, retrying transient failures until the
-// consecutive-failure cap is hit. It reports whether the loop should stop.
+// consecutive-failure cap is hit. It reports whether the loop should stop. A
+// Stop from the status page ends the session; a Skip records the invocation
+// as user-skipped and returns as though it completed, leaving each caller's
+// artifact checks to decide what the missing work means.
 func (o *PlanOrchestrator) runInvocation(
 	ctx context.Context,
 	inv models.Invocation,
 	progress progressMessage,
 ) (models.Outcome, bool) {
+	o.lastSkipped = false
 	for {
 		err := o.attemptInvocation(ctx, inv, progress)
+		action := o.settleTask()
+		if action == models.TaskActionStop {
+			fmt.Fprintln(o.terminal, "determined: run stopped from the status page")
+			return models.OutcomeUserStopped, true
+		}
 		if err == nil {
 			o.failures = 0
 			return models.OutcomePlanReady, false // outcome ignored when stop is false
+		}
+		if action == models.TaskActionSkip {
+			o.lastSkipped = true
+			fmt.Fprintf(o.terminal, "determined: task %q skipped from the status page\n", progress)
+			return models.OutcomePlanReady, false
 		}
 		if outcome, stop := o.recordFailure(ctx, err); stop {
 			return outcome, stop
 		}
 	}
+}
+
+// settleTask deregisters the finished invocation with the task controller and
+// returns the Skip or Stop verdict the page recorded against it while it ran.
+func (o *PlanOrchestrator) settleTask() models.TaskAction {
+	if o.control == nil {
+		return models.TaskActionNone
+	}
+	o.control.EndTask()
+	return o.control.TakeTaskAction()
 }
 
 // attemptInvocation runs one tool invocation, teeing its output to the
@@ -402,7 +445,15 @@ func (o *PlanOrchestrator) attemptInvocation(
 		defer statusLog.Flush()
 		out = io.MultiWriter(out, statusLog)
 	}
-	if err := o.runner.Run(ctx, inv, out); err != nil {
+	// The invocation gets its own cancellable context, registered with the
+	// task controller so the status page's Skip and Stop can kill just this
+	// child process.
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	if o.control != nil {
+		o.control.BeginTask(cancel)
+	}
+	if err := o.runner.Run(runCtx, inv, out); err != nil {
 		fmt.Fprintf(out, "determined: tool invocation failed: %v\n", err)
 		return err
 	}

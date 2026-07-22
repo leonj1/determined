@@ -112,6 +112,52 @@ func AllStepsComplete(steps []Step) bool {
 	return true
 }
 
+// SkipStep returns content with the index-th checkbox step (in ParseSteps
+// order) marked checked, reporting whether that step existed unchecked. The
+// traversal mirrors ParseSteps' state machine so fenced code inside a step
+// never miscounts the checkboxes.
+func SkipStep(content string, index int) (string, bool) {
+	lines := strings.Split(content, "\n")
+	count := -1
+	inFence := false
+	inItem := false
+	for i, line := range lines {
+		if !inFence {
+			if step, ok := checkboxItem(line); ok {
+				count++
+				inItem = true
+				if count == index {
+					if step.Completed {
+						return content, false
+					}
+					lines[i] = strings.Replace(line, "[ ]", "[x]", 1)
+					return strings.Join(lines, "\n"), true
+				}
+				continue
+			}
+		}
+		if !inItem {
+			continue
+		}
+		trimmed := strings.TrimSpace(line)
+		switch {
+		case inFence:
+			if strings.HasPrefix(trimmed, "```") {
+				inFence = false
+			}
+		case trimmed == "":
+			inItem = false
+		case hasFoldPrefix(trimmed, purposePrefix), hasFoldPrefix(trimmed, doneWhenPrefix):
+		case strings.HasPrefix(trimmed, "```"):
+			inFence = true
+		case isIndented(line):
+		default:
+			inItem = false
+		}
+	}
+	return content, false
+}
+
 // CompletedStepCount returns how many steps are checked complete.
 func CompletedStepCount(steps []Step) int {
 	n := 0

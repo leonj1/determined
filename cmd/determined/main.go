@@ -439,6 +439,11 @@ func runLoop(ctx context.Context, tool models.Tool, budget time.Duration, maxSta
 		os.Stdout,
 		cfg,
 	).WithStatusReporter(status)
+	// The status service doubles as the page's task controller, so the Skip
+	// and Stop buttons on the active activity entry can reach the loop.
+	if control, ok := status.(services.TaskController); ok {
+		orchestrator.WithTaskControl(control)
+	}
 	return orchestrator.Run(ctx)
 }
 
@@ -522,7 +527,7 @@ func runInteractivePlan(ctx context.Context, orchestrator *services.PlanOrchestr
 		return models.OutcomeDroidFailed
 	}
 	defer cleanup()
-	outcome := orchestrator.WithStatusReporter(status).Run(ctx)
+	outcome := orchestrator.WithStatusReporter(status).WithTaskControl(status).Run(ctx)
 	if ctx.Err() != nil {
 		return outcome
 	}
@@ -539,7 +544,8 @@ func runInteractivePlan(ctx context.Context, orchestrator *services.PlanOrchestr
 
 func startStatusSession(status *services.PlanStatusService, clock services.Clock) (*clients.PlanStatusServer, func(), bool) {
 	chat := services.NewChatService(status, clock)
-	server := clients.NewPlanStatusServer(status, status, status, clock).WithChatResponder(chat)
+	server := clients.NewPlanStatusServer(status, status, status, clock).
+		WithChatResponder(chat).WithTaskControl(status)
 	if err := server.Start(); err != nil {
 		fmt.Fprintf(os.Stderr, "determined: %v\n", err)
 		return nil, func() {}, false
@@ -595,7 +601,7 @@ func runInteractiveExec(ctx context.Context, tool models.Tool, budget time.Durat
 	orchestrator := services.NewPlanOrchestrator(
 		clients.NewExecCommandRunner(), files, clients.NewStdinPrompter(os.Stdout, os.Stdin),
 		clock, logs, os.Stdout, cfg,
-	).WithStatusReporter(status)
+	).WithStatusReporter(status).WithTaskControl(status)
 	seedResumedSession(status, services.NewPlanDocumentPublisher(files, cfg))
 	outcome := execute(ctx, status)
 	if ctx.Err() != nil {

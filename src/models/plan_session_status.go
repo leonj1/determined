@@ -154,6 +154,11 @@ type PlanSessionStatus struct {
 	// and not yet applied by the AI tool.
 	PendingAnnotations []Annotation `json:"pendingAnnotations"`
 
+	// TaskControlAvailable reports whether a cancellable tool invocation is
+	// running right now, so the page can offer Skip and Stop on the active
+	// activity entry only while those commands can actually take effect.
+	TaskControlAvailable bool `json:"taskControlAvailable"`
+
 	// ImplementOffered reports whether the session accepts an Implement request
 	// from the page once planning succeeds.
 	ImplementOffered bool `json:"implementOffered"`
