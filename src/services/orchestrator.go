@@ -63,7 +63,7 @@ type TaskController interface {
 // yielding StallDecisionCancel). The real implementation is PlanStatusService;
 // a nil resolver keeps the terminal stop behavior.
 type StallResolver interface {
-	AwaitStallChoice(ctx context.Context, stepTitle string) models.StallGuidance
+	AwaitStallChoice(ctx context.Context, prompt models.StallPrompt) models.StallGuidance
 }
 
 // execOutputSink adapts an ExecStatusReporter onto LogOutputSink so
@@ -222,7 +222,7 @@ func (o *Orchestrator) resolveStall(ctx context.Context) (models.Outcome, bool) 
 	fmt.Fprintf(o.terminal,
 		"determined: no step checked in %d consecutive iterations; awaiting a tiebreak choice from the status page\n",
 		o.cfg.MaxStalledIterations)
-	guidance := o.stall.AwaitStallChoice(ctx, o.stalledStepTitle())
+	guidance := o.stall.AwaitStallChoice(ctx, o.stallPrompt())
 	return o.applyStallDecision(guidance)
 }
 
@@ -234,6 +234,48 @@ func (o *Orchestrator) stalledStepTitle() string {
 		return step.Text
 	}
 	return ""
+}
+
+// stallPrompt assembles what the tiebreak modal weighs: the stalled step's
+// title plus the two recommendations, each phrased against that step so the
+// user reads a concrete side-by-side choice. The stall count is included so
+// the user knows how long the deadlock has run.
+func (o *Orchestrator) stallPrompt() models.StallPrompt {
+	title := o.stalledStepTitle()
+	return models.StallPrompt{
+		StepTitle: title,
+		Options: []models.StallOption{
+			{
+				Decision: models.StallDecisionAcceptWorker,
+				Title:    "Accept the worker",
+				Synopsis: fmt.Sprintf(
+					"Trust the worker's claim that %q is done: check it and resume, "+
+						"overriding the reviewer's objection. Choose this when the "+
+						"reviewer keeps flagging a nit the worker has already addressed "+
+						"and the deadlock is blocking real progress.",
+					stepLabel(title)),
+			},
+			{
+				Decision: models.StallDecisionHoldReviewer,
+				Title:    "Hold for the reviewer",
+				Synopsis: fmt.Sprintf(
+					"Keep %q unchecked and retry, giving the reviewer's objection "+
+						"another iteration to land. Choose this when the reviewer is "+
+						"catching a genuine defect and the worker should keep fixing it "+
+						"rather than declaring the step done.",
+					stepLabel(title)),
+			},
+		},
+	}
+}
+
+// stepLabel gives the stalled step a readable name for the synopsis text,
+// falling back to a generic phrase when no step title parsed.
+func stepLabel(title string) string {
+	if strings.TrimSpace(title) == "" {
+		return "the stalled step"
+	}
+	return title
 }
 
 // applyStallDecision enacts the page's verdict: accept the worker (check the

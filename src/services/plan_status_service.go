@@ -278,9 +278,9 @@ func (s *PlanStatusService) requestTaskAction(action models.TaskAction) bool {
 // the user submits a verdict or ctx cancels. A cancel returns
 // StallDecisionCancel so the caller falls back to today's stop behavior. The
 // modal flag is always cleared before returning.
-func (s *PlanStatusService) AwaitStallChoice(ctx context.Context, stepTitle string) models.StallGuidance {
+func (s *PlanStatusService) AwaitStallChoice(ctx context.Context, prompt models.StallPrompt) models.StallGuidance {
 	ch := make(chan models.StallGuidance, 1)
-	s.openStallChoice(ch, stepTitle)
+	s.openStallChoice(ch, prompt)
 	defer s.closeStallChoice()
 	select {
 	case <-ctx.Done():
@@ -290,13 +290,14 @@ func (s *PlanStatusService) AwaitStallChoice(ctx context.Context, stepTitle stri
 	}
 }
 
-func (s *PlanStatusService) openStallChoice(ch chan models.StallGuidance, stepTitle string) {
+func (s *PlanStatusService) openStallChoice(ch chan models.StallGuidance, prompt models.StallPrompt) {
 	s.mu.Lock()
 	s.stallChoice = ch
 	s.mu.Unlock()
 	s.update(func(st models.PlanSessionStatus) models.PlanSessionStatus {
 		st.AwaitingStallChoice = true
-		st.StallChoicePrompt = stepTitle
+		st.StallChoicePrompt = prompt.StepTitle
+		st.StallChoiceOptions = prompt.Options
 		return st
 	})
 }
@@ -308,6 +309,7 @@ func (s *PlanStatusService) closeStallChoice() {
 	s.update(func(st models.PlanSessionStatus) models.PlanSessionStatus {
 		st.AwaitingStallChoice = false
 		st.StallChoicePrompt = ""
+		st.StallChoiceOptions = nil
 		return st
 	})
 }

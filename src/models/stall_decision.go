@@ -24,6 +24,26 @@ const (
 	StallDecisionCancel StallDecision = "cancel"
 )
 
+// StallOption is one side-by-side recommendation the tiebreak modal offers.
+// Decision is the verdict submitting this option yields, Title is its short
+// heading, and Synopsis is the succinct case for choosing it, phrased for the
+// specific stalled step so the two options read as a real side-by-side choice
+// rather than generic "worker vs hold" labels.
+type StallOption struct {
+	Decision StallDecision `json:"decision"`
+	Title    string        `json:"title"`
+	Synopsis string        `json:"synopsis"`
+}
+
+// StallPrompt is everything the run hands the tiebreak modal: the stalled
+// step's title and the two recommendations to weigh side by side. Options
+// always holds exactly the accept-worker and hold-reviewer choices, in that
+// order; the modal renders the free-form field and Cancel separately.
+type StallPrompt struct {
+	StepTitle string        `json:"stepTitle"`
+	Options   []StallOption `json:"options"`
+}
+
 // StallGuidance is the resolved verdict the status page returns to the run.
 // Comment is the freehand instruction and is meaningful only for
 // StallDecisionOther.

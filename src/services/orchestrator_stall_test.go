@@ -18,10 +18,12 @@ type fakeStallResolver struct {
 	verdicts []models.StallGuidance
 	calls    int
 	titles   []string
+	prompts  []models.StallPrompt
 }
 
-func (r *fakeStallResolver) AwaitStallChoice(_ context.Context, stepTitle string) models.StallGuidance {
-	r.titles = append(r.titles, stepTitle)
+func (r *fakeStallResolver) AwaitStallChoice(_ context.Context, prompt models.StallPrompt) models.StallGuidance {
+	r.titles = append(r.titles, prompt.StepTitle)
+	r.prompts = append(r.prompts, prompt)
 	i := r.calls
 	r.calls++
 	if i < len(r.verdicts) {
@@ -54,6 +56,21 @@ func TestStallCancelStopsTheRunAsBefore(t *testing.T) {
 	}
 	if resolver.titles[0] != "1. Add the widget." {
 		t.Fatalf("expected the stalled step's title in the prompt, got %q", resolver.titles[0])
+	}
+	opts := resolver.prompts[0].Options
+	if len(opts) != 2 {
+		t.Fatalf("expected exactly two side-by-side recommendations, got %d", len(opts))
+	}
+	if opts[0].Decision != models.StallDecisionAcceptWorker || opts[1].Decision != models.StallDecisionHoldReviewer {
+		t.Fatalf("expected accept-worker then hold-reviewer, got %q then %q", opts[0].Decision, opts[1].Decision)
+	}
+	for _, opt := range opts {
+		if opt.Title == "" || opt.Synopsis == "" {
+			t.Fatalf("every recommendation needs a title and synopsis, got %+v", opt)
+		}
+		if !strings.Contains(opt.Synopsis, "1. Add the widget.") {
+			t.Fatalf("synopsis should name the stalled step, got %q", opt.Synopsis)
+		}
 	}
 }
 
