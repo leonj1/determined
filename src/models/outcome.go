@@ -39,6 +39,9 @@ const (
 	// OutcomeStepTimeout means a single step's cumulative runtime exceeded the
 	// per-step cap, so the run stopped instead of grinding on one step forever.
 	OutcomeStepTimeout
+	// OutcomeUserStopped means the user ended the run from the status page's
+	// Stop control before it could finish.
+	OutcomeUserStopped
 )
 
 // ExitCode maps an outcome to a process exit code: 0 only when the work
@@ -87,6 +90,8 @@ func (o Outcome) String() string {
 		return "aborted (tool produced no BDD test draft)"
 	case OutcomeStepTimeout:
 		return "stopped (a single step exceeded its max runtime)"
+	case OutcomeUserStopped:
+		return "stopped (run stopped from the status page)"
 	default:
 		return "unknown"
 	}

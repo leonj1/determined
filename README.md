@@ -204,6 +204,15 @@ each one is for:
 | `running reliability and maintainability review` | Independent specialist pass for error handling, races, test gaps, and convention consistency, with the same reopen-on-finding behavior. |
 | `auditing the whole plan` | Compare the implementation against `PLAN.md`; reopen unsatisfied steps, or create `STOP.md` when the entire plan is satisfied. |
 
+While a task is running, the status page's Activity pane shows **Skip** and
+**Stop** buttons next to the active entry; both ask for confirmation before
+acting. Skip aborts just that task's tool invocation and the run moves on: a
+skipped work step is checked off in `STEPS.md` without being done or verified
+(the override is recorded in `NOTES.md`), and a skipped review is waived.
+Stop aborts the active task and ends the whole run; completed steps stay
+checked, so the page's Implement button (or rerunning determined) resumes
+from the remaining ones.
+
 ## Supported tools
 
 Pick the AI coding CLI with `--tool`. Each iteration runs the tool's own

@@ -45,9 +45,15 @@ class FakeNode {
     for (const match of value.matchAll(/ id="([^"]+)"/g)) new FakeNode("h2", this.registry).id = match[1];
   }
   get innerHTML() { return this._innerHTML; }
-  append(...children) { this.children.push(...children); }
+  append(...children) {
+    children.forEach((child) => { if (child instanceof FakeNode) child.parentElement = this; });
+    this.children.push(...children);
+  }
   before(...nodes) { this.beforeNodes = (this.beforeNodes || []).concat(nodes); }
-  replaceChildren(...children) { this.children = children; }
+  replaceChildren(...children) {
+    children.forEach((child) => { if (child instanceof FakeNode) child.parentElement = this; });
+    this.children = children;
+  }
   addEventListener(name, listener) { this.listeners[name] = listener; }
   setAttribute(name, value) { this.attributes[name] = value; }
   scrollIntoView(options) { this.scrolls.push(options); }
@@ -107,6 +113,7 @@ function selectNodes(selector, tabs, panels, testTabs) {
 function createFakeWindow(location, listeners) {
   return {
     addEventListener: (name, listener) => { listeners[name] = listener; },
+    confirm: () => true,
     innerHeight: 800,
     location: { ...location },
     scrollTo: () => {},
@@ -282,6 +289,49 @@ test("only the current unfinished planning artifact is marked running", () => {
     goal: "succeeded", plan: "running", tests: "empty", steps: "empty", log: "empty",
     exec: "empty", explain: "empty", quiz: "empty",
   });
+});
+
+test("the active activity entry offers confirmed Skip and Stop controls", () => {
+  const browser = createPageEnvironment();
+  browser.run(`
+    globalThis.fetchCalls = [];
+    fetch = (path) => { fetchCalls.push(path); return Promise.resolve({ ok: true }); };
+    window.confirm = () => false;
+    globalThis.activitySteps = [{ at: "2026-07-22T10:00:00Z", message: "executing step 1: build" }];
+    renderActivity(activitySteps, activitySteps[0], true);
+  `);
+  const buttons = collectDescendants(browser.registry.get("activity-log"))
+    .filter((node) => node.tagName === "BUTTON");
+  assert.deepEqual(buttons.map((button) => button.textContent), ["Skip", "Stop"]);
+
+  buttons[0].listeners.click();
+  assert.equal(browser.run("fetchCalls.length"), 0, "a declined confirmation must not post");
+
+  browser.run("window.confirm = () => true");
+  buttons[0].listeners.click();
+  assert.equal(browser.run("JSON.stringify(fetchCalls)"), '["/task/skip"]');
+  assert.ok(buttons.every((button) => button.disabled), "both controls lock while the request is pending");
+  buttons[1].listeners.click();
+  assert.equal(browser.run("fetchCalls.length"), 1, "locked controls must not post again");
+
+  browser.run("taskActionPending = false; renderActivity(activitySteps, activitySteps[0], false)");
+  const remaining = collectDescendants(browser.registry.get("activity-log"))
+    .filter((node) => node.tagName === "BUTTON");
+  assert.equal(remaining.length, 0, "no controls without an active cancellable task");
+});
+
+test("a Stop confirmation posts to the stop endpoint", () => {
+  const browser = createPageEnvironment();
+  browser.run(`
+    globalThis.fetchCalls = [];
+    fetch = (path) => { fetchCalls.push(path); return Promise.resolve({ ok: true }); };
+    globalThis.activitySteps = [{ at: "2026-07-22T10:00:00Z", message: "verifying step 2" }];
+    renderActivity(activitySteps, activitySteps[0], true);
+  `);
+  const stop = collectDescendants(browser.registry.get("activity-log"))
+    .find((node) => node.tagName === "BUTTON" && node.textContent === "Stop");
+  stop.listeners.click();
+  assert.equal(browser.run("JSON.stringify(fetchCalls)"), '["/task/stop"]');
 });
 
 test("sticky offsets follow the rendered header and progress heights", () => {

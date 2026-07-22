@@ -435,6 +435,18 @@
     color: var(--accent); font-size: 0.85rem; font-weight: 600; line-height: 1.4;
     font-variant-numeric: tabular-nums;
   }
+  aside#activity .task-controls { display: inline-flex; gap: 0.35rem; margin-left: 0.35rem; }
+  .task-btn {
+    appearance: none; background: var(--bg); border: 1px solid var(--border); border-radius: 6px;
+    padding: 0.1rem 0.5rem; font-size: 0.72rem; font-weight: 600; line-height: 1.4;
+    color: var(--text-muted); cursor: pointer; white-space: nowrap;
+  }
+  .task-btn:hover { color: var(--text); background: var(--border); }
+  .task-btn.stop { border-color: #e5484d; color: #e5484d; }
+  .task-btn.stop:hover { background: #e5484d; color: #fff; }
+  .task-btn[disabled] { opacity: 0.55; cursor: progress; }
+  .task-btn[disabled]:hover { background: var(--bg); color: var(--text-muted); }
+  .task-btn.stop[disabled]:hover { color: #e5484d; }
   @keyframes activity-spin { to { transform: rotate(360deg); } }
   aside#activity a.activity-link { color: inherit; text-decoration: underline; text-decoration-color: var(--border); text-underline-offset: 2px; }
   aside#activity a.activity-link:hover { text-decoration-color: var(--accent); color: var(--accent); }
@@ -1253,8 +1265,9 @@
     const activitySteps = status.steps || [];
     const active = activeActivity(activitySteps, activityIsRunning(status));
     activeStartIso = active ? active.at : null;
+    resetTaskActionOnNewTask(active);
     renderActiveTask(active);
-    renderActivity(activitySteps, active);
+    renderActivity(activitySteps, active, !!status.taskControlAvailable);
     renderAnnotations(status.pendingAnnotations || []);
     renderBanner(status);
     const progress = renderProgress(status);
@@ -1669,6 +1682,56 @@
     target.classList.add("link-flash");
   }
 
+  // taskActionPending locks the active entry's Skip and Stop buttons from the
+  // confirmed click until the run reacts, so a slow server never invites a
+  // double submit. A new active task (or a rejected request) unlocks them.
+  let taskActionPending = false;
+  let lastActiveTaskKey = null;
+
+  function resetTaskActionOnNewTask(active) {
+    const key = active ? active.at + "|" + active.message : null;
+    if (key === lastActiveTaskKey) return;
+    lastActiveTaskKey = key;
+    taskActionPending = false;
+  }
+
+  // taskControlButtons builds the active entry's Skip and Stop pair. Both ask
+  // for confirmation first: Skip aborts just the active task and the run moves
+  // on; Stop aborts the task and ends the whole run.
+  function taskControlButtons(message) {
+    const controls = document.createElement("span");
+    controls.className = "task-controls";
+    controls.append(
+      taskButton("Skip", "", "/task/skip",
+        'Skip the active task "' + message + '"?\n\n' +
+        "Its running invocation will be stopped and the run will move on. " +
+        "A skipped work step is marked complete without being done or verified."),
+      taskButton("Stop", "stop", "/task/stop",
+        'Stop the whole run?\n\n' +
+        'The active task "' + message + '" will be aborted and the session will end. ' +
+        "Completed steps stay checked, so a later run can resume.")
+    );
+    return controls;
+  }
+
+  function taskButton(label, extraClass, path, confirmText) {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "task-btn" + (extraClass ? " " + extraClass : "");
+    button.textContent = label;
+    button.disabled = taskActionPending;
+    button.addEventListener("click", () => {
+      if (taskActionPending) return;
+      if (!window.confirm(confirmText)) return;
+      taskActionPending = true;
+      for (const sibling of button.parentElement.children) sibling.disabled = true;
+      fetch(path, { method: "POST" }).then((response) => {
+        if (!response.ok) taskActionPending = false;
+      }, () => { taskActionPending = false; });
+    });
+    return button;
+  }
+
   function renderActiveTask(activity) {
     const container = el("active-task");
     container.classList.toggle("on", !!activity);
@@ -1700,7 +1763,7 @@
     return match ? match[1] : null;
   }
 
-  function renderActivity(steps, active) {
+  function renderActivity(steps, active, controllable) {
     const list = el("activity-log");
     list.replaceChildren();
     const lastIndex = steps.length - 1;
@@ -1741,6 +1804,7 @@
         const spinner = document.createElement("span");
         spinner.className = "spinner";
         li.append(spinner, body, elapsed);
+        if (controllable) li.append(taskControlButtons(step.message));
       } else {
         const next = steps[index + 1];
         elapsed.textContent = next ? fmtDuration(step.at, next.at) : "";

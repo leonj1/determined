@@ -46,6 +46,17 @@ type ExecStatusReporter interface {
 	FinishQuiz(succeeded bool)
 }
 
+// TaskController relays the status page's Skip and Stop commands into the run:
+// each invocation registers its cancel function so the page can kill it, then
+// collects the requested action once the invocation settles. The real
+// implementation is PlanStatusService; a nil controller disables page-driven
+// task control.
+type TaskController interface {
+	BeginTask(cancel context.CancelFunc)
+	EndTask()
+	TakeTaskAction() models.TaskAction
+}
+
 // execOutputSink adapts an ExecStatusReporter onto LogOutputSink so
 // logEntryWriter can stream tool output into the execution log.
 type execOutputSink struct{ status ExecStatusReporter }
@@ -64,6 +75,7 @@ type Orchestrator struct {
 	logs     LogSink
 	terminal io.Writer
 	status   ExecStatusReporter
+	control  TaskController
 	guard    *TamperGuard
 	cfg      models.Config
 
@@ -81,6 +93,11 @@ type Orchestrator struct {
 	// step's cumulative runtime by cfg.StepMaxRuntime.
 	stepIndex   int
 	stepStarted time.Time
+	// skippedStep is the index of the step the user skipped from the status
+	// page this iteration (-1 otherwise). The verify pass leaves that step
+	// alone: the user overrode its acceptance criterion, so there is nothing
+	// to verify.
+	skippedStep int
 }
 
 // invocationResult distinguishes a successful tool run from a retryable
@@ -89,6 +106,9 @@ type invocationResult struct {
 	outcome   models.Outcome
 	stop      bool
 	succeeded bool
+	// skipped means the user aborted this invocation from the status page's
+	// Skip control: not a failure, but its work never happened.
+	skipped bool
 	// entry indexes this invocation's execution log entry, so a later signal
 	// can revise its outcome. It is -1 when no status page is attached.
 	entry int
@@ -104,14 +124,15 @@ func NewOrchestrator(
 	cfg models.Config,
 ) *Orchestrator {
 	return &Orchestrator{
-		runner:    runner,
-		files:     files,
-		clock:     clock,
-		logs:      logs,
-		terminal:  terminal,
-		guard:     NewTamperGuard(files, cfg.ProtectedFiles),
-		cfg:       cfg,
-		stepIndex: -1,
+		runner:      runner,
+		files:       files,
+		clock:       clock,
+		logs:        logs,
+		terminal:    terminal,
+		guard:       NewTamperGuard(files, cfg.ProtectedFiles),
+		cfg:         cfg,
+		stepIndex:   -1,
+		skippedStep: -1,
 	}
 }
 
@@ -119,6 +140,13 @@ func NewOrchestrator(
 // orchestrator for chaining. Without one the run is terminal-only.
 func (o *Orchestrator) WithStatusReporter(status ExecStatusReporter) *Orchestrator {
 	o.status = status
+	return o
+}
+
+// WithTaskControl attaches the status page's task controller and returns the
+// orchestrator for chaining. Without one the page cannot skip or stop tasks.
+func (o *Orchestrator) WithTaskControl(control TaskController) *Orchestrator {
+	o.control = control
 	return o
 }
 
@@ -141,6 +169,7 @@ func (o *Orchestrator) loop(ctx context.Context) models.Outcome {
 			return outcome
 		}
 		before := o.parsedSteps()
+		o.skippedStep = -1
 		if o.stepOverran(before) {
 			fmt.Fprintf(o.terminal,
 				"determined: step %d has been running for over %s without completing; stopping\n",
@@ -321,13 +350,53 @@ func (o *Orchestrator) runOnce(ctx context.Context) (models.Outcome, bool) {
 	if AllStepsComplete(o.parsedSteps()) {
 		return o.runCompletionReviews(ctx)
 	}
+	target, _ := NextIncompleteStepIndex(o.parsedSteps())
 	prompt, progress, err := o.iterationPrompt()
 	if err != nil {
 		fmt.Fprintf(o.terminal, "determined: could not read %s: %v\n", o.cfg.StepsFile, err)
 		return models.OutcomeDroidFailed, true
 	}
 	result := o.invoke(ctx, prompt, progress)
+	if result.skipped {
+		o.skipTargetStep(target)
+	}
 	return result.outcome, result.stop
+}
+
+// skipTargetStep honours the user's Skip on a work invocation: the step the
+// loop was aiming at is checked off so the run moves on to the next one, with
+// the override recorded in NOTES.md for later invocations to see. The step's
+// index is remembered so this iteration's verify pass leaves it alone. The
+// index was captured before the invocation ran, so a tool that checked the
+// step itself just before being killed cannot make the skip land on the next
+// step; SkipStep leaves an already-checked step untouched.
+func (o *Orchestrator) skipTargetStep(i int) {
+	if i < 0 {
+		return
+	}
+	content, err := o.files.Read(o.cfg.StepsFile)
+	if err != nil {
+		fmt.Fprintf(o.terminal, "determined: could not read %s to skip the step: %v\n", o.cfg.StepsFile, err)
+		return
+	}
+	updated, ok := SkipStep(content, i)
+	if !ok {
+		return
+	}
+	if err := o.files.Write(o.cfg.StepsFile, updated); err != nil {
+		fmt.Fprintf(o.terminal, "determined: could not mark step %d skipped in %s: %v\n", i+1, o.cfg.StepsFile, err)
+		return
+	}
+	o.skippedStep = i
+	fmt.Fprintf(o.terminal,
+		"determined: step %d skipped from the status page; marked complete without verification\n", i+1)
+	note := fmt.Sprintf("- Step %d was skipped by the user from the status page: it is checked "+
+		"complete without its acceptance criterion being met or verified. The user chose to move on; "+
+		"do not reopen it.\n", i+1)
+	if err := o.files.Append("NOTES.md", note); err != nil {
+		fmt.Fprintf(o.terminal, "determined: could not record the skip in NOTES.md: %v\n", err)
+	}
+	o.reportTaskSteps()
 }
 
 // invoke runs one tool invocation with the given prompt, teeing its output to
@@ -356,8 +425,19 @@ func (o *Orchestrator) invoke(
 	}
 	runCtx, cancel := o.iterationContext(ctx)
 	defer cancel()
+	o.beginTask(cancel)
 	tampered, err := o.guardedRun(runCtx, prompt, out)
+	action := o.settleTask()
+	if action == models.TaskActionStop {
+		fmt.Fprintln(o.terminal, "determined: run stopped from the status page")
+		o.settleEntry(entry, models.EntryStateWarn)
+		return invocationResult{outcome: models.OutcomeUserStopped, stop: true, entry: entry}
+	}
 	if err != nil {
+		if action == models.TaskActionSkip {
+			o.settleEntry(entry, models.EntryStateWarn)
+			return invocationResult{outcome: models.OutcomeStopped, skipped: true, entry: entry}
+		}
 		o.settleEntry(entry, models.EntryStateError)
 		outcome, stop := o.recordFailure(ctx, err)
 		return invocationResult{outcome: outcome, stop: stop, entry: entry}
@@ -369,6 +449,26 @@ func (o *Orchestrator) invoke(
 	}
 	o.failures = 0
 	return invocationResult{outcome: models.OutcomeStopped, succeeded: true, entry: entry}
+}
+
+// beginTask registers the running invocation's cancel function with the
+// status page's task controller, if one is attached.
+func (o *Orchestrator) beginTask(cancel context.CancelFunc) {
+	if o.control != nil {
+		o.control.BeginTask(cancel)
+	}
+}
+
+// settleTask deregisters the finished invocation and returns the Skip or Stop
+// verdict the page recorded against it while it ran. Deregistering first
+// makes a click that races the invocation's natural exit land as a rejected
+// request rather than a stale verdict against the next invocation.
+func (o *Orchestrator) settleTask() models.TaskAction {
+	if o.control == nil {
+		return models.TaskActionNone
+	}
+	o.control.EndTask()
+	return o.control.TakeTaskAction()
 }
 
 // settleEntry records an invocation's outcome on its execution log entry, if
@@ -434,6 +534,12 @@ func (o *Orchestrator) verifyNewSteps(ctx context.Context, before []Step) (model
 		if !step.Completed || (i < len(before) && before[i].Completed) {
 			continue
 		}
+		// A step the user skipped is checked without its work done; the user
+		// overrode its acceptance criterion, so reviewing it would only reopen
+		// the step the user just asked to move past.
+		if i == o.skippedStep {
+			continue
+		}
 		result := o.verifyStep(ctx, i, step)
 		if result.stop {
 			return result.outcome, true
@@ -452,6 +558,9 @@ func (o *Orchestrator) verifyNewSteps(ctx context.Context, before []Step) (model
 func (o *Orchestrator) verifyStep(ctx context.Context, i int, step Step) invocationResult {
 	progress := progressMessage(fmt.Sprintf("checking simplicity of step %d", i+1))
 	result := o.invoke(ctx, simplicityPrompt(i+1, step), progress)
+	if result.skipped {
+		return reviewWaived(result)
+	}
 	if result.stop || !result.succeeded {
 		return result
 	}
@@ -460,10 +569,21 @@ func (o *Orchestrator) verifyStep(ctx context.Context, i int, step Step) invocat
 	}
 	progress = progressMessage(fmt.Sprintf("verifying step %d", i+1))
 	result = o.invoke(ctx, verifyPrompt(i+1, step), progress)
+	if result.skipped {
+		return reviewWaived(result)
+	}
 	if result.stop || !result.succeeded {
 		return result
 	}
 	o.markRejectedStep(i, result.entry)
+	return result
+}
+
+// reviewWaived turns a user-skipped reviewer invocation into a passed review:
+// skipping a review means the user does not want its verdict, so the step
+// stays checked and the run moves on.
+func reviewWaived(result invocationResult) invocationResult {
+	result.succeeded = true
 	return result
 }
 
@@ -496,7 +616,7 @@ func (o *Orchestrator) runCompletionReviews(ctx context.Context) (models.Outcome
 	if result.stop {
 		return result.outcome, true
 	}
-	if !result.succeeded {
+	if !result.succeeded && !result.skipped {
 		return models.OutcomeStopped, false
 	}
 	if o.cfg.SpecializedReviews {
@@ -521,6 +641,9 @@ func (o *Orchestrator) runSpecializedReviews(ctx context.Context) invocationResu
 		result := o.invoke(ctx, specializedReviewPrompt(review), progress)
 		if result.stop {
 			return result
+		}
+		if result.skipped {
+			continue // the user waived this specialist's verdict
 		}
 		if !result.succeeded || !AllStepsComplete(o.parsedSteps()) {
 			return invocationResult{outcome: models.OutcomeStopped}
@@ -774,10 +897,12 @@ func sentence(s string) string {
 // iterationContext bounds a single invocation by cfg.MaxIterationDuration so
 // a hung tool cannot hang the loop forever. recordFailure inspects the parent
 // ctx, not this one, so a timeout surfaces as an ordinary retryable failure
-// rather than an interruption.
+// rather than an interruption. The context is always independently
+// cancellable so the status page's Skip and Stop can kill just this
+// invocation.
 func (o *Orchestrator) iterationContext(ctx context.Context) (context.Context, context.CancelFunc) {
 	if o.cfg.MaxIterationDuration <= 0 {
-		return ctx, func() {}
+		return context.WithCancel(ctx)
 	}
 	return context.WithTimeout(ctx, o.cfg.MaxIterationDuration)
 }
@@ -876,6 +1001,9 @@ func execStopReasonAdvice(outcome models.Outcome, cfg models.Config) (string, st
 	case models.OutcomeInterrupted:
 		return "The run was interrupted by a signal before it could finish.",
 			"Click Implement (or rerun determined) to resume from the unchecked steps."
+	case models.OutcomeUserStopped:
+		return "You stopped the run from the status page before every step completed.",
+			"Completed steps stay checked, so nothing is lost. Click Implement (or rerun determined) to resume from the remaining steps."
 	case models.OutcomeMissingFiles:
 		return "Execution started without the required PLAN.md / STEPS.md protocol files.",
 			"Run `determined --plan \"<goal>\"` to produce them, then start execution again."
