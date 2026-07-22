@@ -1,152 +1,76 @@
-# Plan: Agent Chat Interface (`-chat`)
+# Plan: Replace custom markdown parser with marked
 
-Give AI agents a first-class, machine-readable way to converse with a running
-`determined` session about the current plan, activities, and work being
-performed — over WebSocket for conversations, over plain HTTP for one-shots.
+## Task type
 
-```bash
-determined -chat                                      # persistent conversation
-determined -chat -m "what is the status of this run?" # sync one-shot: reply, then disconnect
-```
+Refactor (behavior-preserving swap of implementation) with a small vendoring/integration facet.
+Primary template: **refactor** (preserved behavior + incremental checks). Secondary: **integration** (vendored library boundary, asset serving).
 
-## Why
+## Quality gate
 
-`determined` runs are observable today only by humans: the interactive web
-page renders live status, and `-link` recovers its URL. An AI agent
-supervising a run has no programmatic interface — it would have to scrape the
-HTML page or tail log files. This change adds one.
+- **Intended outcome**: The hand-rolled ~130-line markdown parser in `plan_status_page.html` is replaced by the `marked` library (v16.x, vendored UMD), while all documented custom rendering behaviors are preserved via marked renderer overrides.
+- **Target user / use case**: Developers/operators viewing the plan status page (goal/plan/explain/quiz/steps views) rendered by the Go `plan_status_server`. No end-user-visible change intended beyond three accepted edge-case deltas.
+- **In scope**:
+  - Vendor `marked.min.js` + license/readme under `src/clients/assets/`.
+  - Add `marked.min.js` to the `go:embed` directive in `plan_status_server.go`.
+  - Add a `<script>` tag loading the asset in `plan_status_page.html`.
+  - Rewrite `markdownToHtml` to delegate to a per-call `marked.Marked` instance with renderer overrides for `heading`, `code`, `link`, `html`.
+  - Delete now-dead helpers: `renderInline`, `splitRow`, `isTableRow`, `isSeparatorRow`, `renderTable`.
+  - Update `tests/plan_status_page_test.js` to load the marked bundle into the vm context and add exact-output tests.
+- **Out of scope**:
+  - Adding a bundler / npm build step.
+  - Changing any Go logic other than the embed directive.
+  - Adding a sanitizer dependency (raw-HTML escaping stays via the `html` renderer override).
+  - Altering `headingIdAttribute`, `slugify`, `uniqueHeadingSlug`, `unflattenTables`, `highlightCode`, `renderFence`, `renderDiff`, `renderSequenceDiagram`, `looksLikeMarkdown`, `escapeHtml`, `setDoc`, `planSections`, or any `markdownToHtml` call-site signature.
+- **Constraints**:
+  - No bundler — asset vendored as minified UMD, embedded via `go:embed`, served at `/assets/` (mirrors existing diff2html convention).
+  - `markdownToHtml(text, options)` signature unchanged; called at lines 892, 1092, 1535, 1565, 1576, 1591.
+  - Per-call `Marked` instance so heading-dedup count state is per-parse.
+  - Heading renderer emits no trailing `\n` so existing exact-string assertions (`"<h2>Widget behavior</h2>"`) still pass.
+  - Marked v13+ token-object renderer signatures (destructured token args).
+  - Fence dispatch normalizes the language as `(token.lang || "").trim().split(/\s+/)[0].toLowerCase()` before calling `renderFence`, so `diff`/`mermaid`/highlighted-lang branches fire on the first info-string word.
+  - `unflattenTables` is applied to the raw string *before* `instance.parse()` (not wired as a marked hook/tokenizer).
+  - The `heading` renderer emits a body `id` only for ATX headings (gated on `token.raw`), keeping the body dedup counter in lockstep with the ATX-only `planSections` scan.
+  - Asset must exist before the embed directive compiles → step order 1→2→3→4→5→6.
+- **Observable success criteria**:
+  - `make test` (`go test -cover ./...`, which shells `node --test tests/plan_status_page_test.js`) passes.
+  - Running server serves `/assets/marked.min.js` with HTTP 200.
+  - Status page renders: mermaid `sequenceDiagram` as hand-built SVG, ` ```diff ` via Diff2Html, code fences with `tok-*` highlight spans, raw HTML escaped (no passthrough), duplicate headings deduped (`plan--x`, `plan--x-2`) with working TOC scroll, GFM tables (incl. flattened one-liners via `unflattenTables`).
+- **Material risks**:
+  - Marked renderer API drift across versions → mitigated by pinning v16.x and documenting version in `README.marked.md`; overrides use v13+ token-object signatures.
+  - Trailing-newline / `<p>`-wrapping differences from marked → captured empirically in exact-output tests (accepted deltas).
+  - UMD global attach in vm context → harness runs `vm.runInContext(markedSource, context)` before the page script; `marked` attaches to contextified `globalThis`.
+  - Minified vendored blob is opaque → license + version README document provenance.
+- **Validation approach**: Automated `node --test` unit tests over `markdownToHtml` (exact-string outputs, dedup contract, fence/diff/table/raw-HTML behaviors) driven through Go `make test`; plus one manual smoke pass of the live status page.
 
-## Current state (what already exists)
+### Accepted behavior deltas (record in commit message)
+1. One-line flattened fences inside prose render as inline code spans (still escaped), not dispatched fences.
+2. Non-heading blocks carry marked's trailing newlines / `<p>`-in-loose-`<li>` wrapping.
+3. Setext headings now parse as `h2` (previously paragraph + hr). The `heading` renderer emits a body `id` for ATX headings only (gated on `token.raw` starting with `#`), so setext headings do **not** advance the shared dedup counter — the body ids stay in lockstep with `planSections` (ATX-only `#{2,4}` scan) and TOC scroll is unaffected.
 
-- `services.PlanStatusService` holds a `models.PlanSessionStatus` snapshot
-  (goal, plan, phase, task checklist, workflow steps, planning/execution logs,
-  stop reason and advice) with `Snapshot()` and `Subscribe()` — the same pair
-  the SSE `/events` endpoint uses.
-- `clients.PlanStatusServer` serves the status page, `/events`, `/annotate`,
-  and `/implement` on an ephemeral port.
-- `services.SessionLocator` (backing `-link`) finds the running session from a
-  well-known record file and rejects stale claims via three probes: record
-  validity, process liveness, and an HTTP check of the served page.
+## Verified assumptions (against current tree)
 
-What is missing: a machine protocol on the server, a client mode in the CLI,
-and server availability during headless `-exec` runs (today the plain exec
-path passes a nil status reporter and starts no server).
+- `plan_status_server.go:27` embed line is exactly `//go:embed assets/diff2html.min.css assets/diff2html.min.js` (separate `//go:embed plan_status_page.html` at line 24). FileServer serves the whole `embed.FS`.
+- diff2html vendoring convention present: `assets/{diff2html.min.js,diff2html.min.css,LICENSE.diff2html.md,README.diff2html.md}`.
+- diff2html script tag at `plan_status_page.html:551`; new marked tag goes before it.
+- Helper line ranges match GOAL.md (`renderInline` 760, `renderTable` 786, `markdownToHtml` 827, `headingIdAttribute` 819, `unflattenTables` 798, etc.).
+- `markdownToHtml` call sites at 892, 1092, 1535, 1565, 1576, 1591; plus one recursive call at 862 inside the *old* body (blockquote) that is deleted — marked handles blockquotes natively.
+- `tests/plan_status_page_test.js` uses `createPageEnvironment` (line 56) with `vm.runInContext(pageScript, context)` at line 68; `Diff2Html: { html: () => "" }` stub at line 119.
+- `make test` = `go test -cover ./...`; `node` v23.11.0 available.
 
-## What changes
+## Refactor template
 
-- **`-chat` CLI mode** — locates the running session with the same verified
-  discovery as `-link`, opens a WebSocket to it, and holds a conversation:
-  stdin lines go to the session; replies and live activity events stream to
-  stdout until EOF/interrupt. Exit 0 on a clean close.
-- **`-m <text>` flag** (valid only with `-chat`) — synchronous one-shot:
-  connect, send, print the reply, close, exit. Exit codes: `0` success, `1`
-  no live session or transport failure, `2` usage error.
-- **`/chat` WebSocket endpoint** on the existing status server, speaking a
-  JSON protocol (below).
-- **`POST /chat/ask` HTTP endpoint** — answers a single question with the
-  identical JSON reply, so curl and minimal HTTP clients need no WebSocket.
-- **Headless `-exec` serves chat too** — plain `-exec` runs start the status
-  server, print its URL, and write the session record (mirroring interactive
-  startup, minus the hold/feedback loop), so agents can query unattended
-  executions — the primary use case. A bind failure degrades gracefully: the
-  run proceeds without a server.
-- **USAGE.md** at the repo root — end-to-end protocol reference with runnable
-  curl examples.
-- **Zero new dependencies** — a minimal stdlib RFC 6455 implementation
-  (server + client) in `src/clients`.
+- **Preserved behavior**: All custom rendering (mermaid SVG, diff, highlight, heading ids/dedup, blank-target links, raw-HTML escaping, table unflattening) preserved via renderer overrides + unchanged helpers. Exact-string assertions are the behavior contract.
+- **Incremental checks**: Vendor asset (compilable) → embed (Go compiles) → script tag (page loads) → rewrite layer (unit tests) → test harness (tests green) → manual smoke. Each step has a concrete `Done when:` in STEPS.md. Regression guarded by keeping existing assertions unchanged and adding exact-output tests for the new path.
 
-## Protocol
+## Integration template
 
-All frames are JSON text. Client → server:
+- **Boundary**: `marked` UMD library at `globalThis.marked`, loaded as a vendored `/assets/` file. Consumed only inside `markdownToHtml`.
+- **Failure handling**: Missing asset → embed directive fails to compile (fail-fast at build). In-browser absent `marked` global throws at first `markdownToHtml` call — visible, matching diff2html's existing hard-dependency pattern. No silent fallback added (per literal-requirements convention).
 
-```json
-{"id": "1", "type": "message", "text": "what is the status of this run?"}
-{"id": "2", "type": "subscribe"}
-```
+## Files
 
-Server → client:
-
-```json
-{"id": "1", "type": "reply", "text": "<human-readable answer>", "data": { ...structured payload... }}
-{"type": "event", "event": "log", "text": "==> verifying step 3", "data": { ... }}
-{"id": "2", "type": "error", "error": "unknown request type"}
-```
-
-`id` correlates replies to requests; pushed events carry no `id`. Every reply
-carries both prose and the structured `data` it was derived from, so the
-agent never parses prose.
-
-## Key design decisions
-
-1. **Deterministic answers, no AI in the loop.** A new `services.ChatService`
-   answers from the live status snapshot via a small intent table — status
-   (default and fallback), plan/goal, steps/progress, activity, log, help.
-   Unmatched text gets a status reply with the full snapshot in `data`. The
-   caller is already an AI; the binary just reports state. Fast, free, and
-   fully unit-testable.
-2. **Hand-rolled minimal WebSocket, stdlib only.** `go.mod` has zero
-   dependencies and both endpoints are ours on loopback. Scope: upgrade
-   handshake, unfragmented text frames, client masking, ping/pong, close
-   handshake. Fragmented/binary frames rejected with close 1003; frames over
-   1 MiB with close 1009. Fallback if third-party interop ever matters:
-   `github.com/coder/websocket`.
-3. **`/chat` mounts on the existing status server** — one port, one session
-   record, and the `-link` probes work unchanged.
-4. **`/chat/ask` reuses `ChatService.Answer` verbatim** — one thin handler
-   (405 on non-POST, 400 on malformed JSON) that keeps USAGE.md's curl
-   examples honest, since curl's native WebSocket support is experimental.
-5. **Read-only in v1.** Chat exposes only what the status page already
-   serves; control verbs (stop, annotate, implement) are a follow-up change
-   that must revisit auth.
-
-## Risks and mitigations
-
-- *Hand-rolled WebSocket bugs* → deliberately tiny protocol subset with
-  byte-level tests (handshake accept value, masking, close codes, ping/pong).
-- *Unauthenticated endpoint* → same exposure class as the existing status
-  page and SSE stream; chat is read-only in this change.
-- *Headless `-exec` newly binds a port and writes the session record* →
-  degrade on bind failure, keep stdout otherwise identical, clear the record
-  on exit; note the behavior change in EXECUTION.md.
-- *One session record per machine* → pre-existing `-link` limitation; `-chat`
-  inherits it (latest session wins). Out of scope here.
-- *Hostile or broken clients* → 1 MiB frame cap, typed `error` frames for
-  malformed JSON, per-connection write deadlines.
-
-## Implementation steps
-
-### 1. Chat protocol models
-- [ ] 1.1 `src/models/chat.go`: `ChatRequest` (`ID`, `Type` = `message`|`subscribe`, `Text`), `ChatResponse` (`ID`, `Type` = `reply`|`event`|`error`, `Text`, `Event`, `Error`, `Data`), typed intent constants, validation helpers; tests in `src/models/chat_test.go`.
-
-### 2. Minimal WebSocket transport (stdlib only)
-- [ ] 2.1 `src/clients/websocket.go`: server-side RFC 6455 upgrade (header validation, `Sec-WebSocket-Accept`, connection hijack) and frame codec — unfragmented text frames, masking, ping/pong, close handshake; close 1003 for fragmented/binary, 1009 over 1 MiB.
-- [ ] 2.2 Client-side dial in the same file: upgrade request with random key, accept-key verification, masked writes, unmasked reads.
-- [ ] 2.3 Byte-level tests in `tests/websocket_test.go`: RFC example handshake key, mask round trip, close-code behavior, ping→pong.
-
-### 3. Chat service (deterministic answers)
-- [ ] 3.1 `src/services/chat_service.go`: `ChatStatusSource` interface (`Snapshot()`, `Subscribe()`), `Answer(ChatRequest) ChatResponse` implementing the intent table; replies carry text plus structured data (phase, elapsed, steps done/total, stop reason/advice, bounded log tail).
-- [ ] 3.2 Tests with a fake status source: every intent, fallback with full snapshot, unknown type → `error` with matching `id`, planning vs executing vs failed-run answers.
-
-### 4. Server endpoints
-- [ ] 4.1 Mount `/chat` on `PlanStatusServer`: upgrade, read loop dispatching to the chat responder; `subscribe` forwards snapshot-diff events (new step, new log entry, phase change) as `event` frames; malformed JSON answered in-band; write deadline per send.
-- [ ] 4.2 End-to-end tests over a real listener: upgrade, message/reply correlation, subscribe then observe an event, malformed payload keeps the connection open.
-- [ ] 4.3 Mount `POST /chat/ask`: JSON body in, same JSON reply out; 405 non-POST, 400 malformed; tests alongside 4.2.
-
-### 5. Chat client mode
-- [ ] 5.1 `src/services/chat_client.go`: session resolution via `SessionLocator` → `ws://localhost:<port>/chat`; one-shot send/await with deadline; interactive loop over injected reader/writer.
-- [ ] 5.2 Flags in `cmd/determined/main.go`: `-chat`, `-m`; validation (`-m` requires `-chat`; `-chat` excludes `-plan`/`-exec`/`-review-plan`/`-criteria`/`-interactive`); exit codes 0/1/2; `ErrNoSession` messaging.
-- [ ] 5.3 Tests: flag validation table; one-shot and interactive flows against an in-process server, including reply timeout → exit 1 and server close → exit 0.
-
-### 6. Headless -exec serves chat
-- [ ] 6.1 Give the plain `runLoop` path a `PlanStatusService` + `PlanStatusServer` + session record (mirroring interactive startup without the hold loop); print URL lines; shut down and forget the record when the run ends.
-- [ ] 6.2 Degrade on bind failure: report to stderr, run with a nil reporter; test that outcome and exit codes are unchanged.
-
-### 7. Documentation
-- [ ] 7.1 README: `-chat` section with persistent and one-shot examples; note headless `-exec` now serves the status/chat endpoints.
-- [ ] 7.2 EXECUTION.md: chat exit codes, discovery shared with `-link`, protocol sketch for agent authors.
-- [ ] 7.3 USAGE.md at the repo root: discovery, both CLI modes, field-by-field protocol reference, and runnable curl examples with sample responses — `curl -s -X POST http://localhost:<port>/chat/ask -d '{"text":"what is the status of this run?"}'`, `curl -N http://localhost:<port>/events` for the live SSE stream, and a WebSocket handshake check (plus a `curl ws://` note for builds with WebSocket support).
-
----
-
-Full spec-driven artifacts (proposal, design, per-requirement scenarios,
-tasks) live in `openspec/changes/add-agent-chat-interface/`.
+- `src/clients/plan_status_page.html` — script tag + markdown-layer rewrite + dead-helper deletion.
+- `src/clients/plan_status_server.go` — extend embed directive.
+- `tests/plan_status_page_test.js` — load marked into vm, add exact-output tests.
+- `src/clients/assets/marked.min.js` — new, vendored UMD.
+- `src/clients/assets/LICENSE.marked.md`, `src/clients/assets/README.marked.md` — new provenance docs.

@@ -313,7 +313,9 @@ behind interfaces with hand-written Fakes (no mocking frameworks), so the loop
 logic is tested entirely without touching a real CLI or disk.
 
 The test suite requires Go 1.24 and Node.js 18 or newer; Node executes the
-interactive status page's browser-behavior tests without third-party packages.
+interactive status page's browser-behavior tests with no package installation —
+the page's markdown renderer is the `marked` library (v16), vendored as a UMD
+bundle under `src/clients/assets/` and loaded straight from the repo.
 
 ```bash
 go test -cover ./...
