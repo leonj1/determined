@@ -55,6 +55,13 @@ type TaskControlSink interface {
 	RequestStopRun() bool
 }
 
+// StallChoiceSink receives the page's tiebreak verdict for a stalled execute
+// run, reporting whether a run was parked waiting to receive it. The real
+// implementation is services.PlanStatusService.
+type StallChoiceSink interface {
+	SubmitStallChoice(models.StallDecision, string) bool
+}
+
 // ChatResponder answers requests and derives pushed events from status diffs.
 type ChatResponder interface {
 	Answer(models.ChatRequest) models.ChatResponse
@@ -69,6 +76,7 @@ type PlanStatusServer struct {
 	annotations AnnotationSink
 	implement   ImplementSink
 	taskControl TaskControlSink
+	stallChoice StallChoiceSink
 	clock       clock
 	listener    net.Listener
 	server      *http.Server
@@ -89,6 +97,12 @@ func NewPlanStatusServer(source PlanStatusSource, annotations AnnotationSink, im
 // WithTaskControl enables the page's Skip and Stop commands on the active task.
 func (s *PlanStatusServer) WithTaskControl(sink TaskControlSink) *PlanStatusServer {
 	s.taskControl = sink
+	return s
+}
+
+// WithStallChoice enables the page's verification-deadlock tiebreak modal.
+func (s *PlanStatusServer) WithStallChoice(sink StallChoiceSink) *PlanStatusServer {
+	s.stallChoice = sink
 	return s
 }
 
@@ -116,6 +130,7 @@ func (s *PlanStatusServer) Start() error {
 	mux.HandleFunc("/implement", s.serveImplement)
 	mux.HandleFunc("/task/skip", s.serveTaskSkip)
 	mux.HandleFunc("/task/stop", s.serveTaskStop)
+	mux.HandleFunc("/stall/choice", s.serveStallChoice)
 	mux.HandleFunc("/chat", s.serveChat)
 	mux.HandleFunc("/chat/ask", s.serveChatAsk)
 	s.server = &http.Server{
@@ -256,6 +271,34 @@ func (s *PlanStatusServer) serveTaskSkip(w http.ResponseWriter, r *http.Request)
 // end the whole run.
 func (s *PlanStatusServer) serveTaskStop(w http.ResponseWriter, r *http.Request) {
 	s.serveTaskAction(w, r, func(sink TaskControlSink) bool { return sink.RequestStopRun() })
+}
+
+// serveStallChoice relays the page's tiebreak verdict for a stalled run. It
+// answers 409 when no run is parked waiting — the run may have been cancelled
+// between the page's last snapshot and the click.
+func (s *PlanStatusServer) serveStallChoice(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if s.stallChoice == nil {
+		http.Error(w, "stall choice unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	var guidance models.StallGuidance
+	if err := json.NewDecoder(r.Body).Decode(&guidance); err != nil {
+		http.Error(w, "invalid stall choice payload", http.StatusBadRequest)
+		return
+	}
+	if !guidance.Valid() {
+		http.Error(w, "stall choice requires a known decision and, for other, a non-blank comment", http.StatusBadRequest)
+		return
+	}
+	if !s.stallChoice.SubmitStallChoice(guidance.Decision, guidance.Comment) {
+		http.Error(w, "no run awaiting a stall choice", http.StatusConflict)
+		return
+	}
+	w.WriteHeader(http.StatusAccepted)
 }
 
 // serveTaskAction applies one task command, answering 409 when no active task

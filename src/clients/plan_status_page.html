@@ -455,6 +455,47 @@
     from { background: color-mix(in srgb, var(--accent) 22%, transparent); }
     to { background: transparent; }
   }
+  #stall-modal {
+    display: none; position: fixed; inset: 0; z-index: 50;
+    background: color-mix(in srgb, #000 45%, transparent);
+    align-items: center; justify-content: center; padding: 1rem;
+  }
+  #stall-modal.open { display: flex; }
+  .stall-box {
+    background: var(--bg); border: 1px solid var(--border); border-radius: 12px;
+    max-width: 32rem; width: 100%; padding: 1.4rem 1.5rem;
+    box-shadow: 0 12px 40px color-mix(in srgb, #000 25%, transparent);
+  }
+  .stall-box h2 { margin: 0 0 0.6rem; font-size: 1.15rem; color: #e5484d; }
+  .stall-lede { margin: 0 0 0.8rem; color: var(--text); line-height: 1.45; }
+  .stall-step {
+    margin: 0 0 1rem; padding: 0.5rem 0.7rem; border-left: 3px solid var(--accent);
+    background: var(--bg-muted); font-weight: 600; color: var(--text);
+  }
+  .stall-step:empty { display: none; }
+  .stall-actions { display: flex; flex-direction: column; gap: 0.5rem; }
+  .stall-btn {
+    appearance: none; border: 1px solid var(--border); border-radius: 8px;
+    padding: 0.55rem 0.8rem; font-size: 0.9rem; cursor: pointer;
+    background: var(--bg); color: var(--text); text-align: left;
+  }
+  .stall-btn:hover { background: var(--border); }
+  .stall-btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .stall-btn.primary:hover { filter: brightness(0.95); }
+  .stall-btn.ghost { border-color: #e5484d; color: #e5484d; }
+  .stall-btn.ghost:hover { background: #e5484d; color: #fff; }
+  .stall-btn[disabled] { opacity: 0.55; cursor: progress; }
+  .stall-other { display: none; margin-top: 0.6rem; }
+  .stall-other.open { display: block; }
+  .stall-other textarea {
+    width: 100%; min-height: 4.5rem; box-sizing: border-box; resize: vertical;
+    border: 1px solid var(--border); border-radius: 8px; padding: 0.5rem;
+    font: inherit; background: var(--bg); color: var(--text);
+  }
+  .stall-other-actions { display: flex; justify-content: flex-end; margin-top: 0.4rem; }
+  .stall-footer { margin-top: 0.9rem; padding-top: 0.9rem; border-top: 1px solid var(--border); }
+  .stall-msg { margin: 0.7rem 0 0; font-size: 0.85rem; }
+  .stall-msg.failed { color: #e5484d; }
 </style>
 </head>
 <body>
@@ -560,6 +601,28 @@
     </section>
   </aside>
 </main>
+<div id="stall-modal" role="dialog" aria-modal="true" aria-labelledby="stall-title">
+  <div class="stall-box">
+    <h2 id="stall-title">Verification deadlock</h2>
+    <p class="stall-lede">The run kept re-checking the same step without progress — the worker marks it done and a reviewer unchecks it again. Pick how to break the tie.</p>
+    <p class="stall-step" id="stall-step"></p>
+    <div class="stall-actions">
+      <button type="button" id="stall-accept" class="stall-btn primary">Accept worker — mark step done</button>
+      <button type="button" id="stall-hold" class="stall-btn">Hold for reviewer — retry the step</button>
+      <button type="button" id="stall-other-toggle" class="stall-btn">Other…</button>
+    </div>
+    <div id="stall-other-form" class="stall-other">
+      <textarea id="stall-other-text" placeholder="Describe how the run should break the tie…"></textarea>
+      <div class="stall-other-actions">
+        <button type="button" id="stall-other-send" class="stall-btn primary">Send</button>
+      </div>
+    </div>
+    <div class="stall-footer">
+      <button type="button" id="stall-cancel" class="stall-btn ghost">Cancel — stop the run</button>
+    </div>
+    <p id="stall-status" class="stall-msg" hidden></p>
+  </div>
+</div>
 <script src="/assets/marked.min.js"></script>
 <script src="/assets/diff2html.min.js"></script>
 <script>
@@ -1207,6 +1270,69 @@
     selectTab("exec");
   });
 
+  // The stall modal blocks the run on a verification deadlock. Its four actions
+  // POST /stall/choice; while a POST is open every button locks so a slow
+  // server never looks like a dropped click and no choice double-submits. The
+  // next SSE snapshot clears awaitingStallChoice and hides the modal.
+  let stallPending = false;
+  function stallLock(sending) {
+    stallPending = sending;
+    for (const id of ["stall-accept", "stall-hold", "stall-other-toggle",
+                      "stall-other-send", "stall-cancel"]) {
+      el(id).disabled = sending;
+    }
+  }
+  function stallShowError(text) {
+    const status = el("stall-status");
+    status.className = "stall-msg failed";
+    status.textContent = text;
+    status.hidden = false;
+  }
+  function submitStallChoice(decision, comment) {
+    if (stallPending) return;
+    stallLock(true);
+    el("stall-status").hidden = true;
+    fetch("/stall/choice", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ decision, comment: comment || "" }),
+    }).then((response) => {
+      stallLock(false);
+      if (!response.ok) {
+        stallShowError("Could not submit choice (" + response.status + "). Try again.");
+      }
+      // On success the modal stays until the next snapshot clears the flag.
+    }, () => {
+      stallLock(false);
+      stallShowError("Could not reach the server. Try again.");
+    });
+  }
+  el("stall-accept").addEventListener("click", () => submitStallChoice("accept-worker"));
+  el("stall-hold").addEventListener("click", () => submitStallChoice("hold-reviewer"));
+  el("stall-cancel").addEventListener("click", () => submitStallChoice("cancel"));
+  el("stall-other-toggle").addEventListener("click", () => {
+    if (stallPending) return;
+    const form = el("stall-other-form");
+    form.classList.toggle("open");
+    if (form.classList.contains("open")) el("stall-other-text").focus();
+  });
+  el("stall-other-send").addEventListener("click", () => {
+    const comment = el("stall-other-text").value.trim();
+    if (!comment) return;
+    submitStallChoice("other", comment);
+  });
+
+  function renderStallModal(status) {
+    const open = !!status.awaitingStallChoice;
+    el("stall-modal").classList.toggle("open", open);
+    if (!open) {
+      el("stall-other-form").classList.remove("open");
+      el("stall-status").hidden = true;
+      return;
+    }
+    setText(el("stall-step"), status.stallChoicePrompt, "");
+  }
+
   function render(status) {
     const repo = repoShortName(status.git.remote);
     el("title").textContent = repo ? repo + " — planning" : "planning";
@@ -1242,6 +1368,7 @@
       !!status.implementOffered && status.phase === "succeeded" &&
       (!status.execPhase || status.execPhase === "failed"));
     el("stopped-flag").classList.toggle("on", status.execPhase === "failed");
+    renderStallModal(status);
   }
 
   function renderLog(entries) {

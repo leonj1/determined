@@ -162,6 +162,14 @@ type PlanSessionStatus struct {
 	// ImplementOffered reports whether the session accepts an Implement request
 	// from the page once planning succeeds.
 	ImplementOffered bool `json:"implementOffered"`
+
+	// AwaitingStallChoice reports whether an execute run has paused on a
+	// verification deadlock and is blocking on the page's tiebreak modal.
+	// StallChoicePrompt is the stalled step's title, shown in the modal body so
+	// the user knows which step they are deciding. Both are cleared once a
+	// choice is submitted.
+	AwaitingStallChoice bool   `json:"awaitingStallChoice"`
+	StallChoicePrompt   string `json:"stallChoicePrompt"`
 	// ExecPhase, ExecLog, and the execution timestamps describe the follow-on
 	// execute run the Implement button starts; the page's Execution tab
 	// renders them.

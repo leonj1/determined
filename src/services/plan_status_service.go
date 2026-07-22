@@ -28,6 +28,11 @@ type PlanStatusService struct {
 	// invocations, when the page's Skip and Stop have nothing to act on.
 	taskCancel context.CancelFunc
 	taskAction models.TaskAction
+
+	// stallChoice carries the page's tiebreak verdict to an execute run parked
+	// in AwaitStallChoice. It is non-nil only while a run is blocked on the
+	// modal, so SubmitStallChoice can tell whether a wait is pending.
+	stallChoice chan models.StallGuidance
 }
 
 // NewPlanStatusService wires a PlanStatusService with the session's git
@@ -265,6 +270,60 @@ func (s *PlanStatusService) requestTaskAction(action models.TaskAction) bool {
 	}
 	s.mu.Unlock()
 	cancel()
+	return true
+}
+
+// AwaitStallChoice parks the execute run on a verification deadlock: it flags
+// the page's modal open, publishes the stalled step's title, then blocks until
+// the user submits a verdict or ctx cancels. A cancel returns
+// StallDecisionCancel so the caller falls back to today's stop behavior. The
+// modal flag is always cleared before returning.
+func (s *PlanStatusService) AwaitStallChoice(ctx context.Context, stepTitle string) models.StallGuidance {
+	ch := make(chan models.StallGuidance, 1)
+	s.openStallChoice(ch, stepTitle)
+	defer s.closeStallChoice()
+	select {
+	case <-ctx.Done():
+		return models.StallGuidance{Decision: models.StallDecisionCancel}
+	case guidance := <-ch:
+		return guidance
+	}
+}
+
+func (s *PlanStatusService) openStallChoice(ch chan models.StallGuidance, stepTitle string) {
+	s.mu.Lock()
+	s.stallChoice = ch
+	s.mu.Unlock()
+	s.update(func(st models.PlanSessionStatus) models.PlanSessionStatus {
+		st.AwaitingStallChoice = true
+		st.StallChoicePrompt = stepTitle
+		return st
+	})
+}
+
+func (s *PlanStatusService) closeStallChoice() {
+	s.mu.Lock()
+	s.stallChoice = nil
+	s.mu.Unlock()
+	s.update(func(st models.PlanSessionStatus) models.PlanSessionStatus {
+		st.AwaitingStallChoice = false
+		st.StallChoicePrompt = ""
+		return st
+	})
+}
+
+// SubmitStallChoice delivers the page's verdict to a run parked in
+// AwaitStallChoice, reporting whether a wait was pending to receive it.
+func (s *PlanStatusService) SubmitStallChoice(decision models.StallDecision, comment string) bool {
+	s.mu.Lock()
+	ch := s.stallChoice
+	if ch == nil {
+		s.mu.Unlock()
+		return false
+	}
+	s.stallChoice = nil
+	s.mu.Unlock()
+	ch <- models.StallGuidance{Decision: decision, Comment: comment}
 	return true
 }
 

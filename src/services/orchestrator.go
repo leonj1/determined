@@ -57,6 +57,15 @@ type TaskController interface {
 	TakeTaskAction() models.TaskAction
 }
 
+// StallResolver breaks a verification deadlock by asking a watching user which
+// way to go when the run has stalled MaxStalledIterations times on one step.
+// It blocks until the status page returns a verdict (or the run is cancelled,
+// yielding StallDecisionCancel). The real implementation is PlanStatusService;
+// a nil resolver keeps the terminal stop behavior.
+type StallResolver interface {
+	AwaitStallChoice(ctx context.Context, stepTitle string) models.StallGuidance
+}
+
 // execOutputSink adapts an ExecStatusReporter onto LogOutputSink so
 // logEntryWriter can stream tool output into the execution log.
 type execOutputSink struct{ status ExecStatusReporter }
@@ -76,6 +85,7 @@ type Orchestrator struct {
 	terminal io.Writer
 	status   ExecStatusReporter
 	control  TaskController
+	stall    StallResolver
 	guard    *TamperGuard
 	cfg      models.Config
 
@@ -150,6 +160,13 @@ func (o *Orchestrator) WithTaskControl(control TaskController) *Orchestrator {
 	return o
 }
 
+// WithStallResolver attaches the status page's deadlock tiebreaker and returns
+// the orchestrator for chaining. Without one a stall stops the run outright.
+func (o *Orchestrator) WithStallResolver(stall StallResolver) *Orchestrator {
+	o.stall = stall
+	return o
+}
+
 // Run executes the loop and returns the terminal outcome.
 func (o *Orchestrator) Run(ctx context.Context) models.Outcome {
 	if !o.protocolFilesPresent() {
@@ -185,12 +202,93 @@ func (o *Orchestrator) loop(ctx context.Context) models.Outcome {
 		o.checkpointNewSteps(ctx, before)
 		o.reportTaskSteps()
 		if o.stalledOut(CompletedStepCount(before)) {
-			fmt.Fprintf(o.terminal,
-				"determined: no step checked in %d consecutive iterations; stopping\n",
-				o.cfg.MaxStalledIterations)
-			return models.OutcomeStalled
+			if outcome, stop := o.resolveStall(ctx); stop {
+				return outcome
+			}
 		}
 	}
+}
+
+// resolveStall handles a tripped stall guard. Without a resolver it keeps the
+// terminal stop behavior. With one it pauses for the status page's tiebreak
+// verdict and either applies it and resumes (stop=false) or stops the run.
+func (o *Orchestrator) resolveStall(ctx context.Context) (models.Outcome, bool) {
+	if o.stall == nil {
+		fmt.Fprintf(o.terminal,
+			"determined: no step checked in %d consecutive iterations; stopping\n",
+			o.cfg.MaxStalledIterations)
+		return models.OutcomeStalled, true
+	}
+	fmt.Fprintf(o.terminal,
+		"determined: no step checked in %d consecutive iterations; awaiting a tiebreak choice from the status page\n",
+		o.cfg.MaxStalledIterations)
+	guidance := o.stall.AwaitStallChoice(ctx, o.stalledStepTitle())
+	return o.applyStallDecision(guidance)
+}
+
+// stalledStepTitle names the step the run keeps failing to check, for the
+// tiebreak modal. It is the first still-unchecked step, or empty when none
+// parses.
+func (o *Orchestrator) stalledStepTitle() string {
+	if step, ok := NextIncompleteStep(o.parsedSteps()); ok {
+		return step.Text
+	}
+	return ""
+}
+
+// applyStallDecision enacts the page's verdict: accept the worker (check the
+// stalled step), hold for the reviewer (leave it, retry), queue freehand
+// guidance, or cancel (stop the run). Every non-cancel path resets the stall
+// counter so the resumed loop starts fresh.
+func (o *Orchestrator) applyStallDecision(guidance models.StallGuidance) (models.Outcome, bool) {
+	switch guidance.Decision {
+	case models.StallDecisionAcceptWorker:
+		o.acceptStalledStep()
+	case models.StallDecisionHoldReviewer:
+		fmt.Fprint(o.terminal, "determined: holding for the reviewer; retrying the stalled step\n")
+	case models.StallDecisionOther:
+		o.queueStallGuidance(guidance.Comment)
+	default:
+		fmt.Fprint(o.terminal, "determined: tiebreak cancelled; stopping\n")
+		return models.OutcomeStalled, true
+	}
+	o.stalled = 0
+	return models.OutcomeStopped, false
+}
+
+// acceptStalledStep checks the first unchecked step in STEPS.md, trusting the
+// worker's claim so the reviewers' objections to it stop blocking the run.
+func (o *Orchestrator) acceptStalledStep() {
+	content, err := o.files.Read(o.cfg.StepsFile)
+	if err != nil {
+		fmt.Fprintf(o.terminal, "determined: could not read %s to accept the stalled step: %v\n", o.cfg.StepsFile, err)
+		return
+	}
+	index, ok := NextIncompleteStepIndex(ParseSteps(content))
+	if !ok {
+		return
+	}
+	updated, changed := SkipStep(content, index)
+	if !changed {
+		return
+	}
+	if err := o.files.Write(o.cfg.StepsFile, updated); err != nil {
+		fmt.Fprintf(o.terminal, "determined: could not check the stalled step in %s: %v\n", o.cfg.StepsFile, err)
+		return
+	}
+	fmt.Fprint(o.terminal, "determined: accepted the worker; checked the stalled step\n")
+}
+
+// queueStallGuidance appends the user's freehand tiebreak instruction to
+// NOTES.md, the file the run's worker already consults, so the next iteration
+// acts on it.
+func (o *Orchestrator) queueStallGuidance(comment string) {
+	note := fmt.Sprintf("\n## Tiebreak guidance\n\n%s\n", strings.TrimSpace(comment))
+	if err := o.files.Append("NOTES.md", note); err != nil {
+		fmt.Fprintf(o.terminal, "determined: could not queue tiebreak guidance to NOTES.md: %v\n", err)
+		return
+	}
+	fmt.Fprint(o.terminal, "determined: queued tiebreak guidance to NOTES.md; resuming\n")
 }
 
 // protocolFilesPresent verifies the plan-produced files exist before any tool

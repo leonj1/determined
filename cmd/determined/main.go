@@ -444,6 +444,11 @@ func runLoop(ctx context.Context, tool models.Tool, budget time.Duration, maxSta
 	if control, ok := status.(services.TaskController); ok {
 		orchestrator.WithTaskControl(control)
 	}
+	// The same service resolves verification deadlocks: when the run stalls,
+	// it parks on the page's tiebreak modal instead of stopping outright.
+	if resolver, ok := status.(services.StallResolver); ok {
+		orchestrator.WithStallResolver(resolver)
+	}
 	return orchestrator.Run(ctx)
 }
 
@@ -545,7 +550,7 @@ func runInteractivePlan(ctx context.Context, orchestrator *services.PlanOrchestr
 func startStatusSession(status *services.PlanStatusService, clock services.Clock) (*clients.PlanStatusServer, func(), bool) {
 	chat := services.NewChatService(status, clock)
 	server := clients.NewPlanStatusServer(status, status, status, clock).
-		WithChatResponder(chat).WithTaskControl(status)
+		WithChatResponder(chat).WithTaskControl(status).WithStallChoice(status)
 	if err := server.Start(); err != nil {
 		fmt.Fprintf(os.Stderr, "determined: %v\n", err)
 		return nil, func() {}, false
