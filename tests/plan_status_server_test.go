@@ -119,7 +119,7 @@ func assertPageServed(t *testing.T, url string) {
 		"renderActiveTask(active)", "renderActivity(activitySteps, active, !!status.taskControlAvailable)",
 		"step-card", "taskSteps", "Done when: ",
 		"log-entry", "renderLog", `data-tab="log"`,
-		"renderTable", "unflattenTables", "isSeparatorRow",
+		"unflattenTables",
 		`data-tab="tests"`, `data-tests-tab="journey"`, `data-tests-tab="bdd"`,
 		`id="plan-demo"`, `id="demo-frame"`, `sandbox="allow-scripts"`, "renderDemo", "status.demo",
 		"splitTests", "status.tests",
@@ -132,6 +132,7 @@ func assertPageServed(t *testing.T, url string) {
 		`data-tab="explain"`, `id="explanation"`, "renderExplanation",
 		"explainPhase", "renderDiff", "Diff2Html.html", "matching: \"words\"",
 		`href="/assets/diff2html.min.css"`, `src="/assets/diff2html.min.js"`,
+		`src="/assets/marked.min.js"`,
 		`data-tab="quiz"`, `id="quiz-state"`, `id="quiz-card"`, "renderQuiz",
 		"quizPhase", "Question ", "Score: ", "Retake quiz",
 		"slugify", "sourceSection", "quiz-source-link", "followQuizSource", `headingIds: true`,
@@ -197,6 +198,7 @@ func assertDiffAssetsServed(t *testing.T, url string) {
 	for _, asset := range []assetExpectation{
 		{path: "assets/diff2html.min.css", contentType: "text/css", marker: ".d2h-wrapper"},
 		{path: "assets/diff2html.min.js", contentType: "text/javascript", marker: "Diff2Html"},
+		{path: "assets/marked.min.js", contentType: "text/javascript", marker: "marked"},
 	} {
 		assertAssetServed(t, url, asset)
 	}

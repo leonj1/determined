@@ -8,6 +8,10 @@ const pagePath = path.join(__dirname, "..", "src", "clients", "plan_status_page.
 const page = fs.readFileSync(pagePath, "utf8");
 const scripts = [...page.matchAll(/<script(?: [^>]*)?>([\s\S]*?)<\/script>/g)];
 const pageScript = scripts.at(-1)[1];
+const markedSource = fs.readFileSync(
+  path.join(__dirname, "..", "src", "clients", "assets", "marked.min.js"),
+  "utf8",
+);
 
 class FakeClassList {
   constructor() { this.values = new Set(); }
@@ -71,6 +75,7 @@ function createPageEnvironment(location = { pathname: "/goal", hash: "" }) {
   const historyCalls = [];
   const window = createFakeWindow(location, windowListeners);
   const context = vm.createContext(createFakeGlobals(document, window, historyCalls));
+  vm.runInContext(markedSource, context);
   vm.runInContext(pageScript, context);
   return { context, historyCalls, registry, run: (source) => vm.runInContext(source, context) };
 }
@@ -123,7 +128,7 @@ function createFakeWindow(location, listeners) {
 
 function createFakeGlobals(document, window, historyCalls) {
   return {
-    Diff2Html: { html: () => "" },
+    Diff2Html: { html: () => "DIFF2HTML_MARKER" },
     EventSource: class { constructor() { this.onmessage = null; this.onerror = null; } },
     console,
     document,
@@ -156,6 +161,62 @@ test("heading ids use the requested document anchor contract", () => {
   assert.equal(plain, "<h2>Widget behavior</h2>");
   assert.equal(explanation, '<h2 id="explain--widget-behavior">Widget behavior</h2>');
   assert.equal(plan, '<h2 id="plan--widget-behavior">Widget behavior</h2>');
+});
+
+test("nested headings take no body id and stay in lockstep with planSections", () => {
+  const browser = createPageEnvironment();
+  const input = "## A\n\n> ## A\n\n## A";
+  const html = browser.run(`markdownToHtml(${JSON.stringify(input)}, {
+    headingIds: true, headingPrefix: "plan--", headingLevels: [2, 3, 4]
+  })`);
+  assert(html.includes('<h2 id="plan--a">A</h2>'), html);
+  assert(html.includes('<h2 id="plan--a-2">A</h2>'), html);
+  assert(!html.includes("plan--a-3"), html);
+  assert(/<blockquote>\s*<h2>A<\/h2>\s*<\/blockquote>/.test(html), html);
+
+  const sectionIds = browser.run(
+    `planSections(${JSON.stringify(input)}).map((s) => s.id).join(",")`
+  );
+  assert.equal(sectionIds, "plan--a,plan--a-2");
+
+  const listInput = "- ## B\n\n## B";
+  const listHtml = browser.run(`markdownToHtml(${JSON.stringify(listInput)}, {
+    headingIds: true, headingPrefix: "plan--", headingLevels: [2, 3, 4]
+  })`);
+  assert(listHtml.includes('<h2 id="plan--b">B</h2>'), listHtml);
+  assert(!listHtml.includes("plan--b-2"), listHtml);
+  const listSectionIds = browser.run(
+    `planSections(${JSON.stringify(listInput)}).map((s) => s.id).join(",")`
+  );
+  assert.equal(listSectionIds, "plan--b");
+});
+
+test("fence styles marked lexes as code stay in lockstep with planSections", () => {
+  const browser = createPageEnvironment();
+  const options = `{ headingIds: true, headingPrefix: "plan--", headingLevels: [2, 3, 4] }`;
+
+  const tildeInput = "~~~\n## A\n~~~\n\n## A\n\n## A";
+  const tildeHtml = browser.run(
+    `markdownToHtml(${JSON.stringify(tildeInput)}, ${options})`
+  );
+  assert(tildeHtml.includes('<h2 id="plan--a">A</h2>'), tildeHtml);
+  assert(tildeHtml.includes('<h2 id="plan--a-2">A</h2>'), tildeHtml);
+  assert(!tildeHtml.includes("plan--a-3"), tildeHtml);
+  const tildeSectionIds = browser.run(
+    `planSections(${JSON.stringify(tildeInput)}).map((s) => s.id).join(",")`
+  );
+  assert.equal(tildeSectionIds, "plan--a,plan--a-2");
+
+  const indentedInput = "  ```\n## C\n  ```\n\n## C";
+  const indentedHtml = browser.run(
+    `markdownToHtml(${JSON.stringify(indentedInput)}, ${options})`
+  );
+  assert(indentedHtml.includes('<h2 id="plan--c">C</h2>'), indentedHtml);
+  assert(!indentedHtml.includes("plan--c-2"), indentedHtml);
+  const indentedSectionIds = browser.run(
+    `planSections(${JSON.stringify(indentedInput)}).map((s) => s.id).join(",")`
+  );
+  assert.equal(indentedSectionIds, "plan--c");
 });
 
 test("the Plan tab has links to each plan section", () => {
@@ -343,4 +404,77 @@ test("sticky offsets follow the rendered header and progress heights", () => {
   assert.equal(browser.run(`document.documentElement.style["--header-height"]`), "72px");
   assert.equal(browser.run(`document.documentElement.style["--progress-height"]`), "31px");
   assert.equal(browser.run(`document.documentElement.style["--tabs-height"]`), "44px");
+});
+
+
+test("raw HTML is escaped and never passed through", () => {
+  const browser = createPageEnvironment();
+  const html = browser.run(`markdownToHtml("hello <b>x</b>")`);
+  assert(html.includes("hello &lt;b&gt;x&lt;/b&gt;"));
+  assert(!html.includes("<b>"));
+});
+
+test("links open in a blank noopener target", () => {
+  const browser = createPageEnvironment();
+  const html = browser.run(`markdownToHtml("[x](https://example.com)")`);
+  assert.equal(html, '<p><a href="https://example.com" target="_blank" rel="noopener">x</a></p>\n');
+});
+
+test("a javascript: link scheme is not rendered as an executable href", () => {
+  const browser = createPageEnvironment();
+  const lower = browser.run(`markdownToHtml("[x](javascript:alert(1))")`);
+  assert(!lower.includes("href="), lower);
+  assert(!/href="[^"]*javascript:/.test(lower));
+  assert(lower.includes("x"));
+  const mixed = browser.run(`markdownToHtml("[x](JaVaScRiPt:alert(1))")`);
+  assert(!/href="[^"]*javascript:/i.test(mixed), mixed);
+});
+
+test("a javascript: image scheme is not rendered as an executable src", () => {
+  const browser = createPageEnvironment();
+  const html = browser.run(`markdownToHtml("![x](javascript:alert(1))")`);
+  assert(!/src="[^"]*javascript:/i.test(html), html);
+  assert(!html.includes("<img"), html);
+});
+
+test("http/https/mailto and relative link schemes still render as anchors", () => {
+  const browser = createPageEnvironment();
+  assert(browser.run(`markdownToHtml("[x](https://example.com)")`).includes('href="https://example.com"'));
+  assert(browser.run(`markdownToHtml("[x](mailto:a@b.com)")`).includes('href="mailto:a@b.com"'));
+  assert(browser.run(`markdownToHtml("[x](/plan#foo)")`).includes('href="/plan#foo"'));
+});
+
+test("fenced code dispatches to the syntax highlighter", () => {
+  const browser = createPageEnvironment();
+  const html = browser.run("markdownToHtml(\"```go\\nreturn nil\\n```\")");
+  assert(html.startsWith("<pre><code>"));
+  assert(html.includes('class="tok-keyword"'));
+});
+
+test("a flattened one-line table renders as a GFM table", () => {
+  const browser = createPageEnvironment();
+  const html = browser.run(`markdownToHtml("| a | b | |---|---| | 1 | 2 |")`);
+  assert(html.includes("<table>"));
+  assert(html.includes("<td>1</td>"));
+  assert(html.includes("<td>2</td>"));
+});
+
+test("a diff fence dispatches to Diff2Html verbatim", () => {
+  const browser = createPageEnvironment();
+  const html = browser.run("markdownToHtml(\"```diff\\n-a\\n+b\\n```\")");
+  assert(html.includes("DIFF2HTML_MARKER"));
+});
+
+test("a mermaid sequenceDiagram fence renders a hand-built SVG", () => {
+  const browser = createPageEnvironment();
+  const html = browser.run("markdownToHtml(\"```mermaid\\nsequenceDiagram\\n  A->>B: hi\\n```\")");
+  assert(html.includes("<svg"));
+  assert(html.includes("seq-diagram"));
+});
+
+test("a raw <script> snippet renders escaped and never executes", () => {
+  const browser = createPageEnvironment();
+  const html = browser.run("markdownToHtml(\"<script>alert(1)</script>\")");
+  assert(html.includes("&lt;script&gt;"));
+  assert(!html.includes("<script>"));
 });

@@ -560,6 +560,7 @@
     </section>
   </aside>
 </main>
+<script src="/assets/marked.min.js"></script>
 <script src="/assets/diff2html.min.js"></script>
 <script>
   "use strict";
@@ -764,46 +765,6 @@
     return "<pre><code>" + highlightCode(code, language) + "</code></pre>";
   }
 
-  // Renders inline markdown. Code spans are extracted first — before any
-  // other replacement and before HTML in them could be mangled — so emphasis
-  // and link rules never fire inside code. Handles, in order: fenced blocks
-  // flattened onto one line (```lang … ```), double-backtick spans
-  // (``code with ` inside``), then single-backtick spans.
-  function renderInline(text) {
-    const spans = [];
-    const stash = (html) => { spans.push(html); return "\u0000" + (spans.length - 1) + "\u0000"; };
-    let out = text.replace(/```(\w*)\s([\s\S]*?)```/g, (m, language, code) =>
-      stash(renderFence(code.trim(), language.toLowerCase())));
-    out = out.replace(/``([^`](?:[^`]|`(?!`))*)``/g, (m, code) =>
-      stash("<code>" + escapeHtml(code.trim()) + "</code>"));
-    out = out.replace(/`([^`\n]+)`/g, (m, code) =>
-      stash("<code>" + escapeHtml(code) + "</code>"));
-    let html = escapeHtml(out);
-    html = html.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
-    html = html.replace(/(^|[^*])\*([^*\n]+)\*/g, "$1<em>$2</em>");
-    html = html.replace(/\[([^\]]+)\]\((https?:[^)\s]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
-    return html.replace(/\u0000(\d+)\u0000/g, (m, i) => spans[+i]);
-  }
-
-  // Split one table row into trimmed cell strings, dropping the outer pipes.
-  function splitRow(line) {
-    return line.trim().replace(/^\|/, "").replace(/\|$/, "").split("|").map((cell) => cell.trim());
-  }
-  function isTableRow(line) {
-    return /^\s*\|.*\|\s*$/.test(line);
-  }
-  function isSeparatorRow(line) {
-    return isTableRow(line) && splitRow(line).every((cell) => /^:?-{3,}:?$/.test(cell));
-  }
-  function renderTable(rows) {
-    const header = splitRow(rows[0]);
-    const body = rows.slice(2).map(splitRow);
-    const head = "<tr>" + header.map((cell) => "<th>" + renderInline(cell) + "</th>").join("") + "</tr>";
-    const rowsHtml = body.map((cells) =>
-      "<tr>" + cells.map((cell) => "<td>" + renderInline(cell) + "</td>").join("") + "</tr>"
-    ).join("");
-    return "<table><thead>" + head + "</thead><tbody>" + rowsHtml + "</tbody></table>";
-  }
   // Some sources flatten a markdown table onto one line, joining rows with a
   // space ("| a | b | |---|---| | 1 | 2 |"). Re-split "| |" boundaries into
   // newlines so the block parser sees one row per line.
@@ -836,63 +797,65 @@
     return ' id="' + prefix + uniqueHeadingSlug(headingText, counts) + '"';
   }
 
+  // Body markdown renders through a fresh marked instance per call. Renderer
+  // overrides preserve the project's own guarantees: special-fence dispatch
+  // (mermaid/diff) via renderFence, ATX-only heading ids in lockstep with
+  // planSections, blank-target links, and raw-HTML escaping (no passthrough).
+  // unflattenTables preprocessing is applied to the raw string before parse.
+  function isSafeUrl(url) {
+    if (!url) return false;
+    // Strip leading whitespace/control chars a browser ignores before scheme parsing.
+    const normalized = String(url).replace(/[\x00-\x20]+/g, "").toLowerCase();
+    if (/^(?:https?|mailto):/.test(normalized)) return true;
+    // Scheme-relative and path/anchor-relative URLs carry no dangerous scheme.
+    if (/^(?:\/\/|\/|\.|#|\?)/.test(normalized)) return true;
+    // No colon before the first path/query/fragment delimiter => relative, safe.
+    return !/^[^/?#]*:/.test(normalized);
+  }
+
   function markdownToHtml(text, options = {}) {
-    const lines = unflattenTables(text).split("\n");
-    const out = [];
     const headingCounts = {};
-    let index = 0;
-    while (index < lines.length) {
-      const line = lines[index];
-      if (line.startsWith("```")) {
-        const language = line.slice(3).trim().toLowerCase();
-        const code = [];
-        index++;
-        while (index < lines.length && !lines[index].startsWith("```")) code.push(lines[index++]);
-        index++; // closing fence
-        out.push(renderFence(code.join("\n"), language));
-      } else if (/^#{1,6}\s+/.test(line)) {
-        const level = line.match(/^#+/)[0].length;
-        const headingText = line.replace(/^#+\s+/, "");
-        const id = headingIdAttribute(options, level, headingText, headingCounts);
-        out.push("<h" + level + id + ">" + renderInline(headingText) + "</h" + level + ">");
-        index++;
-      } else if (/^\s*([-*+]|\d+\.)\s+/.test(line)) {
-        const ordered = /^\s*\d+\./.test(line);
-        const tag = ordered ? "ol" : "ul";
-        const items = [];
-        while (index < lines.length && /^\s*([-*+]|\d+\.)\s+/.test(lines[index])) {
-          items.push("<li>" + renderInline(lines[index].replace(/^\s*([-*+]|\d+\.)\s+/, "")) + "</li>");
-          index++;
-        }
-        out.push("<" + tag + ">" + items.join("") + "</" + tag + ">");
-      } else if (/^>\s?/.test(line)) {
-        const quoted = [];
-        while (index < lines.length && /^>\s?/.test(lines[index])) {
-          quoted.push(lines[index].replace(/^>\s?/, ""));
-          index++;
-        }
-        out.push("<blockquote>" + markdownToHtml(quoted.join("\n"), options) + "</blockquote>");
-      } else if (isTableRow(line) && index + 1 < lines.length && isSeparatorRow(lines[index + 1])) {
-        const rows = [];
-        while (index < lines.length && isTableRow(lines[index])) rows.push(lines[index++]);
-        out.push(renderTable(rows));
-      } else if (/^\s*(---+|\*\*\*+)\s*$/.test(line)) {
-        out.push("<hr>");
-        index++;
-      } else if (line.trim() === "") {
-        index++;
-      } else {
-        const paragraph = [];
-        while (index < lines.length && lines[index].trim() !== "" &&
-               !/^(#{1,6}\s|```|>\s?|\s*([-*+]|\d+\.)\s)/.test(lines[index]) &&
-               !(isTableRow(lines[index]) && index + 1 < lines.length && isSeparatorRow(lines[index + 1]))) {
-          paragraph.push(lines[index]);
-          index++;
-        }
-        out.push("<p>" + renderInline(paragraph.join(" ")) + "</p>");
-      }
+    const md = new marked.Marked({ gfm: true });
+    md.use({
+      renderer: {
+        code(token) {
+          const language = (token.lang || "").trim().split(/\s+/)[0].toLowerCase();
+          return renderFence(token.text, language);
+        },
+        heading(token) {
+          const depth = token.depth;
+          // Only top-level ATX headings get ids: planSections scans top-level
+          // ATX lines, so nested (blockquote/list) headings must neither take
+          // an id nor advance the shared dedup counter.
+          const isAtx = /^#/.test((token.raw || "").trimStart());
+          const eligible = token.plansectionEligible === true && isAtx;
+          const id = headingIdAttribute(options, eligible ? depth : 0, token.text, headingCounts);
+          return "<h" + depth + id + ">" + this.parser.parseInline(token.tokens) + "</h" + depth + ">";
+        },
+        link(token) {
+          const inner = this.parser.parseInline(token.tokens);
+          if (!isSafeUrl(token.href)) return inner;
+          const href = escapeHtml(token.href || "");
+          const title = token.title ? ' title="' + escapeHtml(token.title) + '"' : "";
+          return '<a href="' + href + '" target="_blank" rel="noopener"' + title + ">" +
+            inner + "</a>";
+        },
+        image(token) {
+          if (!isSafeUrl(token.href)) return escapeHtml(token.text || "");
+          const src = escapeHtml(token.href || "");
+          const title = token.title ? ' title="' + escapeHtml(token.title) + '"' : "";
+          return '<img src="' + src + '" alt="' + escapeHtml(token.text || "") + '"' + title + ">";
+        },
+        html(token) {
+          return escapeHtml(token.text);
+        },
+      },
+    });
+    const tokens = md.lexer(unflattenTables(text));
+    for (const token of tokens) {
+      if (token.type === "heading") token.plansectionEligible = true;
     }
-    return out.join("");
+    return md.parser(tokens);
   }
 
   function setDoc(node, text, emptyText, options = {}) {
@@ -908,19 +871,21 @@
     }
   }
 
+  // Sections come from marked's block lexer — the same lexer markdownToHtml
+  // renders with — so both sides agree on what is fenced code (```, ~~~, and
+  // 1-3-space-indented fences) and the shared-slug counters stay in lockstep.
   function planSections(text) {
     const sections = [];
     const counts = {};
-    let inFence = false;
-    for (const line of unflattenTables(text || "").split("\n")) {
-      if (line.startsWith("```")) { inFence = !inFence; continue; }
-      if (inFence) continue;
-      const match = line.match(/^(#{2,4})\s+(.+)/);
-      if (!match) continue;
+    const tokens = new marked.Marked({ gfm: true }).lexer(unflattenTables(text || ""));
+    for (const token of tokens) {
+      if (token.type !== "heading") continue;
+      if (token.depth < 2 || token.depth > 4) continue;
+      if (!/^#/.test(token.raw.trimStart())) continue;
       sections.push({
-        id: "plan--" + uniqueHeadingSlug(match[2], counts),
-        level: match[1].length,
-        title: match[2],
+        id: "plan--" + uniqueHeadingSlug(token.text, counts),
+        level: token.depth,
+        title: token.text,
       });
     }
     return sections;

@@ -24,7 +24,7 @@ const (
 //go:embed plan_status_page.html
 var planStatusPage []byte
 
-//go:embed assets/diff2html.min.css assets/diff2html.min.js
+//go:embed assets/diff2html.min.css assets/diff2html.min.js assets/marked.min.js
 var planStatusAssets embed.FS
 
 // PlanStatusSource is the slice of session state the server needs: the current
