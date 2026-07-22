@@ -24,9 +24,9 @@ func TestSelectedToolRunsTheRightCommand(t *testing.T) {
 		tool string
 		want string
 	}{
-		{"droid", `droid exec "do the work" --auto high`},
+		{"droid", `droid exec "do the work" --auto high --output-format json`},
 		{"pi", `pi -p "do the work"`},
-		{"claude", `claude -p "do the work" --permission-mode acceptEdits`},
+		{"claude", `claude -p "do the work" --permission-mode acceptEdits --output-format stream-json --verbose`},
 	}
 	for _, c := range cases {
 		tool, err := models.SelectTool(models.ToolName(c.tool), models.ToolOptions{})
@@ -47,8 +47,8 @@ func TestSelectedDroidAndClaudeCanOverrideTheModel(t *testing.T) {
 		tool string
 		want string
 	}{
-		{"droid", `droid exec "do the work" --auto high --model claude-opus-4-7`},
-		{"claude", `claude -p "do the work" --permission-mode acceptEdits --model opus`},
+		{"droid", `droid exec "do the work" --auto high --output-format json --model claude-opus-4-7`},
+		{"claude", `claude -p "do the work" --permission-mode acceptEdits --output-format stream-json --verbose --model opus`},
 	}
 	modelsByTool := map[string]models.ModelID{
 		"droid":  "claude-opus-4-7",

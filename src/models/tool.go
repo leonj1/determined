@@ -41,7 +41,9 @@ type Tool interface {
 // use "high"; it is not user-configurable.
 const droidAutonomy = "high"
 
-// DroidTool runs the Factory droid CLI: `droid exec "<prompt>" --auto high`.
+// DroidTool runs the Factory droid CLI with JSON output so per-iteration logs
+// record what the tool did, not just its final answer:
+// `droid exec "<prompt>" --auto high --output-format json`.
 // The autonomy level is fixed for unattended runs.
 type DroidTool struct {
 	Model ModelID
@@ -54,7 +56,7 @@ func (t DroidTool) Identity() ToolIdentity {
 }
 
 func (t DroidTool) Invocation(prompt string) Invocation {
-	args := []string{"exec", prompt, "--auto", droidAutonomy}
+	args := []string{"exec", prompt, "--auto", droidAutonomy, "--output-format", "json"}
 	return Invocation{Binary: "droid", Args: withModel(args, t.Model)}
 }
 
@@ -74,8 +76,10 @@ func (PiTool) Invocation(prompt string) Invocation {
 // "acceptEdits"; it is not user-configurable.
 const claudePermissionMode = "acceptEdits"
 
-// ClaudeTool runs the Claude CLI in print mode:
-// `claude -p "<prompt>" --permission-mode acceptEdits`.
+// ClaudeTool runs the Claude CLI in print mode with a streamed JSON tool-call
+// trace so per-iteration logs record what the tool did, not just its final
+// answer:
+// `claude -p "<prompt>" --permission-mode acceptEdits --output-format stream-json --verbose`.
 type ClaudeTool struct {
 	Model ModelID
 }
@@ -87,7 +91,12 @@ func (t ClaudeTool) Identity() ToolIdentity {
 }
 
 func (t ClaudeTool) Invocation(prompt string) Invocation {
-	args := []string{"-p", prompt, "--permission-mode", claudePermissionMode}
+	args := []string{
+		"-p", prompt,
+		"--permission-mode", claudePermissionMode,
+		"--output-format", "stream-json",
+		"--verbose",
+	}
 	return Invocation{Binary: "claude", Args: withModel(args, t.Model)}
 }
 
