@@ -340,7 +340,7 @@ test("log batches append under stable headers and render overrun gaps", () => {
       { at: "2026-07-24T10:00:00Z", message: "executing step 1", state: "running" }
     ]);
     globalThis.originalLogArticle = logViews.exec.articles[0];
-    appendLogBatch({
+    appendTailBatch({
       gap: { dropped: 7, stream: "exec", entry: 0 },
       lines: [
         { seq: 8, stream: "exec", entry: 0, text: "first available\\n" },
@@ -356,31 +356,98 @@ test("log batches append under stable headers and render overrun gaps", () => {
   assert.equal(browser.run(`logViews.exec.articles[0].className`), "log-entry state-ok");
   assert.equal(
     browser.run(`logViews.exec.bodies[0].children.map((child) =>
-      typeof child === "string" ? child : child.textContent).join("")`),
-    "… 7 lines skipped …\nfirst available\nnext line\n",
+      typeof child === "string" ? child : child.textContent).join("|")`),
+    "… 7 lines skipped …|first available|next line",
   );
   assert.equal(browser.run(`logViews.exec.bodies[0].children[0].className`), "log-gap");
 });
 
-test("fetched markdown log bodies retain document rendering", () => {
+test("streamed log lines render as bounded plain text, never markdown", () => {
   const browser = createPageEnvironment();
   browser.run(`
     syncLogHeaders("plan", [
       { at: "2026-07-24T10:00:00Z", message: "drafting plan" }
     ]);
-    appendLogBatch({
+    appendTailBatch({
       lines: [
         { seq: 1, stream: "plan", entry: 0, text: "## Result\\n" },
-        { seq: 2, stream: "plan", entry: 0, text: "\\n- first\\n- second\\n" }
+        { seq: 2, stream: "plan", entry: 0, text: "- **first**\\n" }
       ]
     });
   `);
 
-  assert.equal(browser.run(`logViews.plan.bodies[0].classList.contains("plain")`), false);
-  const html = browser.run(`logViews.plan.bodies[0].innerHTML`);
-  assert(html.includes("<h2>Result</h2>"), html);
-  assert(html.includes("<li>first</li>"), html);
-  assert(html.includes("<li>second</li>"), html);
+  assert.equal(browser.run(`logViews.plan.bodies[0].classList.contains("plain")`), true);
+  assert.equal(browser.run(`logViews.plan.bodies[0].innerHTML`), "");
+  assert.equal(
+    browser.run(`logViews.plan.bodies[0].children.map((child) => child.textContent).join("|")`),
+    "## Result|- **first**",
+  );
+});
+
+test("the tail window keeps only the newest 20 lines", () => {
+  const browser = createPageEnvironment();
+  browser.run(`
+    syncLogHeaders("exec", [{ at: "2026-07-24T10:00:00Z", message: "executing", state: "running" }]);
+    appendTailBatch({
+      lines: Array.from({ length: 30 }, (_v, i) =>
+        ({ seq: i + 1, stream: "exec", entry: 0, text: "line " + (i + 1) + "\\n" }))
+    });
+  `);
+
+  assert.equal(browser.run(`logWindow.length`), 20);
+  assert.equal(browser.run(`logViews.exec.bodies[0].children.length`), 20);
+  assert.equal(browser.run(`logViews.exec.bodies[0].children[0].textContent`), "line 11");
+  assert.equal(browser.run(`logViews.exec.bodies[0].children[19].textContent`), "line 30");
+});
+
+test("paging backwards fetches 10 older lines, trims to 25, and suspends the tail", async () => {
+  const browser = createPageEnvironment();
+  const requested = await browser.run(`
+    globalThis.fetchUrls = [];
+    fetch = async (url) => {
+      fetchUrls.push(url);
+      return { ok: true, json: async () => ({
+        lines: Array.from({ length: 10 }, (_v, i) =>
+          ({ seq: i + 1, stream: "exec", entry: 0, text: "old " + (i + 1) + "\\n" })),
+        nextSeq: 10, latestSeq: 30,
+      }) };
+    };
+    syncLogHeaders("exec", [{ at: "2026-07-24T10:00:00Z", message: "executing", state: "running" }]);
+    appendTailBatch({
+      lines: Array.from({ length: 20 }, (_v, i) =>
+        ({ seq: i + 11, stream: "exec", entry: 0, text: "line " + (i + 11) + "\\n" }))
+    });
+    logLatest = 30;
+    fetchOlderLogs().then(() => fetchUrls.join(","));
+  `);
+
+  assert.equal(requested, "/logs?before=11");
+  assert.equal(browser.run(`logTailing`), false);
+  assert.equal(browser.run(`logWindow.length`), 25);
+  assert.equal(browser.run(`logViews.exec.bodies[0].children[0].textContent`), "old 1");
+  assert.equal(browser.run(`logViews.exec.bodies[0].children[24].textContent`), "line 25");
+  assert.equal(browser.run(`document.getElementById("log-jump").hidden`), false);
+  assert.equal(browser.run(`document.getElementById("log-jump").textContent`), "⏬ Live (5 new)");
+});
+
+test("resuming the tail clears scrollback and refetches the newest window", async () => {
+  const browser = createPageEnvironment();
+  const requested = await browser.run(`
+    globalThis.fetchUrls = [];
+    fetch = async (url) => {
+      fetchUrls.push(url);
+      return { ok: true, json: async () => ({ lines: [], nextSeq: 30, latestSeq: 30 }) };
+    };
+    logWindow = [{ seq: 1, stream: "exec", entry: 0, text: "old 1\\n" }];
+    logTailing = false;
+    logLatest = 30;
+    resumeLogTail();
+    Promise.resolve().then(() => fetchUrls.join(","));
+  `);
+
+  assert.equal(browser.run(`logTailing`), true);
+  assert.equal(requested, "/logs?since=10");
+  assert.equal(browser.run(`document.getElementById("log-jump").hidden`), true);
 });
 
 test("log fetches wait for a render frame before requesting the next batch", async () => {
@@ -396,7 +463,7 @@ test("log fetches wait for a render frame before requesting the next batch", asy
       const batch = fetchBatches.shift();
       return { ok: true, json: async () => batch };
     };
-    appendLogBatch = (batch) => fetchOrder.push("append-" + batch.nextSeq);
+    appendTailBatch = (batch) => fetchOrder.push("append-" + batch.nextSeq);
     requestAnimationFrame = (callback) => { fetchOrder.push("paint"); callback(); };
     logFetchPending = true;
     fetchLogBatches().then(() => fetchOrder.join(","));

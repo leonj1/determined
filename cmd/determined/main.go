@@ -548,12 +548,21 @@ func runInteractivePlan(ctx context.Context, orchestrator *services.PlanOrchestr
 }
 
 func startStatusSession(status *services.PlanStatusService, clock services.Clock) (*clients.PlanStatusServer, func(), bool) {
+	historyPath := statusLogHistoryPath()
+	history, err := clients.NewSQLiteLogStore(historyPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "determined: %v\n", err)
+		return nil, func() {}, false
+	}
+	status.WithLogHistory(history)
 	chat := services.NewChatService(status, clock)
 	server := clients.NewPlanStatusServer(status, status, status, clock).
 		WithLogSource(status).WithChatResponder(chat).
 		WithTaskControl(status).WithStallChoice(status)
 	if err := server.Start(); err != nil {
 		fmt.Fprintf(os.Stderr, "determined: %v\n", err)
+		history.Close() //nolint:errcheck // best-effort close on failed start
+		removeStatusLogHistory(historyPath)
 		return nil, func() {}, false
 	}
 	locator, located := sessionLocator()
@@ -569,8 +578,23 @@ func startStatusSession(status *services.PlanStatusService, clock services.Clock
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
 		server.Shutdown(shutdownCtx) //nolint:errcheck // best-effort shutdown on exit
+		history.Close()              //nolint:errcheck // best-effort close on exit
+		removeStatusLogHistory(historyPath)
 	}
 	return server, cleanup, true
+}
+
+// statusLogHistoryPath names this run's log history database: per-process, in
+// the system temp directory, removed again at session cleanup.
+func statusLogHistoryPath() string {
+	return filepath.Join(os.TempDir(), fmt.Sprintf("determined-status-logs-%d.db", os.Getpid()))
+}
+
+// removeStatusLogHistory deletes the history database and its WAL sidecars.
+func removeStatusLogHistory(path string) {
+	for _, name := range []string{path, path + "-wal", path + "-shm"} {
+		os.Remove(name) //nolint:errcheck // best-effort cleanup on exit
+	}
 }
 
 // runHeadlessExec makes an unattended execution observable while preserving

@@ -14,18 +14,17 @@ type fakeLogBuffer struct {
 	subscribers []chan struct{}
 }
 
-func (f *fakeLogBuffer) Append(stream models.LogStream, entry models.LogEntryIndex, text string) models.LogSequence {
+func (f *fakeLogBuffer) Append(stream models.LogStream, entry models.LogEntryIndex, text string) []models.LogLine {
 	sequence := models.LogSequence(len(f.lines) + 1)
-	f.lines = append(f.lines, models.LogLine{
-		Sequence: sequence, Stream: stream, Entry: entry, Text: text,
-	})
+	line := models.LogLine{Sequence: sequence, Stream: stream, Entry: entry, Text: text}
+	f.lines = append(f.lines, line)
 	for _, subscriber := range f.subscribers {
 		select {
 		case subscriber <- struct{}{}:
 		default:
 		}
 	}
-	return sequence
+	return []models.LogLine{line}
 }
 
 func (f *fakeLogBuffer) Since(since models.LogSequence, limit models.LogBatchSize) models.LogBatch {

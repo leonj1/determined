@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"strings"
@@ -19,9 +20,14 @@ type fakePlanStatusSource struct {
 	snapshot     models.PlanSessionStatus
 	updates      chan models.PlanSessionStatus
 	logBatch     models.LogBatch
+	beforeBatch  models.LogBatch
+	beforeErr    error
 	logUpdates   chan struct{}
 	requestedSeq models.LogSequence
 	requestLimit models.LogBatchSize
+	beforeSeq    models.LogSequence
+	beforeLimit  models.LogBatchSize
+	beforeCalls  int
 }
 
 func newFakePlanStatusSource(snapshot models.PlanSessionStatus) *fakePlanStatusSource {
@@ -48,6 +54,16 @@ func (f *fakePlanStatusSource) LogsSince(since models.LogSequence, limit models.
 	f.requestedSeq = since
 	f.requestLimit = limit
 	return f.logBatch
+}
+
+func (f *fakePlanStatusSource) LogsBefore(before models.LogSequence, limit models.LogBatchSize) (models.LogBatch, error) {
+	f.beforeSeq = before
+	f.beforeLimit = limit
+	f.beforeCalls++
+	if f.beforeErr != nil {
+		return models.LogBatch{}, f.beforeErr
+	}
+	return f.beforeBatch, nil
 }
 
 func (f *fakePlanStatusSource) SubscribeLogOutput() (<-chan struct{}, func()) {
@@ -352,6 +368,91 @@ func TestPlanStatusServerLetsBrowserFetchSequencedLogBatch(t *testing.T) {
 	}
 	if batch.Gap == nil || batch.Gap.Dropped != 3 || len(batch.Lines) != 1 {
 		t.Fatalf("batch = %+v, want gap marker and oldest available line", batch)
+	}
+}
+
+func TestPlanStatusServerPagesBackwardsThroughLogHistory(t *testing.T) {
+	source := newFakePlanStatusSource(models.PlanSessionStatus{})
+	source.beforeBatch = models.LogBatch{
+		Lines: []models.LogLine{
+			{Sequence: 3, Stream: models.LogStreamExec, Entry: 1, Text: "older\n"},
+			{Sequence: 4, Stream: models.LogStreamExec, Entry: 1, Text: "old\n"},
+		},
+		Next: 4, Latest: 40,
+	}
+	server := clients.NewPlanStatusServer(
+		source, &fakeAnnotationSink{}, &fakeImplementSink{}, serverClock{}).
+		WithLogSource(source)
+	if err := server.Start(); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	defer shutdown(t, server)
+
+	resp, err := http.Get(server.URL() + "logs?before=5")
+	if err != nil {
+		t.Fatalf("fetch logs: %v", err)
+	}
+	defer resp.Body.Close()
+	var batch models.LogBatch
+	if err := json.NewDecoder(resp.Body).Decode(&batch); err != nil {
+		t.Fatalf("decode logs: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK || source.beforeSeq != 5 || source.beforeLimit != 10 {
+		t.Fatalf("status/before/limit = %d/%d/%d, want 200/5/10",
+			resp.StatusCode, source.beforeSeq, source.beforeLimit)
+	}
+	if len(batch.Lines) != 2 || batch.Lines[0].Sequence != 3 || batch.Latest != 40 {
+		t.Fatalf("batch = %+v, want the two persisted lines and latest 40", batch)
+	}
+}
+
+func TestPlanStatusServerRejectsInvalidBackwardsCursors(t *testing.T) {
+	source := newFakePlanStatusSource(models.PlanSessionStatus{})
+	server := clients.NewPlanStatusServer(
+		source, &fakeAnnotationSink{}, &fakeImplementSink{}, serverClock{}).
+		WithLogSource(source)
+	if err := server.Start(); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	defer shutdown(t, server)
+
+	for _, cursor := range []string{"0", "not-a-sequence"} {
+		resp, err := http.Get(server.URL() + "logs?before=" + cursor)
+		if err != nil {
+			t.Fatalf("fetch logs before %q: %v", cursor, err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Fatalf("before %q status = %d, want 400", cursor, resp.StatusCode)
+		}
+	}
+	if source.beforeCalls != 0 {
+		t.Fatalf("invalid cursors reached the source %d times, want 0", source.beforeCalls)
+	}
+}
+
+func TestPlanStatusServerReportsLogHistoryFailure(t *testing.T) {
+	source := newFakePlanStatusSource(models.PlanSessionStatus{})
+	source.beforeErr = errors.New("log history unavailable")
+	server := clients.NewPlanStatusServer(
+		source, &fakeAnnotationSink{}, &fakeImplementSink{}, serverClock{}).
+		WithLogSource(source)
+	if err := server.Start(); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	defer shutdown(t, server)
+
+	resp, err := http.Get(server.URL() + "logs?before=5")
+	if err != nil {
+		t.Fatalf("fetch logs: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500", resp.StatusCode)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	if !strings.Contains(string(body), "log history unavailable") {
+		t.Fatalf("body = %q, want the history failure reason", body)
 	}
 }
 

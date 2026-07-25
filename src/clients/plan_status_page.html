@@ -334,6 +334,13 @@
   .log-entry .log-head .message { font-weight: 600; order: 2; }
   .log-entry .log-body { padding: 0 0 0.9rem; }
   .log-gap { display: block; color: var(--text-muted); font-style: italic; }
+  .log-line { white-space: pre-wrap; word-break: break-word; }
+  .log-jump {
+    position: fixed; bottom: 1.2rem; right: 1.2rem; z-index: 30;
+    padding: 0.45rem 0.9rem; border: 1px solid var(--border);
+    background: var(--bg); color: var(--text); cursor: pointer;
+    font: inherit; box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
+  }
   .log-entry .log-body.doc p:last-child, .log-entry .log-body.doc ul:last-child,
   .log-entry .log-body.doc pre:last-child, .log-entry .log-body.doc table:last-child { margin-bottom: 0; }
   /* Execution entries carry their invocation's outcome as a subtle background
@@ -591,6 +598,7 @@
     </section>
     <section class="panel" id="panel-steps"><h2 class="panel-title">Steps</h2><div id="steps"></div><div id="no-steps" class="empty">No steps yet.</div></section>
     <section class="panel" id="panel-log"><h2 class="panel-title">Log</h2><div id="log"></div><div id="no-log" class="empty">No log output yet.</div></section>
+    <button id="log-jump" class="log-jump" hidden>⏬ Live</button>
     <section class="panel" id="panel-exec">
       <h2 class="panel-title">Execution</h2>
       <div id="exec-state" class="empty">Not started — the Implement button appears once planning completes.</div>
@@ -1375,18 +1383,25 @@
   }
 
   const logViews = {
-    plan: logView("log", "panel-log"),
-    exec: logView("exec-log", "panel-exec"),
+    plan: logView("plan", "log", "panel-log"),
+    exec: logView("exec", "exec-log", "panel-exec"),
   };
+  // The page keeps a bounded window of lines in the DOM. While tailing, the
+  // newest LOG_TAIL_LINES lines are shown and older ones drop off. Paging
+  // backwards fetches older lines and trims the newest end to
+  // LOG_SCROLLBACK_LINES, so the DOM never grows with the run's length.
+  const LOG_TAIL_LINES = 20;
+  const LOG_SCROLLBACK_LINES = 25;
+  let logWindow = [];
   let logCursor = 0;
+  let logLatest = 0;
+  let logTailing = true;
   let logFetchRunning = false;
   let logFetchPending = false;
+  let logBackFetchRunning = false;
 
-  function logView(listId, panelId) {
-    return {
-      list: el(listId), panel: el(panelId), articles: [], bodies: [],
-      segments: [], rendered: [],
-    };
+  function logView(stream, listId, panelId) {
+    return { stream, list: el(listId), panel: el(panelId), articles: [], bodies: [] };
   }
 
   function render(status) {
@@ -1710,7 +1725,7 @@
     view.list.append(article);
     view.articles[index] = article;
     view.bodies[index] = body;
-    renderStoredSegments(view, index);
+    renderStreamWindow(view.stream);
   }
 
   function logMarker() {
@@ -1739,80 +1754,79 @@
       : "log-entry";
   }
 
-  function storeLogSegment(stream, entry, text, gap) {
+  // renderLogWindow rebuilds both streams' entry bodies from the bounded
+  // window — at most LOG_SCROLLBACK_LINES plain-text nodes in total, so the
+  // cost per update is constant no matter how long the run has streamed.
+  function renderLogWindow() {
+    renderStreamWindow("plan");
+    renderStreamWindow("exec");
+  }
+
+  function renderStreamWindow(stream) {
     const view = logViews[stream];
-    if (!view || entry < 0 || !text) return;
-    if (!view.segments[entry]) view.segments[entry] = [];
-    view.segments[entry].push({ text, gap });
+    const byEntry = new Map();
+    for (const line of logWindow) {
+      if (line.stream !== stream) continue;
+      if (!byEntry.has(line.entry)) byEntry.set(line.entry, []);
+      byEntry.get(line.entry).push(line);
+    }
+    view.bodies.forEach((body, entry) => renderEntryBody(body, byEntry.get(entry)));
   }
 
-  function renderStoredSegments(view, entry) {
-    const body = view.bodies[entry];
-    if (!body) return;
-    const segments = view.segments[entry] || [];
+  function renderEntryBody(body, lines) {
     body.replaceChildren();
-    body.classList.remove("plain");
-    if (!segments.some((segment) => segment.gap)) {
-      setDoc(body, segments.map((segment) => segment.text).join(""), "");
-    } else {
-      renderGappedLogBody(body, segments);
+    body.classList.add("plain");
+    if (!lines || !lines.length) {
+      body.hidden = true;
+      return;
     }
-    view.rendered[entry] = segments.length;
-    body.hidden = segments.length === 0;
+    body.hidden = false;
+    for (const line of lines) body.append(logLineNode(line));
   }
 
-  function renderGappedLogBody(body, segments) {
-    let text = "";
-    for (const segment of segments) {
-      if (!segment.gap) {
-        text += segment.text;
-        continue;
-      }
-      appendLogText(body, text);
-      text = "";
-      body.append(logGap(segment.text));
-    }
-    appendLogText(body, text);
+  function logLineNode(line) {
+    const node = document.createElement("div");
+    node.className = line.gap ? "log-gap" : "log-line";
+    const text = line.text.replace(/\n$/, "");
+    node.textContent = text === "" ? " " : text;
+    return node;
   }
 
-  function appendLogText(body, text) {
-    if (!text) return;
-    const content = document.createElement("div");
-    content.className = "log-content doc";
-    setDoc(content, text, "");
-    body.append(content);
+  function oldestWindowSeq() {
+    for (const line of logWindow) if (line.seq) return line.seq;
+    return 0;
   }
 
-  function logGap(text) {
-    const marker = document.createElement("span");
-    marker.className = "log-gap";
-    marker.textContent = text;
-    return marker;
+  function newestWindowSeq() {
+    for (let i = logWindow.length - 1; i >= 0; i--) if (logWindow[i].seq) return logWindow[i].seq;
+    return 0;
   }
 
-  function appendLogBatch(batch) {
+  function appendTailBatch(batch) {
     const stickToBottom = activeLogAtBottom();
-    const touched = new Map();
     if (batch.gap) {
-      const text = "… " + batch.gap.dropped + " lines skipped …\n";
-      storeLogSegment(batch.gap.stream, batch.gap.entry, text, true);
-      touched.set(batch.gap.stream + ":" + batch.gap.entry, batch.gap);
+      logWindow.push({
+        seq: 0, stream: batch.gap.stream, entry: batch.gap.entry,
+        text: "… " + batch.gap.dropped + " lines skipped …", gap: true,
+      });
     }
     for (const line of batch.lines || []) {
-      storeLogSegment(line.stream, line.entry, line.text, false);
-      touched.set(line.stream + ":" + line.entry, line);
+      logWindow.push({ seq: line.seq, stream: line.stream, entry: line.entry, text: line.text });
     }
-    for (const item of touched.values()) {
-      const view = logViews[item.stream];
-      if (view) renderStoredSegments(view, item.entry);
+    if (logWindow.length > LOG_TAIL_LINES) {
+      logWindow = logWindow.slice(logWindow.length - LOG_TAIL_LINES);
     }
+    renderLogWindow();
     if (stickToBottom) window.scrollTo(0, document.body.scrollHeight);
   }
 
-  function activeLogAtBottom() {
-    const active = logViews.plan.panel.classList.contains("active") ||
+  function logPanelActive() {
+    return logViews.plan.panel.classList.contains("active") ||
       logViews.exec.panel.classList.contains("active");
-    return active &&
+  }
+
+  function activeLogAtBottom() {
+    return logPanelActive() &&
       window.innerHeight + window.scrollY >= document.body.scrollHeight - 40;
   }
 
@@ -1834,17 +1848,82 @@
 
   async function fetchOneLogBatch() {
     try {
-      const response = await fetch("/logs?since=" + logCursor);
+      const cursor = logTailing ? logCursor : logLatest;
+      const response = await fetch("/logs?since=" + cursor);
       if (!response.ok) return false;
       const batch = await response.json();
-      appendLogBatch(batch);
-      logCursor = batch.nextSeq;
+      logLatest = batch.latestSeq;
+      if (logTailing) {
+        appendTailBatch(batch);
+        logCursor = batch.nextSeq;
+      }
+      updateLogJump();
       await nextRender();
-      if (batch.nextSeq < batch.latestSeq) logFetchPending = true;
+      if (logTailing && batch.nextSeq < batch.latestSeq) logFetchPending = true;
       return true;
     } catch (_error) {
       return false;
     }
+  }
+
+  // Paging backwards: near the top of an active log panel, pull the previous
+  // batch of persisted lines and trim the newest end to the scrollback cap.
+  function maybeFetchOlderLogs() {
+    if (!logPanelActive() || window.scrollY > 40) return;
+    fetchOlderLogs();
+  }
+
+  async function fetchOlderLogs() {
+    const oldest = oldestWindowSeq();
+    if (logBackFetchRunning || oldest <= 1) return;
+    logBackFetchRunning = true;
+    try {
+      const response = await fetch("/logs?before=" + oldest);
+      if (!response.ok) return;
+      const batch = await response.json();
+      if (!(batch.lines || []).length) return;
+      prependScrollbackBatch(batch);
+    } catch (_error) {
+    } finally {
+      logBackFetchRunning = false;
+    }
+  }
+
+  function prependScrollbackBatch(batch) {
+    logTailing = false;
+    const older = batch.lines.map((line) => ({
+      seq: line.seq, stream: line.stream, entry: line.entry, text: line.text,
+    }));
+    logWindow = older.concat(logWindow);
+    if (logWindow.length > LOG_SCROLLBACK_LINES) {
+      logWindow = logWindow.slice(0, LOG_SCROLLBACK_LINES);
+    }
+    renderLogWindow();
+    updateLogJump();
+    // Step off the very top so the next upward gesture triggers another page.
+    window.scrollTo(0, 80);
+  }
+
+  function updateLogJump() {
+    const chip = el("log-jump");
+    if (!chip) return;
+    if (logTailing) {
+      chip.hidden = true;
+      return;
+    }
+    chip.hidden = false;
+    const behind = logLatest - newestWindowSeq();
+    chip.textContent = behind > 0 ? "⏬ Live (" + behind + " new)" : "⏬ Live";
+  }
+
+  function resumeLogTail() {
+    logTailing = true;
+    logWindow = [];
+    logCursor = logLatest > LOG_TAIL_LINES ? logLatest - LOG_TAIL_LINES : 0;
+    renderLogWindow();
+    updateLogJump();
+    requestLogFetch();
+    window.scrollTo(0, document.body.scrollHeight);
   }
 
   function nextRender() {
@@ -2251,6 +2330,8 @@
   };
   events.addEventListener("logs", requestLogFetch);
   events.onerror = () => el("disconnected").classList.add("on");
+  window.addEventListener("scroll", maybeFetchOlderLogs);
+  el("log-jump").addEventListener("click", resumeLogTail);
 </script>
 </body>
 </html>

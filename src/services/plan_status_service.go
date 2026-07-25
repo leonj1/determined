@@ -2,6 +2,8 @@ package services
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"sync"
 	"time"
 
@@ -14,10 +16,12 @@ import (
 // notify snapshot subscribers; output appends only signal buffer subscribers.
 // New subscribers receive current headers/state and can pull retained output.
 type PlanStatusService struct {
-	clock Clock
-	logs  LogBuffer
+	clock   Clock
+	logs    LogBuffer
+	history LogHistory
 
 	mu          sync.Mutex
+	historyErr  error
 	status      models.PlanSessionStatus
 	subscribers []chan models.PlanSessionStatus
 	annotations chan struct{}
@@ -52,6 +56,13 @@ func NewPlanStatusService(clock Clock, git models.GitContext, tool models.ToolId
 		annotations: make(chan struct{}, 1),
 		implement:   make(chan struct{}, 1),
 	}
+}
+
+// WithLogHistory enables full-run persistence of streamed output, powering the
+// page's backwards paging. Without it LogsBefore reports history unavailable.
+func (s *PlanStatusService) WithLogHistory(history LogHistory) *PlanStatusService {
+	s.history = history
+	return s
 }
 
 // Snapshot returns the current session state.
@@ -151,7 +162,7 @@ func (s *PlanStatusService) BeginLogEntry(message string) {
 func (s *PlanStatusService) AppendLogOutput(text string) {
 	entry, ok := s.lastLogEntry(models.LogStreamPlan)
 	if ok {
-		s.logs.Append(models.LogStreamPlan, entry, text)
+		s.appendOutput(models.LogStreamPlan, entry, text)
 	}
 }
 
@@ -510,7 +521,24 @@ func (s *PlanStatusService) SettleExecLogEntryAt(i int, state models.EntryState)
 func (s *PlanStatusService) AppendExecLogOutput(text string) {
 	entry, ok := s.lastLogEntry(models.LogStreamExec)
 	if ok {
-		s.logs.Append(models.LogStreamExec, entry, text)
+		s.appendOutput(models.LogStreamExec, entry, text)
+	}
+}
+
+// appendOutput stores lines in the live ring and, when history is configured,
+// persists them for backwards paging. A persistence failure is retained and
+// surfaced on the next LogsBefore call rather than silently dropping history.
+func (s *PlanStatusService) appendOutput(stream models.LogStream, entry models.LogEntryIndex, text string) {
+	lines := s.logs.Append(stream, entry, text)
+	if s.history == nil || len(lines) == 0 {
+		return
+	}
+	if err := s.history.Record(lines); err != nil {
+		s.mu.Lock()
+		if s.historyErr == nil {
+			s.historyErr = err
+		}
+		s.mu.Unlock()
 	}
 }
 
@@ -530,6 +558,22 @@ func (s *PlanStatusService) lastLogEntry(stream models.LogStream) (models.LogEnt
 // LogsSince returns a bounded batch of output lines after a sequence.
 func (s *PlanStatusService) LogsSince(since models.LogSequence, limit models.LogBatchSize) models.LogBatch {
 	return s.logs.Since(since, limit)
+}
+
+// LogsBefore returns a bounded batch of persisted output lines ending just
+// before a sequence, for the page's backwards paging. It fails when no history
+// is configured or when persistence has previously failed.
+func (s *PlanStatusService) LogsBefore(before models.LogSequence, limit models.LogBatchSize) (models.LogBatch, error) {
+	if s.history == nil {
+		return models.LogBatch{}, errors.New("log history unavailable")
+	}
+	s.mu.Lock()
+	failed := s.historyErr
+	s.mu.Unlock()
+	if failed != nil {
+		return models.LogBatch{}, fmt.Errorf("log history persistence failed: %w", failed)
+	}
+	return s.history.Before(before, limit)
 }
 
 // SubscribeLogOutput reports when output advances without carrying its payload.

@@ -21,6 +21,7 @@ const (
 	statusServerWriteTimeout                          = 15 * time.Second
 	statusServerIdleTimeout                           = 60 * time.Second
 	statusLogBatchSize            models.LogBatchSize = 200
+	statusLogBackBatchSize        models.LogBatchSize = 10
 )
 
 //go:embed plan_status_page.html
@@ -37,9 +38,12 @@ type PlanStatusSource interface {
 	Subscribe() (<-chan models.PlanSessionStatus, func())
 }
 
-// LogSource supplies pull-based output batches and payload-free advance signals.
+// LogSource supplies pull-based output batches and payload-free advance
+// signals. LogsSince serves the live tail; LogsBefore pages backwards through
+// the run's full persisted history.
 type LogSource interface {
 	LogsSince(models.LogSequence, models.LogBatchSize) models.LogBatch
+	LogsBefore(models.LogSequence, models.LogBatchSize) (models.LogBatch, error)
 	SubscribeLogOutput() (<-chan struct{}, func())
 }
 
@@ -273,14 +277,38 @@ func (s *PlanStatusServer) serveLogs(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "log stream unavailable", http.StatusServiceUnavailable)
 		return
 	}
+	if before := r.URL.Query().Get("before"); before != "" {
+		s.serveLogsBefore(w, before)
+		return
+	}
 	since, err := parseLogSequence(r.URL.Query().Get("since"))
 	if err != nil {
 		http.Error(w, "since must be a non-negative integer", http.StatusBadRequest)
 		return
 	}
+	writeLogBatch(w, s.logs.LogsSince(since, statusLogBatchSize))
+}
+
+// serveLogsBefore pages backwards: up to statusLogBackBatchSize persisted
+// lines strictly older than the supplied sequence.
+func (s *PlanStatusServer) serveLogsBefore(w http.ResponseWriter, value string) {
+	before, err := parseLogSequence(value)
+	if err != nil || before == 0 {
+		http.Error(w, "before must be a positive integer", http.StatusBadRequest)
+		return
+	}
+	batch, err := s.logs.LogsBefore(before, statusLogBackBatchSize)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeLogBatch(w, batch)
+}
+
+func writeLogBatch(w http.ResponseWriter, batch models.LogBatch) {
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Cache-Control", "no-store")
-	json.NewEncoder(w).Encode(s.logs.LogsSince(since, statusLogBatchSize)) //nolint:errcheck
+	json.NewEncoder(w).Encode(batch) //nolint:errcheck
 }
 
 func parseLogSequence(value string) (models.LogSequence, error) {

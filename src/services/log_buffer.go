@@ -9,7 +9,7 @@ import (
 
 // LogBuffer stores streamed status-page output independently of snapshots.
 type LogBuffer interface {
-	Append(models.LogStream, models.LogEntryIndex, string) models.LogSequence
+	Append(models.LogStream, models.LogEntryIndex, string) []models.LogLine
 	Since(models.LogSequence, models.LogBatchSize) models.LogBatch
 	Subscribe() (<-chan struct{}, func())
 }
@@ -34,23 +34,26 @@ func NewCircularLogBuffer(capacity models.LogCapacity) *CircularLogBuffer {
 	}
 }
 
-// Append stores complete lines and notifies subscribers once when data advances.
-func (b *CircularLogBuffer) Append(stream models.LogStream, entry models.LogEntryIndex, text string) models.LogSequence {
+// Append stores complete lines, notifies subscribers once when data advances,
+// and returns the appended lines with their assigned sequences.
+func (b *CircularLogBuffer) Append(stream models.LogStream, entry models.LogEntryIndex, text string) []models.LogLine {
 	parts := splitLogOutput(text)
 	if len(parts) == 0 {
-		return b.Latest()
+		return nil
 	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	appended := make([]models.LogLine, 0, len(parts))
 	for _, part := range parts {
 		b.latest++
 		index := int((b.latest - 1) % models.LogSequence(b.capacity))
 		b.lines[index] = models.LogLine{
 			Sequence: b.latest, Stream: stream, Entry: entry, Text: part,
 		}
+		appended = append(appended, b.lines[index])
 	}
 	b.notify()
-	return b.latest
+	return appended
 }
 
 // Latest returns the newest assigned sequence.
