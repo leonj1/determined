@@ -3,6 +3,7 @@ package tests
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"io"
 	"net/http"
 	"strings"
@@ -15,14 +16,19 @@ import (
 
 // fakePlanStatusSource is a hand-rolled status source for driving the server.
 type fakePlanStatusSource struct {
-	snapshot models.PlanSessionStatus
-	updates  chan models.PlanSessionStatus
+	snapshot     models.PlanSessionStatus
+	updates      chan models.PlanSessionStatus
+	logBatch     models.LogBatch
+	logUpdates   chan struct{}
+	requestedSeq models.LogSequence
+	requestLimit models.LogBatchSize
 }
 
 func newFakePlanStatusSource(snapshot models.PlanSessionStatus) *fakePlanStatusSource {
 	return &fakePlanStatusSource{
-		snapshot: snapshot,
-		updates:  make(chan models.PlanSessionStatus, 16),
+		snapshot:   snapshot,
+		updates:    make(chan models.PlanSessionStatus, 16),
+		logUpdates: make(chan struct{}, 1),
 	}
 }
 
@@ -36,6 +42,20 @@ func (f *fakePlanStatusSource) Subscribe() (<-chan models.PlanSessionStatus, fun
 func (f *fakePlanStatusSource) publish(snapshot models.PlanSessionStatus) {
 	f.snapshot = snapshot
 	f.updates <- snapshot
+}
+
+func (f *fakePlanStatusSource) LogsSince(since models.LogSequence, limit models.LogBatchSize) models.LogBatch {
+	f.requestedSeq = since
+	f.requestLimit = limit
+	return f.logBatch
+}
+
+func (f *fakePlanStatusSource) SubscribeLogOutput() (<-chan struct{}, func()) {
+	return f.logUpdates, func() {}
+}
+
+func (f *fakePlanStatusSource) publishLogUpdate() {
+	f.logUpdates <- struct{}{}
 }
 
 // fakeAnnotationSink records annotations the server accepts, in order.
@@ -79,9 +99,11 @@ func TestPlanStatusServerContract(t *testing.T) {
 			CorrectIndex: 2, Rationale: "C describes the diff.", SourceSection: "Status reporting",
 		}},
 		QuizPhase: models.QuizPhaseSucceeded,
+		Log:       []models.LogEntry{{Message: "planning", Body: "large streamed body"}},
 	})
 	sink := &fakeAnnotationSink{}
-	server := clients.NewPlanStatusServer(source, sink, &fakeImplementSink{}, serverClock{t: time.Date(2026, 7, 16, 10, 0, 0, 0, time.UTC)})
+	server := clients.NewPlanStatusServer(source, sink, &fakeImplementSink{}, serverClock{t: time.Date(2026, 7, 16, 10, 0, 0, 0, time.UTC)}).
+		WithLogSource(source)
 	if err := server.Start(); err != nil {
 		t.Fatalf("start: %v", err)
 	}
@@ -118,7 +140,8 @@ func assertPageServed(t *testing.T, url string) {
 		"const active = activeActivity(activitySteps, activityIsRunning(status));",
 		"renderActiveTask(active)", "renderActivity(activitySteps, active, !!status.taskControlAvailable)",
 		"step-card", "taskSteps", "Done when: ",
-		"log-entry", "renderLog", `data-tab="log"`,
+		"log-entry", "renderLog", `data-tab="log"`, `fetch("/logs?since="`,
+		`addEventListener("logs"`, "lines skipped",
 		"unflattenTables",
 		`data-tab="tests"`, `data-tests-tab="journey"`, `data-tests-tab="bdd"`,
 		`id="plan-demo"`, `id="demo-frame"`, `sandbox="allow-scripts"`, "renderDemo", "status.demo",
@@ -250,6 +273,9 @@ func assertEventStream(t *testing.T, url string, source *fakePlanStatusSource) {
 		!strings.Contains(first, `"quizPhase":"succeeded"`) {
 		t.Errorf("initial snapshot = %s, want the completed quiz", first)
 	}
+	if strings.Contains(first, "large streamed body") || strings.Contains(first, `"body"`) {
+		t.Errorf("initial snapshot = %s, want log headers without output bodies", first)
+	}
 
 	updated := source.snapshot
 	updated.Plan = "# Plan"
@@ -258,6 +284,11 @@ func assertEventStream(t *testing.T, url string, source *fakePlanStatusSource) {
 	second := readEventData(t, reader)
 	if !strings.Contains(second, `"plan":"# Plan"`) {
 		t.Errorf("update snapshot = %s, want the published plan", second)
+	}
+
+	source.publishLogUpdate()
+	if event := readEventType(t, reader); event != "logs" {
+		t.Errorf("output signal event = %q, want logs", event)
 	}
 }
 
@@ -271,6 +302,76 @@ func readEventData(t *testing.T, reader *bufio.Reader) string {
 		if strings.HasPrefix(line, "data: ") {
 			return strings.TrimSpace(strings.TrimPrefix(line, "data: "))
 		}
+	}
+}
+
+func readEventType(t *testing.T, reader *bufio.Reader) string {
+	t.Helper()
+	for {
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			t.Fatalf("read event type: %v", err)
+		}
+		if strings.HasPrefix(line, "event: ") {
+			return strings.TrimSpace(strings.TrimPrefix(line, "event: "))
+		}
+	}
+}
+
+func TestPlanStatusServerLetsBrowserFetchSequencedLogBatch(t *testing.T) {
+	source := newFakePlanStatusSource(models.PlanSessionStatus{})
+	source.logBatch = models.LogBatch{
+		Lines: []models.LogLine{{
+			Sequence: 9, Stream: models.LogStreamExec, Entry: 2, Text: "tests pass\n",
+		}},
+		Next: 9, Latest: 11,
+		Gap: &models.LogGap{Dropped: 3, Stream: models.LogStreamExec, Entry: 2},
+	}
+	server := clients.NewPlanStatusServer(
+		source, &fakeAnnotationSink{}, &fakeImplementSink{}, serverClock{}).
+		WithLogSource(source)
+	if err := server.Start(); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	defer shutdown(t, server)
+
+	resp, err := http.Get(server.URL() + "logs?since=5")
+	if err != nil {
+		t.Fatalf("fetch logs: %v", err)
+	}
+	defer resp.Body.Close()
+	var batch models.LogBatch
+	if err := json.NewDecoder(resp.Body).Decode(&batch); err != nil {
+		t.Fatalf("decode logs: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK || source.requestedSeq != 5 {
+		t.Fatalf("status/sequence = %d/%d, want 200/5", resp.StatusCode, source.requestedSeq)
+	}
+	if source.requestLimit < 1 || batch.Next != 9 || batch.Latest != 11 {
+		t.Fatalf("batch = %+v with limit %d, want cursor 9/11", batch, source.requestLimit)
+	}
+	if batch.Gap == nil || batch.Gap.Dropped != 3 || len(batch.Lines) != 1 {
+		t.Fatalf("batch = %+v, want gap marker and oldest available line", batch)
+	}
+}
+
+func TestPlanStatusServerRejectsInvalidLogCursor(t *testing.T) {
+	source := newFakePlanStatusSource(models.PlanSessionStatus{})
+	server := clients.NewPlanStatusServer(
+		source, &fakeAnnotationSink{}, &fakeImplementSink{}, serverClock{}).
+		WithLogSource(source)
+	if err := server.Start(); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	defer shutdown(t, server)
+
+	resp, err := http.Get(server.URL() + "logs?since=not-a-sequence")
+	if err != nil {
+		t.Fatalf("fetch logs: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", resp.StatusCode)
 	}
 }
 

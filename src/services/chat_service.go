@@ -9,14 +9,16 @@ import (
 )
 
 const (
-	chatLogLimit  = 10
-	chatBodyLimit = 2000
+	chatLogLimit      = 10
+	chatBodyLimit     = 2000
+	chatLogBatchLimit = 200
 )
 
-// ChatStatusSource supplies the live state used for answers and events.
+// ChatStatusSource supplies live state and retained output for answers/events.
 type ChatStatusSource interface {
 	Snapshot() models.PlanSessionStatus
 	Subscribe() (<-chan models.PlanSessionStatus, func())
+	LogsSince(models.LogSequence, models.LogBatchSize) models.LogBatch
 }
 
 // ChatService answers chat requests deterministically from session state.
@@ -25,7 +27,7 @@ type ChatService struct {
 	clock  Clock
 }
 
-// NewChatService constructs a snapshot-derived responder.
+// NewChatService constructs a status-derived responder.
 func NewChatService(source ChatStatusSource, clock Clock) *ChatService {
 	return &ChatService{source: source, clock: clock}
 }
@@ -40,9 +42,66 @@ func (s *ChatService) Answer(request models.ChatRequest) models.ChatResponse {
 		}
 		return chatError(request.ID, message)
 	}
-	snapshot := s.source.Snapshot()
+	snapshot := s.snapshotWithLogBodies()
 	intent, fallback := intentFor(request.Text)
 	return s.reply(request.ID, intent, snapshot, fallback)
+}
+
+func (s *ChatService) snapshotWithLogBodies() models.PlanSessionStatus {
+	snapshot := s.source.Snapshot()
+	lines := s.logLines()
+	planBodies, execBodies := logBodies(snapshot, lines)
+	snapshot.Log = entriesWithBodies(snapshot.Log, planBodies)
+	snapshot.ExecLog = entriesWithBodies(snapshot.ExecLog, execBodies)
+	return snapshot
+}
+
+func (s *ChatService) logLines() []models.LogLine {
+	var lines []models.LogLine
+	var cursor, target models.LogSequence
+	for {
+		batch := s.source.LogsSince(cursor, chatLogBatchLimit)
+		if target == 0 {
+			target = batch.Latest
+		}
+		lines = append(lines, batch.Lines...)
+		if batch.Next >= target || batch.Next == cursor {
+			return lines
+		}
+		cursor = batch.Next
+	}
+}
+
+func logBodies(snapshot models.PlanSessionStatus, lines []models.LogLine) ([]string, []string) {
+	plan := existingBodies(snapshot.Log)
+	exec := existingBodies(snapshot.ExecLog)
+	for _, line := range lines {
+		bodies := plan
+		if line.Stream == models.LogStreamExec {
+			bodies = exec
+		}
+		if int(line.Entry) >= 0 && int(line.Entry) < len(bodies) {
+			bodies[line.Entry] += line.Text
+		}
+	}
+	return plan, exec
+}
+
+func existingBodies(entries []models.LogEntry) []string {
+	bodies := make([]string, len(entries))
+	for i, entry := range entries {
+		bodies[i] = entry.Body
+	}
+	return bodies
+}
+
+func entriesWithBodies(entries []models.LogEntry, bodies []string) []models.LogEntry {
+	result := make([]models.LogEntry, len(entries))
+	for i, entry := range entries {
+		entry.Body = bodies[i]
+		result[i] = boundedLog(entry)
+	}
+	return result
 }
 
 // Events describes externally meaningful changes between two snapshots.

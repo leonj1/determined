@@ -10,7 +10,9 @@ import (
 )
 
 func newStallService() *services.PlanStatusService {
-	return services.NewPlanStatusService(&fakeClock{now: time.Now()}, models.GitContext{}, models.ToolIdentity{})
+	return services.NewPlanStatusService(
+		&fakeClock{now: time.Now()}, models.GitContext{}, models.ToolIdentity{},
+		services.NewCircularLogBuffer(20))
 }
 
 func TestAwaitStallChoiceReturnsSubmittedGuidance(t *testing.T) {

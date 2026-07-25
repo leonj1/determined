@@ -9,12 +9,13 @@ import (
 )
 
 // PlanStatusService is the state hub for an interactive planning session. The
-// orchestrator pushes updates in; the status server subscribes for full
-// snapshots to broadcast to browsers. Every mutation notifies subscribers, and
-// a new subscriber immediately receives the current snapshot so late-joining
-// browsers render the full session so far.
+// orchestrator pushes updates in; the status server subscribes for small state
+// snapshots while log bodies flow through the injected buffer. State mutations
+// notify snapshot subscribers; output appends only signal buffer subscribers.
+// New subscribers receive current headers/state and can pull retained output.
 type PlanStatusService struct {
 	clock Clock
+	logs  LogBuffer
 
 	mu          sync.Mutex
 	status      models.PlanSessionStatus
@@ -38,9 +39,10 @@ type PlanStatusService struct {
 // NewPlanStatusService wires a PlanStatusService with the session's git
 // context already resolved (see clients.GitContextReader) and the identity of
 // the AI tool driving the session.
-func NewPlanStatusService(clock Clock, git models.GitContext, tool models.ToolIdentity) *PlanStatusService {
+func NewPlanStatusService(clock Clock, git models.GitContext, tool models.ToolIdentity, logs LogBuffer) *PlanStatusService {
 	return &PlanStatusService{
 		clock: clock,
+		logs:  logs,
 		status: models.PlanSessionStatus{
 			Git:   git,
 			Tool:  tool,
@@ -145,11 +147,12 @@ func (s *PlanStatusService) BeginLogEntry(message string) {
 	})
 }
 
-// AppendLogOutput streams tool output into the current log entry.
+// AppendLogOutput stores tool output without broadcasting a status snapshot.
 func (s *PlanStatusService) AppendLogOutput(text string) {
-	s.update(func(st models.PlanSessionStatus) models.PlanSessionStatus {
-		return st.WithLogOutput(text)
-	})
+	entry, ok := s.lastLogEntry(models.LogStreamPlan)
+	if ok {
+		s.logs.Append(models.LogStreamPlan, entry, text)
+	}
 }
 
 // WaitForInput marks the session as blocked on terminal input, adding a
@@ -503,11 +506,35 @@ func (s *PlanStatusService) SettleExecLogEntryAt(i int, state models.EntryState)
 	})
 }
 
-// AppendExecLogOutput streams tool output into the current execution log entry.
+// AppendExecLogOutput stores tool output without broadcasting a status snapshot.
 func (s *PlanStatusService) AppendExecLogOutput(text string) {
-	s.update(func(st models.PlanSessionStatus) models.PlanSessionStatus {
-		return st.WithExecLogOutput(text)
-	})
+	entry, ok := s.lastLogEntry(models.LogStreamExec)
+	if ok {
+		s.logs.Append(models.LogStreamExec, entry, text)
+	}
+}
+
+func (s *PlanStatusService) lastLogEntry(stream models.LogStream) (models.LogEntryIndex, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	length := len(s.status.Log)
+	if stream == models.LogStreamExec {
+		length = len(s.status.ExecLog)
+	}
+	if length == 0 {
+		return 0, false
+	}
+	return models.LogEntryIndex(length - 1), true
+}
+
+// LogsSince returns a bounded batch of output lines after a sequence.
+func (s *PlanStatusService) LogsSince(since models.LogSequence, limit models.LogBatchSize) models.LogBatch {
+	return s.logs.Since(since, limit)
+}
+
+// SubscribeLogOutput reports when output advances without carrying its payload.
+func (s *PlanStatusService) SubscribeLogOutput() (<-chan struct{}, func()) {
+	return s.logs.Subscribe()
 }
 
 // Progress implements ProgressSink so orchestrator progress messages appear as

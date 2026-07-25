@@ -21,7 +21,7 @@ func planStart() time.Time { return time.Date(2026, 7, 16, 10, 0, 0, 0, time.UTC
 
 func TestPlanStatusServiceInitialSnapshotCarriesGitContext(t *testing.T) {
 	git := models.GitContext{Remote: "git@github.com:leonj1/determined.git", Branch: "master"}
-	service := services.NewPlanStatusService(newSteppingClock(planStart()), git, models.ToolIdentity{})
+	service := newTestPlanStatusService(newSteppingClock(planStart()), git, models.ToolIdentity{})
 
 	snapshot := service.Snapshot()
 	if snapshot.Git != git {
@@ -37,7 +37,7 @@ func TestPlanStatusServiceInitialSnapshotCarriesGitContext(t *testing.T) {
 
 func TestPlanStatusServiceInitialSnapshotCarriesToolIdentity(t *testing.T) {
 	tool := models.ToolIdentity{Name: models.ToolNameClaude, Model: "opus"}
-	service := services.NewPlanStatusService(newSteppingClock(planStart()), models.GitContext{}, tool)
+	service := newTestPlanStatusService(newSteppingClock(planStart()), models.GitContext{}, tool)
 
 	snapshot := service.Snapshot()
 	if snapshot.Tool != tool {
@@ -47,7 +47,7 @@ func TestPlanStatusServiceInitialSnapshotCarriesToolIdentity(t *testing.T) {
 
 func TestPlanStatusServiceStepsAreOrderedAndTimestamped(t *testing.T) {
 	clock := newSteppingClock(planStart())
-	service := services.NewPlanStatusService(clock, models.GitContext{Remote: "no remote", Branch: "master"}, models.ToolIdentity{})
+	service := newTestPlanStatusService(clock, models.GitContext{Remote: "no remote", Branch: "master"}, models.ToolIdentity{})
 
 	service.AddStep("writing planning goal")
 	clock.advance(time.Minute)
@@ -66,7 +66,7 @@ func TestPlanStatusServiceStepsAreOrderedAndTimestamped(t *testing.T) {
 }
 
 func TestPlanStatusServiceLateSubscriberReceivesCurrentState(t *testing.T) {
-	service := services.NewPlanStatusService(newSteppingClock(planStart()), models.GitContext{}, models.ToolIdentity{})
+	service := newTestPlanStatusService(newSteppingClock(planStart()), models.GitContext{}, models.ToolIdentity{})
 	service.SetGoal("build a todo CLI")
 	service.AddStep("planning project")
 
@@ -83,7 +83,7 @@ func TestPlanStatusServiceLateSubscriberReceivesCurrentState(t *testing.T) {
 }
 
 func TestPlanStatusServiceBroadcastsUpdatesToSubscribers(t *testing.T) {
-	service := services.NewPlanStatusService(newSteppingClock(planStart()), models.GitContext{}, models.ToolIdentity{})
+	service := newTestPlanStatusService(newSteppingClock(planStart()), models.GitContext{}, models.ToolIdentity{})
 	snapshots, cancel := service.Subscribe()
 	defer cancel()
 	<-snapshots // drain the primed snapshot
@@ -97,7 +97,7 @@ func TestPlanStatusServiceBroadcastsUpdatesToSubscribers(t *testing.T) {
 }
 
 func TestPlanStatusServiceBroadcastsTests(t *testing.T) {
-	service := services.NewPlanStatusService(newSteppingClock(planStart()), models.GitContext{}, models.ToolIdentity{})
+	service := newTestPlanStatusService(newSteppingClock(planStart()), models.GitContext{}, models.ToolIdentity{})
 	snapshots, cancel := service.Subscribe()
 	defer cancel()
 	<-snapshots // drain the primed snapshot
@@ -111,7 +111,7 @@ func TestPlanStatusServiceBroadcastsTests(t *testing.T) {
 }
 
 func TestPlanStatusServiceBroadcastsDemo(t *testing.T) {
-	service := services.NewPlanStatusService(newSteppingClock(planStart()), models.GitContext{}, models.ToolIdentity{})
+	service := newTestPlanStatusService(newSteppingClock(planStart()), models.GitContext{}, models.ToolIdentity{})
 	snapshots, cancel := service.Subscribe()
 	defer cancel()
 	<-snapshots
@@ -125,7 +125,7 @@ func TestPlanStatusServiceBroadcastsDemo(t *testing.T) {
 }
 
 func TestPlanStatusServiceBroadcastsTaskSteps(t *testing.T) {
-	service := services.NewPlanStatusService(newSteppingClock(planStart()), models.GitContext{}, models.ToolIdentity{})
+	service := newTestPlanStatusService(newSteppingClock(planStart()), models.GitContext{}, models.ToolIdentity{})
 	snapshots, cancel := service.Subscribe()
 	defer cancel()
 	<-snapshots // drain the primed snapshot
@@ -149,7 +149,7 @@ func TestPlanStatusServiceBroadcastsTaskSteps(t *testing.T) {
 
 func TestPlanStatusServiceFinishRecordsTimingAndPhase(t *testing.T) {
 	clock := newSteppingClock(planStart())
-	service := services.NewPlanStatusService(clock, models.GitContext{}, models.ToolIdentity{})
+	service := newTestPlanStatusService(clock, models.GitContext{}, models.ToolIdentity{})
 	service.Start()
 	clock.advance(5 * time.Minute)
 	service.Finish(true)
@@ -170,7 +170,7 @@ func TestPlanStatusServiceFinishRecordsTimingAndPhase(t *testing.T) {
 }
 
 func TestPlanStatusServiceFinishFailureMarksFailedPhase(t *testing.T) {
-	service := services.NewPlanStatusService(newSteppingClock(planStart()), models.GitContext{}, models.ToolIdentity{})
+	service := newTestPlanStatusService(newSteppingClock(planStart()), models.GitContext{}, models.ToolIdentity{})
 	service.Start()
 	service.Finish(false)
 
@@ -179,9 +179,9 @@ func TestPlanStatusServiceFinishFailureMarksFailedPhase(t *testing.T) {
 	}
 }
 
-func TestPlanStatusServiceLogEntriesAccumulateStreamedOutput(t *testing.T) {
+func TestPlanStatusServiceLogEntriesKeepHeadersWhileOutputIsFetched(t *testing.T) {
 	clock := newSteppingClock(planStart())
-	service := services.NewPlanStatusService(clock, models.GitContext{}, models.ToolIdentity{})
+	service := newTestPlanStatusService(clock, models.GitContext{}, models.ToolIdentity{})
 
 	service.BeginLogEntry("planning project")
 	service.AppendLogOutput("first line\n")
@@ -194,18 +194,25 @@ func TestPlanStatusServiceLogEntriesAccumulateStreamedOutput(t *testing.T) {
 	if len(log) != 2 {
 		t.Fatalf("log = %+v, want 2 entries", log)
 	}
-	first := models.LogEntry{At: planStart(), Message: "planning project", Body: "first line\nsecond line\n"}
-	second := models.LogEntry{At: planStart().Add(time.Minute), Message: "assessing plan", Body: "findings written\n"}
+	first := models.LogEntry{At: planStart(), Message: "planning project"}
+	second := models.LogEntry{At: planStart().Add(time.Minute), Message: "assessing plan"}
 	if log[0] != first {
 		t.Errorf("log[0] = %+v, want %+v", log[0], first)
 	}
 	if log[1] != second {
 		t.Errorf("log[1] = %+v, want %+v", log[1], second)
 	}
+	batch := service.LogsSince(0, 10)
+	if len(batch.Lines) != 3 {
+		t.Fatalf("fetched lines = %+v, want three output lines", batch.Lines)
+	}
+	if batch.Lines[0].Entry != 0 || batch.Lines[1].Entry != 0 || batch.Lines[2].Entry != 1 {
+		t.Errorf("fetched entry grouping = %+v, want lines grouped under both headers", batch.Lines)
+	}
 }
 
 func TestPlanStatusServiceLogOutputWithoutEntryIsDropped(t *testing.T) {
-	service := services.NewPlanStatusService(newSteppingClock(planStart()), models.GitContext{}, models.ToolIdentity{})
+	service := newTestPlanStatusService(newSteppingClock(planStart()), models.GitContext{}, models.ToolIdentity{})
 
 	service.AppendLogOutput("stray output\n")
 
@@ -215,7 +222,7 @@ func TestPlanStatusServiceLogOutputWithoutEntryIsDropped(t *testing.T) {
 }
 
 func TestPlanStatusServiceWaitForInputSetsFlagAndVisibleStep(t *testing.T) {
-	service := services.NewPlanStatusService(newSteppingClock(planStart()), models.GitContext{}, models.ToolIdentity{})
+	service := newTestPlanStatusService(newSteppingClock(planStart()), models.GitContext{}, models.ToolIdentity{})
 	service.WaitForInput()
 
 	snapshot := service.Snapshot()
@@ -242,7 +249,7 @@ func pageAnnotation(comment string) models.Annotation {
 }
 
 func TestPlanStatusServiceQueuesAnnotationsInOrder(t *testing.T) {
-	service := services.NewPlanStatusService(newSteppingClock(planStart()), models.GitContext{}, models.ToolIdentity{})
+	service := newTestPlanStatusService(newSteppingClock(planStart()), models.GitContext{}, models.ToolIdentity{})
 
 	service.SubmitAnnotation(pageAnnotation("first"))
 	service.SubmitAnnotation(pageAnnotation("second"))
@@ -262,14 +269,14 @@ func TestPlanStatusServiceQueuesAnnotationsInOrder(t *testing.T) {
 }
 
 func TestPlanStatusServiceTakeAnnotationOnEmptyQueueReportsNone(t *testing.T) {
-	service := services.NewPlanStatusService(newSteppingClock(planStart()), models.GitContext{}, models.ToolIdentity{})
+	service := newTestPlanStatusService(newSteppingClock(planStart()), models.GitContext{}, models.ToolIdentity{})
 	if _, ok := service.TakeAnnotation(); ok {
 		t.Error("take on empty queue reported an annotation")
 	}
 }
 
 func TestPlanStatusServiceSubmitSignalsOncePerBurst(t *testing.T) {
-	service := services.NewPlanStatusService(newSteppingClock(planStart()), models.GitContext{}, models.ToolIdentity{})
+	service := newTestPlanStatusService(newSteppingClock(planStart()), models.GitContext{}, models.ToolIdentity{})
 
 	service.SubmitAnnotation(pageAnnotation("first"))
 	service.SubmitAnnotation(pageAnnotation("second"))
@@ -289,7 +296,7 @@ func TestPlanStatusServiceSubmitSignalsOncePerBurst(t *testing.T) {
 // implementReadyService returns a service whose session succeeded with the
 // Implement button offered, the state a plan-only interactive run holds in.
 func implementReadyService(clock *steppingClock) *services.PlanStatusService {
-	service := services.NewPlanStatusService(clock, models.GitContext{}, models.ToolIdentity{})
+	service := newTestPlanStatusService(clock, models.GitContext{}, models.ToolIdentity{})
 	service.Start()
 	service.Finish(true)
 	service.OfferImplement()
@@ -297,7 +304,7 @@ func implementReadyService(clock *steppingClock) *services.PlanStatusService {
 }
 
 func TestPlanStatusServiceOfferImplementIsVisibleInSnapshot(t *testing.T) {
-	service := services.NewPlanStatusService(newSteppingClock(planStart()), models.GitContext{}, models.ToolIdentity{})
+	service := newTestPlanStatusService(newSteppingClock(planStart()), models.GitContext{}, models.ToolIdentity{})
 	if service.Snapshot().ImplementOffered {
 		t.Fatal("implementOffered = true before the offer")
 	}
@@ -329,7 +336,7 @@ func TestPlanStatusServiceImplementRequestSignalsOnce(t *testing.T) {
 }
 
 func TestPlanStatusServiceImplementRequestIgnoredUntilOfferedAndSucceeded(t *testing.T) {
-	unoffered := services.NewPlanStatusService(newSteppingClock(planStart()), models.GitContext{}, models.ToolIdentity{})
+	unoffered := newTestPlanStatusService(newSteppingClock(planStart()), models.GitContext{}, models.ToolIdentity{})
 	unoffered.Start()
 	unoffered.Finish(true)
 	unoffered.RequestImplement()
@@ -337,7 +344,7 @@ func TestPlanStatusServiceImplementRequestIgnoredUntilOfferedAndSucceeded(t *tes
 		t.Errorf("execPhase without an offer = %q, want empty", phase)
 	}
 
-	failed := services.NewPlanStatusService(newSteppingClock(planStart()), models.GitContext{}, models.ToolIdentity{})
+	failed := newTestPlanStatusService(newSteppingClock(planStart()), models.GitContext{}, models.ToolIdentity{})
 	failed.OfferImplement()
 	failed.Start()
 	failed.Finish(false)
@@ -472,7 +479,7 @@ func TestRetryStartsAFreshTimingWindowAndRetainsExecutionHistory(t *testing.T) {
 }
 
 func TestPlanStatusServiceStreamsAutomaticExecutionWithoutImplementOffer(t *testing.T) {
-	service := services.NewPlanStatusService(newSteppingClock(planStart()), models.GitContext{}, models.ToolIdentity{})
+	service := newTestPlanStatusService(newSteppingClock(planStart()), models.GitContext{}, models.ToolIdentity{})
 	service.Start()
 	service.Finish(true)
 
@@ -505,7 +512,7 @@ func TestPlanStatusServiceIgnoresImplementRequestAfterExecutionStarts(t *testing
 }
 
 func TestPlanStatusServicePublishesExplanationLifecycle(t *testing.T) {
-	service := services.NewPlanStatusService(newSteppingClock(planStart()), models.GitContext{}, models.ToolIdentity{})
+	service := newTestPlanStatusService(newSteppingClock(planStart()), models.GitContext{}, models.ToolIdentity{})
 	snapshots, cancel := service.Subscribe()
 	defer cancel()
 	<-snapshots
@@ -529,7 +536,7 @@ func TestPlanStatusServicePublishesExplanationLifecycle(t *testing.T) {
 }
 
 func TestPlanStatusServiceReportsExplanationFailure(t *testing.T) {
-	service := services.NewPlanStatusService(newSteppingClock(planStart()), models.GitContext{}, models.ToolIdentity{})
+	service := newTestPlanStatusService(newSteppingClock(planStart()), models.GitContext{}, models.ToolIdentity{})
 	service.StartExplanation()
 	service.FinishExplanation(false)
 
@@ -543,7 +550,7 @@ func TestPlanStatusServiceReportsExplanationFailure(t *testing.T) {
 }
 
 func TestPlanStatusServicePublishesQuizLifecycle(t *testing.T) {
-	service := services.NewPlanStatusService(newSteppingClock(planStart()), models.GitContext{}, models.ToolIdentity{})
+	service := newTestPlanStatusService(newSteppingClock(planStart()), models.GitContext{}, models.ToolIdentity{})
 	snapshots, cancel := service.Subscribe()
 	defer cancel()
 	<-snapshots
@@ -568,7 +575,7 @@ func TestPlanStatusServicePublishesQuizLifecycle(t *testing.T) {
 }
 
 func TestPlanStatusServiceReportsQuizFailure(t *testing.T) {
-	service := services.NewPlanStatusService(newSteppingClock(planStart()), models.GitContext{}, models.ToolIdentity{})
+	service := newTestPlanStatusService(newSteppingClock(planStart()), models.GitContext{}, models.ToolIdentity{})
 	service.StartQuiz()
 	service.FinishQuiz(false)
 
@@ -582,7 +589,7 @@ func TestPlanStatusServiceReportsQuizFailure(t *testing.T) {
 }
 
 func TestPlanStatusServiceQuizJSONUsesPublicFieldNames(t *testing.T) {
-	service := services.NewPlanStatusService(newSteppingClock(planStart()), models.GitContext{}, models.ToolIdentity{})
+	service := newTestPlanStatusService(newSteppingClock(planStart()), models.GitContext{}, models.ToolIdentity{})
 	service.SetQuiz([]models.QuizQuestion{{
 		Question: "What changed?", Choices: []string{"A", "B", "C", "D"},
 		CorrectIndex: 2, Rationale: "C describes the diff.", SourceSection: "Status reporting",
@@ -601,9 +608,9 @@ func TestPlanStatusServiceQuizJSONUsesPublicFieldNames(t *testing.T) {
 	}
 }
 
-func TestPlanStatusServiceExecLogAccumulatesSeparatelyFromPlanLog(t *testing.T) {
+func TestPlanStatusServiceFetchesExecOutputSeparatelyFromPlanOutput(t *testing.T) {
 	clock := newSteppingClock(planStart())
-	service := services.NewPlanStatusService(clock, models.GitContext{}, models.ToolIdentity{})
+	service := newTestPlanStatusService(clock, models.GitContext{}, models.ToolIdentity{})
 	service.BeginLogEntry("planning project")
 	service.AppendLogOutput("plan output\n")
 
@@ -615,19 +622,27 @@ func TestPlanStatusServiceExecLogAccumulatesSeparatelyFromPlanLog(t *testing.T) 
 	want := models.LogEntry{
 		At:      planStart(),
 		Message: "executing step 1: add the widget",
-		Body:    "widget built\ntests pass\n",
 		State:   models.EntryStateRunning,
 	}
 	if len(snapshot.ExecLog) != 1 || snapshot.ExecLog[0] != want {
 		t.Errorf("execLog = %+v, want exactly %+v", snapshot.ExecLog, want)
 	}
-	if len(snapshot.Log) != 1 || snapshot.Log[0].Body != "plan output\n" {
-		t.Errorf("plan log = %+v, want it untouched by exec output", snapshot.Log)
+	if len(snapshot.Log) != 1 || snapshot.Log[0].Body != "" {
+		t.Errorf("plan log = %+v, want a body-free planning header", snapshot.Log)
+	}
+	batch := service.LogsSince(0, 10)
+	if len(batch.Lines) != 3 {
+		t.Fatalf("fetched lines = %+v, want plan output and two exec lines", batch.Lines)
+	}
+	if batch.Lines[0].Stream != models.LogStreamPlan ||
+		batch.Lines[1].Stream != models.LogStreamExec ||
+		batch.Lines[2].Stream != models.LogStreamExec {
+		t.Errorf("fetched streams = %+v, want planning then execution output", batch.Lines)
 	}
 }
 
 func TestPlanStatusServiceExecOutputWithoutEntryIsDropped(t *testing.T) {
-	service := services.NewPlanStatusService(newSteppingClock(planStart()), models.GitContext{}, models.ToolIdentity{})
+	service := newTestPlanStatusService(newSteppingClock(planStart()), models.GitContext{}, models.ToolIdentity{})
 	service.AppendExecLogOutput("stray output\n")
 	if log := service.Snapshot().ExecLog; len(log) != 0 {
 		t.Errorf("execLog = %+v, want empty when no entry is open", log)
@@ -635,7 +650,7 @@ func TestPlanStatusServiceExecOutputWithoutEntryIsDropped(t *testing.T) {
 }
 
 func TestPlanStatusServiceBroadcastsAnnotationQueueChanges(t *testing.T) {
-	service := services.NewPlanStatusService(newSteppingClock(planStart()), models.GitContext{}, models.ToolIdentity{})
+	service := newTestPlanStatusService(newSteppingClock(planStart()), models.GitContext{}, models.ToolIdentity{})
 	updates, cancel := service.Subscribe()
 	defer cancel()
 	<-updates // initial snapshot

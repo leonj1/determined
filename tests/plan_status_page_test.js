@@ -129,12 +129,16 @@ function createFakeWindow(location, listeners) {
 function createFakeGlobals(document, window, historyCalls) {
   return {
     Diff2Html: { html: () => "DIFF2HTML_MARKER" },
-    EventSource: class { constructor() { this.onmessage = null; this.onerror = null; } },
+    EventSource: class {
+      constructor() { this.onmessage = null; this.onerror = null; this.listeners = {}; }
+      addEventListener(name, listener) { this.listeners[name] = listener; }
+    },
     console,
     document,
     fetch: () => Promise.resolve(),
     history: { pushState: (_state, _title, url) => historyCalls.push(url) },
     localStorage: { getItem: () => null, removeItem: () => {}, setItem: () => {} },
+    requestAnimationFrame: (callback) => callback(),
     setInterval: () => 1,
     window,
   };
@@ -327,6 +331,77 @@ test("status updates make the lifecycle scannable and identify browser-tab progr
   assert.equal(browser.run(`document.querySelectorAll("#tabs button")[0].dataset.state`), "succeeded");
   assert.equal(browser.run(`document.querySelectorAll("#tabs button")[5].dataset.state`), "running");
   assert.equal(browser.run(`document.querySelectorAll("#tabs button")[6].dataset.state`), "empty");
+});
+
+test("log batches append under stable headers and render overrun gaps", () => {
+  const browser = createPageEnvironment();
+  browser.run(`
+    syncLogHeaders("exec", [
+      { at: "2026-07-24T10:00:00Z", message: "executing step 1", state: "running" }
+    ]);
+    globalThis.originalLogArticle = logViews.exec.articles[0];
+    appendLogBatch({
+      gap: { dropped: 7, stream: "exec", entry: 0 },
+      lines: [
+        { seq: 8, stream: "exec", entry: 0, text: "first available\\n" },
+        { seq: 9, stream: "exec", entry: 0, text: "next line\\n" }
+      ]
+    });
+    syncLogHeaders("exec", [
+      { at: "2026-07-24T10:00:00Z", message: "executing step 1", state: "ok" }
+    ]);
+  `);
+
+  assert.equal(browser.run(`logViews.exec.articles[0] === originalLogArticle`), true);
+  assert.equal(browser.run(`logViews.exec.articles[0].className`), "log-entry state-ok");
+  assert.equal(
+    browser.run(`logViews.exec.bodies[0].children.map((child) =>
+      typeof child === "string" ? child : child.textContent).join("")`),
+    "… 7 lines skipped …\nfirst available\nnext line\n",
+  );
+  assert.equal(browser.run(`logViews.exec.bodies[0].children[0].className`), "log-gap");
+});
+
+test("fetched markdown log bodies retain document rendering", () => {
+  const browser = createPageEnvironment();
+  browser.run(`
+    syncLogHeaders("plan", [
+      { at: "2026-07-24T10:00:00Z", message: "drafting plan" }
+    ]);
+    appendLogBatch({
+      lines: [
+        { seq: 1, stream: "plan", entry: 0, text: "## Result\\n" },
+        { seq: 2, stream: "plan", entry: 0, text: "\\n- first\\n- second\\n" }
+      ]
+    });
+  `);
+
+  assert.equal(browser.run(`logViews.plan.bodies[0].classList.contains("plain")`), false);
+  const html = browser.run(`logViews.plan.bodies[0].innerHTML`);
+  assert(html.includes("<h2>Result</h2>"), html);
+  assert(html.includes("<li>first</li>"), html);
+  assert(html.includes("<li>second</li>"), html);
+});
+
+test("log fetches wait for a render frame before requesting the next batch", async () => {
+  const browser = createPageEnvironment();
+  const order = await browser.run(`
+    globalThis.fetchOrder = [];
+    globalThis.fetchBatches = [
+      { lines: [], nextSeq: 1, latestSeq: 2 },
+      { lines: [], nextSeq: 2, latestSeq: 2 }
+    ];
+    fetch = async () => {
+      fetchOrder.push("fetch");
+      const batch = fetchBatches.shift();
+      return { ok: true, json: async () => batch };
+    };
+    appendLogBatch = (batch) => fetchOrder.push("append-" + batch.nextSeq);
+    requestAnimationFrame = (callback) => { fetchOrder.push("paint"); callback(); };
+    logFetchPending = true;
+    fetchLogBatches().then(() => fetchOrder.join(","));
+  `);
+  assert.equal(order, "fetch,append-1,paint,fetch,append-2,paint");
 });
 
 test("failed execution restores Implement without allowing successful or running retries", () => {

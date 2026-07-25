@@ -27,6 +27,13 @@ session record, and streams execution progress into it. When execution ends,
 the server shuts down and its record is cleared. A bind failure is reported on
 stderr but does not alter the execute loop or its exit code.
 
+Status snapshots contain workflow state and log-entry headers, not growing log
+bodies. Output is retained in a fixed 2,000-line circular buffer; the event
+stream sends a small `logs` notification when data advances, and the browser
+pulls sequential batches from `GET /logs?since=<sequence>` only after rendering
+the prior batch. A client that falls behind buffer wrap receives a dropped-line
+marker and continues from the oldest retained line.
+
 `determined -link` and `determined -chat` share verified discovery: the saved
 record is accepted only when its process is alive and its port answers as a
 determined status server. `-chat -m "status"` performs one WebSocket round trip;

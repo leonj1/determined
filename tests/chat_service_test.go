@@ -63,6 +63,32 @@ func TestChatStatusCarriesMachineReadableProgressAndTiming(t *testing.T) {
 	}
 }
 
+func TestChatReadsPlanAndExecBodiesFromTheLogBuffer(t *testing.T) {
+	status := services.NewPlanStatusService(
+		serverClock{}, models.GitContext{}, models.ToolIdentity{},
+		services.NewCircularLogBuffer(20))
+	status.BeginLogEntry("planning")
+	status.AppendLogOutput("## Plan output\n")
+	status.BeginExecLogEntry("executing")
+	status.AppendExecLogOutput("first exec line\n")
+	status.AppendExecLogOutput("second exec line\n")
+	service := services.NewChatService(status, serverClock{})
+
+	response := service.Answer(models.ChatRequest{Type: models.ChatRequestMessage, Text: "recent logs"})
+
+	if status.Snapshot().Log[0].Body != "" || status.Snapshot().ExecLog[0].Body != "" {
+		t.Fatal("test setup retained bodies in the status snapshot")
+	}
+	if !strings.Contains(response.Text, "## Plan output") ||
+		!strings.Contains(response.Text, "first exec line\nsecond exec line") {
+		t.Fatalf("log reply = %q, want buffered plan and exec bodies", response.Text)
+	}
+	if response.Data.Logs[0].Body != "## Plan output\n" ||
+		response.Data.Logs[1].Body != "first exec line\nsecond exec line\n" {
+		t.Fatalf("structured logs = %+v, want reconstructed bodies", response.Data.Logs)
+	}
+}
+
 func TestChatStatusDistinguishesPlanningAndFailedExecution(t *testing.T) {
 	planning := chatSnapshot()
 	planning.ExecPhase = ""

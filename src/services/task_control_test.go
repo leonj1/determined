@@ -43,7 +43,9 @@ func abortAs(request func() bool, t *testing.T) func(ctx context.Context) error 
 }
 
 func newControlledOrchestrator(runner services.CommandRunner, fs *fakeFileStore, cfg models.Config) (*services.Orchestrator, *services.PlanStatusService) {
-	control := services.NewPlanStatusService(&fakeClock{now: time.Now()}, models.GitContext{}, models.ToolIdentity{})
+	control := services.NewPlanStatusService(
+		&fakeClock{now: time.Now()}, models.GitContext{}, models.ToolIdentity{},
+		services.NewCircularLogBuffer(20))
 	o := services.NewOrchestrator(runner, fs, &fakeClock{now: time.Now()}, &fakeLogSink{}, io.Discard, cfg).
 		WithStatusReporter(control).
 		WithTaskControl(control)
@@ -206,7 +208,9 @@ func TestPlanningStopFromThePageEndsTheSession(t *testing.T) {
 	runner.script = func(call int, ctx context.Context) error {
 		return abortAs(control.RequestStopRun, t)(ctx)
 	}
-	control = services.NewPlanStatusService(&fakeClock{now: time.Now()}, models.GitContext{}, models.ToolIdentity{})
+	control = services.NewPlanStatusService(
+		&fakeClock{now: time.Now()}, models.GitContext{}, models.ToolIdentity{},
+		services.NewCircularLogBuffer(20))
 	o := services.NewPlanOrchestrator(
 		runner, fs, &fakePrompter{}, &fakeClock{now: time.Now()}, &fakeLogSink{}, io.Discard, planConfig(0),
 	).WithStatusReporter(control).WithTaskControl(control)

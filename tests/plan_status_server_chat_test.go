@@ -18,6 +18,7 @@ import (
 type chatStatusSource struct {
 	mu         sync.Mutex
 	snapshot   models.PlanSessionStatus
+	logBatch   models.LogBatch
 	updates    chan models.PlanSessionStatus
 	subscribed chan struct{}
 	once       sync.Once
@@ -39,6 +40,12 @@ func (s *chatStatusSource) Subscribe() (<-chan models.PlanSessionStatus, func())
 	s.mu.Unlock()
 	s.once.Do(func() { close(s.subscribed) })
 	return s.updates, func() {}
+}
+
+func (s *chatStatusSource) LogsSince(models.LogSequence, models.LogBatchSize) models.LogBatch {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.logBatch
 }
 
 func (s *chatStatusSource) publish(snapshot models.PlanSessionStatus) {

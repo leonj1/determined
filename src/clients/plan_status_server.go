@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"strconv"
 	"sync"
 	"time"
 
@@ -15,10 +16,11 @@ import (
 )
 
 const (
-	statusServerReadHeaderTimeout = 5 * time.Second
-	statusServerReadTimeout       = 15 * time.Second
-	statusServerWriteTimeout      = 15 * time.Second
-	statusServerIdleTimeout       = 60 * time.Second
+	statusServerReadHeaderTimeout                     = 5 * time.Second
+	statusServerReadTimeout                           = 15 * time.Second
+	statusServerWriteTimeout                          = 15 * time.Second
+	statusServerIdleTimeout                           = 60 * time.Second
+	statusLogBatchSize            models.LogBatchSize = 200
 )
 
 //go:embed plan_status_page.html
@@ -33,6 +35,12 @@ var planStatusAssets embed.FS
 type PlanStatusSource interface {
 	Snapshot() models.PlanSessionStatus
 	Subscribe() (<-chan models.PlanSessionStatus, func())
+}
+
+// LogSource supplies pull-based output batches and payload-free advance signals.
+type LogSource interface {
+	LogsSince(models.LogSequence, models.LogBatchSize) models.LogBatch
+	SubscribeLogOutput() (<-chan struct{}, func())
 }
 
 // AnnotationSink receives user feedback submitted from the status page. The
@@ -69,10 +77,11 @@ type ChatResponder interface {
 }
 
 // PlanStatusServer serves the interactive planning status page on loopback:
-// the embedded HTML at /, a server-sent-events stream of full status snapshots
-// at /events, and an annotation intake at /annotate.
+// the embedded HTML at /, a server-sent-events stream of small status snapshots
+// and log pings at /events, pull-based output at /logs, and user command routes.
 type PlanStatusServer struct {
 	source      PlanStatusSource
+	logs        LogSource
 	annotations AnnotationSink
 	implement   ImplementSink
 	taskControl TaskControlSink
@@ -92,6 +101,12 @@ func NewPlanStatusServer(source PlanStatusSource, annotations AnnotationSink, im
 		source: source, annotations: annotations, implement: implement, clock: clock,
 		connections: make(map[*WebSocketConn]struct{}),
 	}
+}
+
+// WithLogSource enables pull-based status-page log streaming.
+func (s *PlanStatusServer) WithLogSource(source LogSource) *PlanStatusServer {
+	s.logs = source
+	return s
 }
 
 // WithTaskControl enables the page's Skip and Stop commands on the active task.
@@ -121,11 +136,23 @@ func (s *PlanStatusServer) Start() error {
 		return fmt.Errorf("could not bind status server: %w", err)
 	}
 	s.listener = listener
+	s.server = &http.Server{
+		Handler:           s.routes(),
+		ReadHeaderTimeout: statusServerReadHeaderTimeout,
+		ReadTimeout:       statusServerReadTimeout,
+		WriteTimeout:      statusServerWriteTimeout,
+		IdleTimeout:       statusServerIdleTimeout,
+	}
+	go s.server.Serve(listener) //nolint:errcheck // Serve always returns on Shutdown/Close
+	return nil
+}
 
+func (s *PlanStatusServer) routes() *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.Handle("/assets/", http.FileServer(http.FS(planStatusAssets)))
 	mux.HandleFunc("/", s.servePage)
 	mux.HandleFunc("/events", s.serveEvents)
+	mux.HandleFunc("/logs", s.serveLogs)
 	mux.HandleFunc("/annotate", s.serveAnnotate)
 	mux.HandleFunc("/implement", s.serveImplement)
 	mux.HandleFunc("/task/skip", s.serveTaskSkip)
@@ -133,16 +160,7 @@ func (s *PlanStatusServer) Start() error {
 	mux.HandleFunc("/stall/choice", s.serveStallChoice)
 	mux.HandleFunc("/chat", s.serveChat)
 	mux.HandleFunc("/chat/ask", s.serveChatAsk)
-	s.server = &http.Server{
-		Handler:           mux,
-		ReadHeaderTimeout: statusServerReadHeaderTimeout,
-		ReadTimeout:       statusServerReadTimeout,
-		WriteTimeout:      statusServerWriteTimeout,
-		IdleTimeout:       statusServerIdleTimeout,
-	}
-	go s.server.Serve(listener) //nolint:errcheck // Serve always returns on Shutdown/Close
-
-	return nil
+	return mux
 }
 
 // URL returns the address browsers should open. The server listens on all
@@ -205,27 +223,72 @@ func (s *PlanStatusServer) serveEvents(w http.ResponseWriter, r *http.Request) {
 
 	snapshots, cancel := s.source.Subscribe()
 	defer cancel()
-
+	logUpdates, cancelLogs := s.subscribeLogOutput()
+	defer cancelLogs()
 	heartbeat := time.NewTicker(15 * time.Second)
 	defer heartbeat.Stop()
-
-	for {
-		select {
-		case <-r.Context().Done():
-			return
-		case <-heartbeat.C:
-			fmt.Fprint(w, ": keepalive\n\n") //nolint:errcheck
-			flusher.Flush()
-		case snapshot, open := <-snapshots:
-			if !open {
-				return
-			}
-			if err := writeEvent(w, snapshot); err != nil {
-				return
-			}
-			flusher.Flush()
-		}
+	for nextStatusEvent(r.Context(), w, flusher, heartbeat.C, snapshots, logUpdates) {
 	}
+}
+
+func nextStatusEvent(ctx context.Context, w http.ResponseWriter, flusher http.Flusher, heartbeat <-chan time.Time, snapshots <-chan models.PlanSessionStatus, logUpdates <-chan struct{}) bool {
+	select {
+	case <-ctx.Done():
+		return false
+	case <-heartbeat:
+		fmt.Fprint(w, ": keepalive\n\n") //nolint:errcheck
+		flusher.Flush()
+		return true
+	case snapshot, open := <-snapshots:
+		if !open {
+			return false
+		}
+		return flushStatusEvent(flusher, writeEvent(w, snapshot))
+	case <-logUpdates:
+		return flushStatusEvent(flusher, writeLogSignal(w))
+	}
+}
+
+func flushStatusEvent(flusher http.Flusher, err error) bool {
+	if err != nil {
+		return false
+	}
+	flusher.Flush()
+	return true
+}
+
+func (s *PlanStatusServer) subscribeLogOutput() (<-chan struct{}, func()) {
+	if s.logs == nil {
+		return nil, func() {}
+	}
+	return s.logs.SubscribeLogOutput()
+}
+
+func (s *PlanStatusServer) serveLogs(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if s.logs == nil {
+		http.Error(w, "log stream unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	since, err := parseLogSequence(r.URL.Query().Get("since"))
+	if err != nil {
+		http.Error(w, "since must be a non-negative integer", http.StatusBadRequest)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store")
+	json.NewEncoder(w).Encode(s.logs.LogsSince(since, statusLogBatchSize)) //nolint:errcheck
+}
+
+func parseLogSequence(value string) (models.LogSequence, error) {
+	if value == "" {
+		return 0, nil
+	}
+	sequence, err := strconv.ParseUint(value, 10, 64)
+	return models.LogSequence(sequence), err
 }
 
 // serveAnnotate accepts one user annotation from the page, stamps its arrival
@@ -466,10 +529,15 @@ func (s *PlanStatusServer) forgetConnection(connection *WebSocketConn) {
 }
 
 func writeEvent(w http.ResponseWriter, snapshot models.PlanSessionStatus) error {
-	payload, err := json.Marshal(snapshot)
+	payload, err := json.Marshal(snapshot.WithoutLogBodies())
 	if err != nil {
 		return err
 	}
 	_, err = fmt.Fprintf(w, "data: %s\n\n", payload)
+	return err
+}
+
+func writeLogSignal(w http.ResponseWriter) error {
+	_, err := fmt.Fprint(w, "event: logs\ndata:\n\n")
 	return err
 }

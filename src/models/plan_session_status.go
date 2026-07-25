@@ -113,7 +113,7 @@ const (
 type LogEntry struct {
 	At      time.Time `json:"at"`
 	Message string    `json:"message"`
-	Body    string    `json:"body"`
+	Body    string    `json:"body,omitempty"`
 	// State is the invocation's outcome. Planning log entries leave it empty;
 	// only the execution log tracks per-entry state.
 	State EntryState `json:"state,omitempty"`
@@ -131,8 +131,8 @@ func (e LogEntry) WithBody(text string) LogEntry {
 	return e
 }
 
-// PlanSessionStatus is the full snapshot the interactive status page renders.
-// Each broadcast carries the whole snapshot; browsers re-render on receipt.
+// PlanSessionStatus is the small state snapshot the interactive page renders.
+// Log bodies are fetched separately; Log and ExecLog retain invocation headers.
 type PlanSessionStatus struct {
 	Git GitContext `json:"git"`
 	// Tool names the AI CLI and model driving the session; the page header
@@ -282,6 +282,22 @@ func (s PlanSessionStatus) WithoutRunningExecEntries(fallback EntryState) PlanSe
 	}
 	s.ExecLog = log
 	return s
+}
+
+// WithoutLogBodies returns a snapshot containing only log entry headers/state.
+func (s PlanSessionStatus) WithoutLogBodies() PlanSessionStatus {
+	s.Log = logHeaders(s.Log)
+	s.ExecLog = logHeaders(s.ExecLog)
+	return s
+}
+
+func logHeaders(entries []LogEntry) []LogEntry {
+	headers := make([]LogEntry, len(entries))
+	for i, entry := range entries {
+		entry.Body = ""
+		headers[i] = entry
+	}
+	return headers
 }
 
 // WithStep returns a copy of the status with one more step appended.

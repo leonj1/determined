@@ -461,7 +461,7 @@ func TestInteractivePostPlanActionMatchesRequestedFlow(t *testing.T) {
 }
 
 func TestAutomaticExecutionUsesLiveStatusAndPropagatesOutcome(t *testing.T) {
-	status := services.NewPlanStatusService(fixedClock{}, models.GitContext{}, models.ToolIdentity{})
+	status := newPlanStatusService(fixedClock{}, models.GitContext{}, models.ToolIdentity{})
 	executor := &fakePlanExecutor{outcome: models.OutcomeStalled}
 	held := false
 	hold := func(_ context.Context) { held = true }
@@ -651,7 +651,7 @@ func TestPlanWithoutInteractiveIsUnaffected(t *testing.T) {
 
 func TestResumedSessionSeedsDocumentsAndShowsPlanningSucceeded(t *testing.T) {
 	now := time.Date(2026, 7, 20, 12, 0, 0, 0, time.UTC)
-	status := services.NewPlanStatusService(fixedClock{now: now}, models.GitContext{}, models.ToolIdentity{})
+	status := newPlanStatusService(fixedClock{now: now}, models.GitContext{}, models.ToolIdentity{})
 	docs := &fakeDocsPublisher{}
 
 	seedResumedSession(status, docs)

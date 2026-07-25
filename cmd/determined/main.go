@@ -526,7 +526,7 @@ func runPlan(ctx context.Context, tool models.Tool, goal string, mode models.Pla
 // offers implementation or executes automatically, then stays viewable until
 // the user presses Enter or interrupts.
 func runInteractivePlan(ctx context.Context, orchestrator *services.PlanOrchestrator, tool models.ToolIdentity, executing bool, execute planExecutor, clock services.Clock) models.Outcome {
-	status := services.NewPlanStatusService(clock, clients.NewGitContextReader().Read(ctx), tool)
+	status := newPlanStatusService(clock, clients.NewGitContextReader().Read(ctx), tool)
 	server, cleanup, ok := startStatusSession(status, clock)
 	if !ok {
 		return models.OutcomeDroidFailed
@@ -550,7 +550,8 @@ func runInteractivePlan(ctx context.Context, orchestrator *services.PlanOrchestr
 func startStatusSession(status *services.PlanStatusService, clock services.Clock) (*clients.PlanStatusServer, func(), bool) {
 	chat := services.NewChatService(status, clock)
 	server := clients.NewPlanStatusServer(status, status, status, clock).
-		WithChatResponder(chat).WithTaskControl(status).WithStallChoice(status)
+		WithLogSource(status).WithChatResponder(chat).
+		WithTaskControl(status).WithStallChoice(status)
 	if err := server.Start(); err != nil {
 		fmt.Fprintf(os.Stderr, "determined: %v\n", err)
 		return nil, func() {}, false
@@ -575,7 +576,7 @@ func startStatusSession(status *services.PlanStatusService, clock services.Clock
 // runHeadlessExec makes an unattended execution observable while preserving
 // execution as the primary outcome when the optional server cannot start.
 func runHeadlessExec(ctx context.Context, tool models.Tool, execute planExecutor, clock services.Clock) models.Outcome {
-	status := services.NewPlanStatusService(clock, clients.NewGitContextReader().Read(ctx), tool.Identity())
+	status := newPlanStatusService(clock, clients.NewGitContextReader().Read(ctx), tool.Identity())
 	_, cleanup, ok := startStatusSession(status, clock)
 	if !ok {
 		return continueHeadlessExec(ctx, status, execute, cleanup, false, nil)
@@ -596,7 +597,7 @@ func continueHeadlessExec(ctx context.Context, status *services.PlanStatusServic
 
 func runInteractiveExec(ctx context.Context, tool models.Tool, budget time.Duration, maxFailures int, execute planExecutor, clock services.Clock, logs services.LogSink) models.Outcome {
 	cfg := createPlanConfig(tool, "", models.PlanModeStandard, budget, 0, maxFailures)
-	status := services.NewPlanStatusService(clock, clients.NewGitContextReader().Read(ctx), tool.Identity())
+	status := newPlanStatusService(clock, clients.NewGitContextReader().Read(ctx), tool.Identity())
 	server, cleanup, ok := startStatusSession(status, clock)
 	if !ok {
 		return models.OutcomeDroidFailed
@@ -615,6 +616,13 @@ func runInteractiveExec(ctx context.Context, tool models.Tool, budget time.Durat
 	status.OfferImplement()
 	fmt.Fprintf(os.Stdout, "determined: status page still serving at %s — annotate sections, click Implement to run again after a failure, or press Enter to exit\n", server.URL())
 	return serveFeedbackLoop(ctx, orchestrator, status, execute, outcome)
+}
+
+const statusLogCapacity = 2000
+
+func newPlanStatusService(clock services.Clock, git models.GitContext, tool models.ToolIdentity) *services.PlanStatusService {
+	return services.NewPlanStatusService(
+		clock, git, tool, services.NewCircularLogBuffer(statusLogCapacity))
 }
 
 // completedStatusPageHolder drains terminal input during execution, then keeps

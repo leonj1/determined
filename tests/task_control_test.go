@@ -7,11 +7,10 @@ import (
 
 	"determined/src/clients"
 	"determined/src/models"
-	"determined/src/services"
 )
 
 func TestTaskControlAdvertisesOnlyWhileATaskRuns(t *testing.T) {
-	service := services.NewPlanStatusService(serverClock{}, models.GitContext{}, models.ToolIdentity{})
+	service := newTestPlanStatusService(serverClock{}, models.GitContext{}, models.ToolIdentity{})
 
 	if service.Snapshot().TaskControlAvailable {
 		t.Fatal("no task registered yet, control must not be advertised")
@@ -35,7 +34,7 @@ func TestTaskControlAdvertisesOnlyWhileATaskRuns(t *testing.T) {
 }
 
 func TestSkipRequestCancelsTheActiveInvocation(t *testing.T) {
-	service := services.NewPlanStatusService(serverClock{}, models.GitContext{}, models.ToolIdentity{})
+	service := newTestPlanStatusService(serverClock{}, models.GitContext{}, models.ToolIdentity{})
 	cancelled := false
 	service.BeginTask(func() { cancelled = true })
 
@@ -55,7 +54,7 @@ func TestSkipRequestCancelsTheActiveInvocation(t *testing.T) {
 }
 
 func TestStopRequestOutranksARacingSkip(t *testing.T) {
-	service := services.NewPlanStatusService(serverClock{}, models.GitContext{}, models.ToolIdentity{})
+	service := newTestPlanStatusService(serverClock{}, models.GitContext{}, models.ToolIdentity{})
 	service.BeginTask(func() {})
 
 	service.RequestStopRun()

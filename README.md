@@ -75,6 +75,12 @@ Every unattended `-exec` run also starts the live status server, prints its
 URL, and records the session for `-link` and `-chat`. The execution still runs
 when that observer server cannot bind.
 
+The live page keeps status updates small: workflow state and invocation headers
+arrive as snapshots, while the Log and Execution tabs pull output in bounded
+batches from a 2,000-line circular buffer. If a browser falls far enough
+behind for lines to be overwritten, the affected log shows how many lines were
+skipped and resumes at the oldest available line.
+
 ## What each mode does
 
 ### Planning mode (`--plan`, attended)

@@ -333,6 +333,7 @@
   .log-entry .log-head time { color: var(--text-muted); margin-left: auto; order: 3; white-space: nowrap; font-variant-numeric: tabular-nums; }
   .log-entry .log-head .message { font-weight: 600; order: 2; }
   .log-entry .log-body { padding: 0 0 0.9rem; }
+  .log-gap { display: block; color: var(--text-muted); font-style: italic; }
   .log-entry .log-body.doc p:last-child, .log-entry .log-body.doc ul:last-child,
   .log-entry .log-body.doc pre:last-child, .log-entry .log-body.doc table:last-child { margin-bottom: 0; }
   /* Execution entries carry their invocation's outcome as a subtle background
@@ -1373,6 +1374,21 @@
     renderStallOptions(status.stallChoiceOptions);
   }
 
+  const logViews = {
+    plan: logView("log", "panel-log"),
+    exec: logView("exec-log", "panel-exec"),
+  };
+  let logCursor = 0;
+  let logFetchRunning = false;
+  let logFetchPending = false;
+
+  function logView(listId, panelId) {
+    return {
+      list: el(listId), panel: el(panelId), articles: [], bodies: [],
+      segments: [], rendered: [],
+    };
+  }
+
   function render(status) {
     const repo = repoShortName(status.git.remote);
     el("title").textContent = repo ? repo + " — planning" : "planning";
@@ -1412,14 +1428,14 @@
   }
 
   function renderLog(entries) {
-    renderLogInto("log", "panel-log", entries);
+    syncLogHeaders("plan", entries);
     el("no-log").style.display = entries.length ? "none" : "block";
   }
 
   // Shows where the execute run stands and streams its per-invocation log,
   // mirroring the Log tab's rendering.
   function renderExec(status) {
-    renderLogInto("exec-log", "panel-exec", status.execLog || []);
+    syncLogHeaders("exec", status.execLog || []);
     const state = el("exec-state");
     const phase = status.execPhase || "";
     state.classList.remove("empty", "succeeded", "failed");
@@ -1674,43 +1690,165 @@
     renderQuizAttempt();
   }
 
-  function renderLogInto(listId, panelId, entries) {
-    const list = el(listId);
-    const tabActive = el(panelId).classList.contains("active");
-    const stickToBottom = tabActive &&
-      window.innerHeight + window.scrollY >= document.body.scrollHeight - 40;
-    list.replaceChildren();
-    for (const entry of entries) {
-      const article = document.createElement("article");
-      // Planning entries carry no state and stay untinted; execution entries
-      // add state-running / state-ok / state-warn / state-error.
-      article.className = entry.state
-        ? "log-entry state-" + entry.state
-        : "log-entry";
+  function syncLogHeaders(stream, entries) {
+    const view = logViews[stream];
+    entries.forEach((entry, index) => {
+      if (!view.articles[index]) addLogArticle(view, entry, index);
+      updateLogArticle(view.articles[index], entry);
+    });
+  }
 
-      const head = document.createElement("div");
-      head.className = "log-head";
-      const marker = document.createElement("span");
-      marker.className = "marker";
-      marker.textContent = "==>";
-      const t = document.createElement("time");
-      t.textContent = fmtTime(entry.at);
-      const message = document.createElement("span");
-      message.className = "message";
-      message.textContent = entry.message;
-      head.append(marker, t, message);
-      article.append(head);
+  function addLogArticle(view, entry, index) {
+    const article = document.createElement("article");
+    const head = document.createElement("div");
+    head.className = "log-head";
+    head.append(logMarker(), logTime(entry), logMessage(entry));
+    const body = document.createElement("div");
+    body.className = "log-body doc plain";
+    body.hidden = true;
+    article.append(head, body);
+    view.list.append(article);
+    view.articles[index] = article;
+    view.bodies[index] = body;
+    renderStoredSegments(view, index);
+  }
 
-      if (entry.body) {
-        const body = document.createElement("div");
-        body.className = "log-body doc";
-        if (looksLikeMarkdown(entry.body)) body.innerHTML = markdownToHtml(entry.body);
-        else { body.textContent = entry.body; body.classList.add("plain"); }
-        article.append(body);
+  function logMarker() {
+    const marker = document.createElement("span");
+    marker.className = "marker";
+    marker.textContent = "==>";
+    return marker;
+  }
+
+  function logTime(entry) {
+    const timestamp = document.createElement("time");
+    timestamp.textContent = fmtTime(entry.at);
+    return timestamp;
+  }
+
+  function logMessage(entry) {
+    const message = document.createElement("span");
+    message.className = "message";
+    message.textContent = entry.message;
+    return message;
+  }
+
+  function updateLogArticle(article, entry) {
+    article.className = entry.state
+      ? "log-entry state-" + entry.state
+      : "log-entry";
+  }
+
+  function storeLogSegment(stream, entry, text, gap) {
+    const view = logViews[stream];
+    if (!view || entry < 0 || !text) return;
+    if (!view.segments[entry]) view.segments[entry] = [];
+    view.segments[entry].push({ text, gap });
+  }
+
+  function renderStoredSegments(view, entry) {
+    const body = view.bodies[entry];
+    if (!body) return;
+    const segments = view.segments[entry] || [];
+    body.replaceChildren();
+    body.classList.remove("plain");
+    if (!segments.some((segment) => segment.gap)) {
+      setDoc(body, segments.map((segment) => segment.text).join(""), "");
+    } else {
+      renderGappedLogBody(body, segments);
+    }
+    view.rendered[entry] = segments.length;
+    body.hidden = segments.length === 0;
+  }
+
+  function renderGappedLogBody(body, segments) {
+    let text = "";
+    for (const segment of segments) {
+      if (!segment.gap) {
+        text += segment.text;
+        continue;
       }
-      list.append(article);
+      appendLogText(body, text);
+      text = "";
+      body.append(logGap(segment.text));
+    }
+    appendLogText(body, text);
+  }
+
+  function appendLogText(body, text) {
+    if (!text) return;
+    const content = document.createElement("div");
+    content.className = "log-content doc";
+    setDoc(content, text, "");
+    body.append(content);
+  }
+
+  function logGap(text) {
+    const marker = document.createElement("span");
+    marker.className = "log-gap";
+    marker.textContent = text;
+    return marker;
+  }
+
+  function appendLogBatch(batch) {
+    const stickToBottom = activeLogAtBottom();
+    const touched = new Map();
+    if (batch.gap) {
+      const text = "… " + batch.gap.dropped + " lines skipped …\n";
+      storeLogSegment(batch.gap.stream, batch.gap.entry, text, true);
+      touched.set(batch.gap.stream + ":" + batch.gap.entry, batch.gap);
+    }
+    for (const line of batch.lines || []) {
+      storeLogSegment(line.stream, line.entry, line.text, false);
+      touched.set(line.stream + ":" + line.entry, line);
+    }
+    for (const item of touched.values()) {
+      const view = logViews[item.stream];
+      if (view) renderStoredSegments(view, item.entry);
     }
     if (stickToBottom) window.scrollTo(0, document.body.scrollHeight);
+  }
+
+  function activeLogAtBottom() {
+    const active = logViews.plan.panel.classList.contains("active") ||
+      logViews.exec.panel.classList.contains("active");
+    return active &&
+      window.innerHeight + window.scrollY >= document.body.scrollHeight - 40;
+  }
+
+  function requestLogFetch() {
+    logFetchPending = true;
+    if (!logFetchRunning) fetchLogBatches();
+  }
+
+  async function fetchLogBatches() {
+    logFetchRunning = true;
+    while (logFetchPending) {
+      logFetchPending = false;
+      const continued = await fetchOneLogBatch();
+      if (!continued) break;
+    }
+    logFetchRunning = false;
+    if (logFetchPending) requestLogFetch();
+  }
+
+  async function fetchOneLogBatch() {
+    try {
+      const response = await fetch("/logs?since=" + logCursor);
+      if (!response.ok) return false;
+      const batch = await response.json();
+      appendLogBatch(batch);
+      logCursor = batch.nextSeq;
+      await nextRender();
+      if (batch.nextSeq < batch.latestSeq) logFetchPending = true;
+      return true;
+    } catch (_error) {
+      return false;
+    }
+  }
+
+  function nextRender() {
+    return new Promise((resolve) => requestAnimationFrame(resolve));
   }
 
   function renderSteps(steps) {
@@ -2109,7 +2247,9 @@
   events.onmessage = (event) => {
     el("disconnected").classList.remove("on");
     render(JSON.parse(event.data));
+    requestLogFetch();
   };
+  events.addEventListener("logs", requestLogFetch);
   events.onerror = () => el("disconnected").classList.add("on");
 </script>
 </body>
