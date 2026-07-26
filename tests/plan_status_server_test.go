@@ -154,7 +154,7 @@ func assertPageServed(t *testing.T, url string) {
 		"determined — planning", "EventSource", "banner",
 		`id="active-task"`, `id="active-task-message"`, `id="active-task-elapsed"`,
 		"const active = activeActivity(activitySteps, activityIsRunning(status));",
-		"renderActiveTask(active)", "renderActivity(activitySteps, active, !!status.taskControlAvailable)",
+		"renderActiveTask(active)", "renderActivity(activitySteps, active, !!status.taskControlAvailable, repoFull)",
 		"step-card", "taskSteps", "Done when: ",
 		"log-entry", "renderLog", `data-tab="log"`, `fetch("/logs?since="`,
 		`addEventListener("logs"`, "lines skipped",
