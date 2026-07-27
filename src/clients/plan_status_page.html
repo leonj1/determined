@@ -1410,6 +1410,7 @@
   let logCursor = 0;
   let logLatest = 0;
   let logTailing = true;
+  let logAtBottom = true;
   let logFetchRunning = false;
   let logFetchPending = false;
   let logBackFetchRunning = false;
@@ -1796,7 +1797,14 @@
       return;
     }
     body.hidden = false;
-    for (const line of lines) body.append(logLineNode(line));
+    for (const line of lines) body.append(attachedLogLineNode(line));
+  }
+
+  // attachedLogLineNode builds and remembers a line's DOM node so tail appends
+  // and trims can touch just that node instead of rebuilding whole bodies.
+  function attachedLogLineNode(line) {
+    line.node = logLineNode(line);
+    return line.node;
   }
 
   function logLineNode(line) {
@@ -1817,32 +1825,47 @@
     return 0;
   }
 
+  // appendTailBatch is the hot path while a tool streams: each new line is
+  // appended to its entry body in place and old lines are trimmed node by
+  // node, so no batch ever rebuilds bodies or re-lays-out untouched lines.
   function appendTailBatch(batch) {
-    const stickToBottom = activeLogAtBottom();
     if (batch.gap) {
-      logWindow.push({
+      appendTailLine({
         seq: 0, stream: batch.gap.stream, entry: batch.gap.entry,
         text: "… " + batch.gap.dropped + " lines skipped …", gap: true,
       });
     }
     for (const line of batch.lines || []) {
-      logWindow.push({ seq: line.seq, stream: line.stream, entry: line.entry, text: line.text });
+      appendTailLine({ seq: line.seq, stream: line.stream, entry: line.entry, text: line.text });
     }
-    if (logWindow.length > LOG_TAIL_LINES) {
-      logWindow = logWindow.slice(logWindow.length - LOG_TAIL_LINES);
-    }
-    renderLogWindow();
-    if (stickToBottom) window.scrollTo(0, document.body.scrollHeight);
+    while (logWindow.length > LOG_TAIL_LINES) removeLogLine(logWindow.shift());
+    if (logAtBottom && logPanelActive()) window.scrollTo(0, document.body.scrollHeight);
+  }
+
+  // appendTailLine adds one line to the window and its entry body. A body that
+  // does not exist yet is backfilled by addLogArticle's rebuild once the
+  // entry's header arrives in a status snapshot.
+  function appendTailLine(line) {
+    logWindow.push(line);
+    const view = logViews[line.stream];
+    const body = view && view.bodies[line.entry];
+    if (!body) return;
+    body.hidden = false;
+    body.classList.add("plain");
+    body.append(attachedLogLineNode(line));
+  }
+
+  function removeLogLine(line) {
+    const node = line.node;
+    if (!node) return;
+    const body = node.parentElement;
+    node.remove();
+    if (body && !body.children.length) body.hidden = true;
   }
 
   function logPanelActive() {
     return logViews.plan.panel.classList.contains("active") ||
       logViews.exec.panel.classList.contains("active");
-  }
-
-  function activeLogAtBottom() {
-    return logPanelActive() &&
-      window.innerHeight + window.scrollY >= document.body.scrollHeight - 40;
   }
 
   function requestLogFetch() {
@@ -1881,6 +1904,13 @@
     }
   }
 
+  // trackLogScroll keeps the at-bottom flag current from scroll events, so
+  // tail appends never force a synchronous layout just to locate the viewport.
+  function trackLogScroll() {
+    logAtBottom = window.innerHeight + window.scrollY >= document.body.scrollHeight - 40;
+    maybeFetchOlderLogs();
+  }
+
   // Paging backwards: near the top of an active log panel, pull the previous
   // batch of persisted lines and trim the newest end to the scrollback cap.
   function maybeFetchOlderLogs() {
@@ -1906,6 +1936,7 @@
 
   function prependScrollbackBatch(batch) {
     logTailing = false;
+    logAtBottom = false;
     const older = batch.lines.map((line) => ({
       seq: line.seq, stream: line.stream, entry: line.entry, text: line.text,
     }));
@@ -1933,6 +1964,7 @@
 
   function resumeLogTail() {
     logTailing = true;
+    logAtBottom = true;
     logWindow = [];
     logCursor = logLatest > LOG_TAIL_LINES ? logLatest - LOG_TAIL_LINES : 0;
     renderLogWindow();
@@ -2351,7 +2383,7 @@
   };
   events.addEventListener("logs", requestLogFetch);
   events.onerror = () => el("disconnected").classList.add("on");
-  window.addEventListener("scroll", maybeFetchOlderLogs);
+  window.addEventListener("scroll", trackLogScroll);
   el("log-jump").addEventListener("click", resumeLogTail);
 </script>
 </body>

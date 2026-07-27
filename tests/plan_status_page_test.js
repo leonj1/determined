@@ -54,6 +54,11 @@ class FakeNode {
     this.children.push(...children);
   }
   before(...nodes) { this.beforeNodes = (this.beforeNodes || []).concat(nodes); }
+  remove() {
+    if (!this.parentElement) return;
+    const index = this.parentElement.children.indexOf(this);
+    if (index >= 0) this.parentElement.children.splice(index, 1);
+  }
   replaceChildren(...children) {
     children.forEach((child) => { if (child instanceof FakeNode) child.parentElement = this; });
     this.children = children;
@@ -381,6 +386,23 @@ test("streamed log lines render as bounded plain text, never markdown", () => {
   assert.equal(
     browser.run(`logViews.plan.bodies[0].children.map((child) => child.textContent).join("|")`),
     "## Result|- **first**",
+  );
+});
+
+test("tail batches append in place without rebuilding earlier line nodes", () => {
+  const browser = createPageEnvironment();
+  browser.run(`
+    syncLogHeaders("exec", [{ at: "2026-07-24T10:00:00Z", message: "executing", state: "running" }]);
+    appendTailBatch({ lines: [{ seq: 1, stream: "exec", entry: 0, text: "first\\n" }] });
+    globalThis.firstNode = logViews.exec.bodies[0].children[0];
+    appendTailBatch({ lines: [{ seq: 2, stream: "exec", entry: 0, text: "second\\n" }] });
+  `);
+
+  assert.equal(browser.run(`logViews.exec.bodies[0].children[0] === firstNode`), true,
+    "an existing line node must survive the next batch untouched");
+  assert.equal(
+    browser.run(`logViews.exec.bodies[0].children.map((child) => child.textContent).join("|")`),
+    "first|second",
   );
 });
 

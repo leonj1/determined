@@ -297,6 +297,8 @@ func TestExecuteRunReportsFullStatusSequence(t *testing.T) {
 		switch call {
 		case 1:
 			io.WriteString(out, "widget added\n")
+			io.WriteString(out, `{"type":"assistant","message":{"content":[{"type":"tool_use",`+
+				`"name":"Write","input":{"file_path":"widget.go"}}]}}`+"\n")
 			fs.Write("STEPS.md", "- [x] 1. Add the widget.\n  Done when: widget tests pass.\n")
 		case 2: // the docs update
 		case 3: // the whole-plan audit approves
@@ -347,6 +349,11 @@ func TestExecuteRunReportsFullStatusSequence(t *testing.T) {
 	})
 	if !strings.Contains(reporter.logOutput, "widget added\n") {
 		t.Errorf("exec log output = %q, want the streamed tool output", reporter.logOutput)
+	}
+	if !strings.Contains(reporter.logOutput, "→ Write {\"file_path\":\"widget.go\"}\n") ||
+		strings.Contains(reporter.logOutput, "stream-json") ||
+		strings.Contains(reporter.logOutput, `{"type":"assistant"`) {
+		t.Errorf("exec log output = %q, want stream-json events traced, not raw", reporter.logOutput)
 	}
 	if len(reporter.taskSteps) != 1 || !reporter.taskSteps[0].Completed {
 		t.Errorf("final task steps = %+v, want the checked step published", reporter.taskSteps)
