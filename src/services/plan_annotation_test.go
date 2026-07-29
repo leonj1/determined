@@ -286,14 +286,14 @@ func TestServeFeedbackReturnsTrueOnImplementRequest(t *testing.T) {
 	o := services.NewPlanOrchestrator(&fakeRunner{}, fs, &fakePrompter{}, &fakeClock{now: time.Now()}, &fakeLogSink{}, io.Discard, planConfig(0)).
 		WithStatusReporter(reporter)
 
-	result := make(chan bool, 1)
+	result := make(chan models.FeedbackAction, 1)
 	go func() { result <- o.ServeFeedback(context.Background(), make(chan struct{})) }()
 	reporter.implement <- struct{}{}
 
 	select {
-	case implement := <-result:
-		if !implement {
-			t.Fatal("ServeFeedback = false on implement request, want true")
+	case action := <-result:
+		if action != models.FeedbackActionImplement {
+			t.Fatalf("ServeFeedback = %s on implement request, want %s", action, models.FeedbackActionImplement)
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("ServeFeedback did not return on implement request")
@@ -315,8 +315,9 @@ func TestServeFeedbackAppliesAnnotationsAndReturnsFalseOnDismissal(t *testing.T)
 	o := services.NewPlanOrchestrator(runner, fs, &fakePrompter{}, &fakeClock{now: time.Now()}, &fakeLogSink{}, io.Discard, planConfig(0)).
 		WithStatusReporter(reporter)
 
-	if o.ServeFeedback(context.Background(), closedChannel()) {
-		t.Fatal("ServeFeedback = true on dismissal, want false")
+	action := o.ServeFeedback(context.Background(), closedChannel())
+	if action != models.FeedbackActionNone {
+		t.Fatalf("ServeFeedback = %s on dismissal, want %s", action, models.FeedbackActionNone)
 	}
 	if runner.calls != 1 {
 		t.Errorf("annotate invocations = %d, want the queued annotation applied", runner.calls)
@@ -325,7 +326,8 @@ func TestServeFeedbackAppliesAnnotationsAndReturnsFalseOnDismissal(t *testing.T)
 
 func TestServeFeedbackWithoutReporterReturnsFalse(t *testing.T) {
 	o := services.NewPlanOrchestrator(&fakeRunner{}, newFakeFileStore(), &fakePrompter{}, &fakeClock{now: time.Now()}, &fakeLogSink{}, io.Discard, planConfig(0))
-	if o.ServeFeedback(context.Background(), make(chan struct{})) {
-		t.Fatal("ServeFeedback without a reporter = true, want false")
+	action := o.ServeFeedback(context.Background(), make(chan struct{}))
+	if action != models.FeedbackActionNone {
+		t.Fatalf("ServeFeedback without a reporter = %s, want %s", action, models.FeedbackActionNone)
 	}
 }

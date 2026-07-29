@@ -45,6 +45,7 @@ type PlanStatusReporter interface {
 	TakeAnnotation() (models.Annotation, bool)
 	AnnotationSignal() <-chan struct{}
 	ImplementSignal() <-chan struct{}
+	ExplainSignal() <-chan struct{}
 }
 
 // PlanOrchestrator runs the attended planning loop: it seeds the goal, runs the
@@ -667,22 +668,25 @@ func (o *PlanOrchestrator) ServeAnnotations(ctx context.Context, dismissed <-cha
 }
 
 // ServeFeedback keeps the finished session responsive like ServeAnnotations,
-// and additionally returns true the moment the page's Implement button
-// requests execution, letting the caller start the execute loop. Dismissal,
-// interruption, or a missing reporter return false.
-func (o *PlanOrchestrator) ServeFeedback(ctx context.Context, dismissed <-chan struct{}) bool {
+// and returns the follow-on action the feedback loop should take next:
+// FeedbackActionImplement when the page's Implement button requests execution,
+// FeedbackActionExplain when the page requests explanation generation,
+// or FeedbackActionNone on dismissal, interruption, or a missing reporter.
+func (o *PlanOrchestrator) ServeFeedback(ctx context.Context, dismissed <-chan struct{}) models.FeedbackAction {
 	if o.status == nil {
-		return false
+		return models.FeedbackActionNone
 	}
 	o.drainAnnotations(ctx)
 	for {
 		select {
 		case <-ctx.Done():
-			return false
+			return models.FeedbackActionNone
 		case <-dismissed:
-			return false
+			return models.FeedbackActionNone
 		case <-o.status.ImplementSignal():
-			return true
+			return models.FeedbackActionImplement
+		case <-o.status.ExplainSignal():
+			return models.FeedbackActionExplain
 		case <-o.status.AnnotationSignal():
 			o.drainAnnotations(ctx)
 		}
