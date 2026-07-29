@@ -452,6 +452,31 @@ func runLoop(ctx context.Context, tool models.Tool, budget time.Duration, maxSta
 	return orchestrator.Run(ctx)
 }
 
+// runExplain generates the explanation and quiz on demand from the status
+// page, creating the necessary infrastructure fresh. It is called from the
+// feedback loop when the user clicks Generate Explanation.
+func runExplain(ctx context.Context, tool models.Tool, status services.ExecStatusReporter) {
+	cfg := models.Config{
+		StopFile:        "STOP.md",
+		PlanFile:        "PLAN.md",
+		StepsFile:       "STEPS.md",
+		ExplanationFile: "EXPLANATION.md",
+		QuizFile:        "QUIZ.json",
+		ProtectedFiles:  []string{"PLAN.md", "TESTS.md", "CRITERIA.md"},
+	}
+	explainer := services.NewExplanationService(
+		clients.NewExecCommandRunner(),
+		clients.NewOsFileStore(),
+		clients.NewSystemClock(),
+		clients.NewFileLogSink("logs", clients.NewSystemClock()),
+		os.Stdout,
+		status,
+		tool,
+		cfg,
+	)
+	explainer.Run(ctx)
+}
+
 func isUpdateCommand(args []string) bool {
 	return len(args) > 1 && args[1] == "update"
 }
@@ -518,15 +543,15 @@ func runPlan(ctx context.Context, tool models.Tool, goal string, mode models.Pla
 	if !interactive {
 		return orchestrator.Run(ctx)
 	}
-	return runInteractivePlan(ctx, orchestrator, tool.Identity(), executing, execute, clock)
+	return runInteractivePlan(ctx, orchestrator, tool, executing, execute, clock)
 }
 
 // runInteractivePlan wraps a planning run with the live status web server. A
 // bind failure aborts before the AI tool is ever invoked. A ready plan either
 // offers implementation or executes automatically, then stays viewable until
 // the user presses Enter or interrupts.
-func runInteractivePlan(ctx context.Context, orchestrator *services.PlanOrchestrator, tool models.ToolIdentity, executing bool, execute planExecutor, clock services.Clock) models.Outcome {
-	status := newPlanStatusService(clock, clients.NewGitContextReader().Read(ctx), tool)
+func runInteractivePlan(ctx context.Context, orchestrator *services.PlanOrchestrator, tool models.Tool, executing bool, execute planExecutor, clock services.Clock) models.Outcome {
+	status := newPlanStatusService(clock, clients.NewGitContextReader().Read(ctx), tool.Identity())
 	server, cleanup, ok := startStatusSession(status, clock)
 	if !ok {
 		return models.OutcomeDroidFailed
@@ -538,7 +563,8 @@ func runInteractivePlan(ctx context.Context, orchestrator *services.PlanOrchestr
 	}
 	switch postPlanActionFor(executing, outcome) {
 	case postPlanOffer:
-		return holdStatusPage(ctx, orchestrator, status, server.URL(), execute, outcome)
+		explain := func(ctx context.Context) { runExplain(ctx, tool, status) }
+		return holdStatusPage(ctx, orchestrator, status, server.URL(), execute, explain, outcome)
 	case postPlanAutoExec:
 		fmt.Fprintf(os.Stdout, "determined: plan ready — executing now; status page streaming at %s\n", server.URL())
 		hold := completedStatusPageHolder(server.URL(), os.Stdout, os.Stdin)
@@ -558,7 +584,8 @@ func startStatusSession(status *services.PlanStatusService, clock services.Clock
 	chat := services.NewChatService(status, clock)
 	server := clients.NewPlanStatusServer(status, status, status, clock).
 		WithLogSource(status).WithChatResponder(chat).
-		WithTaskControl(status).WithStallChoice(status)
+		WithTaskControl(status).WithStallChoice(status).
+		WithExplainSink(status)
 	if err := server.Start(); err != nil {
 		fmt.Fprintf(os.Stderr, "determined: %v\n", err)
 		history.Close() //nolint:errcheck // best-effort close on failed start
@@ -639,7 +666,8 @@ func runInteractiveExec(ctx context.Context, tool models.Tool, budget time.Durat
 	}
 	status.OfferImplement()
 	fmt.Fprintf(os.Stdout, "determined: status page still serving at %s — annotate sections, click Implement to run again after a failure, or press Enter to exit\n", server.URL())
-	return serveFeedbackLoop(ctx, orchestrator, status, execute, outcome)
+	explain := func(ctx context.Context) { runExplain(ctx, tool, status) }
+	return serveFeedbackLoop(ctx, orchestrator, status, execute, explain, outcome)
 }
 
 const statusLogCapacity = 2000
@@ -693,22 +721,29 @@ func dismissalChannelWhenReady(input io.Reader, ready <-chan struct{}) <-chan st
 // plan documents, and the Implement button starts execution in the live page.
 // Enter dismisses the page. The result is execution's outcome when requested,
 // or the planning outcome when the page is dismissed without implementation.
-func holdStatusPage(ctx context.Context, orchestrator *services.PlanOrchestrator, status *services.PlanStatusService, url string, execute planExecutor, outcome models.Outcome) models.Outcome {
+func holdStatusPage(ctx context.Context, orchestrator *services.PlanOrchestrator, status *services.PlanStatusService, url string, execute planExecutor, explain func(context.Context), outcome models.Outcome) models.Outcome {
 	if outcome == models.OutcomePlanReady {
 		status.OfferImplement()
 	}
 	fmt.Fprintf(os.Stdout,
 		"determined: status page still serving at %s — annotate sections to refine the plan, click Implement to execute it, or press Enter to exit\n",
 		url)
-	return serveFeedbackLoop(ctx, orchestrator, status, execute, outcome)
+	return serveFeedbackLoop(ctx, orchestrator, status, execute, explain, outcome)
 }
 
-func serveFeedbackLoop(ctx context.Context, orchestrator *services.PlanOrchestrator, status *services.PlanStatusService, execute planExecutor, outcome models.Outcome) models.Outcome {
+func serveFeedbackLoop(ctx context.Context, orchestrator *services.PlanOrchestrator, status *services.PlanStatusService, execute planExecutor, explain func(context.Context), outcome models.Outcome) models.Outcome {
 	dismissed := dismissalChannel()
-	for orchestrator.ServeFeedback(ctx, dismissed) {
-		outcome = execute(ctx, status)
+	for {
+		action := orchestrator.ServeFeedback(ctx, dismissed)
+		switch action {
+		case models.FeedbackActionImplement:
+			outcome = execute(ctx, status)
+		case models.FeedbackActionExplain:
+			explain(ctx)
+		default:
+			return outcome
+		}
 	}
-	return outcome
 }
 
 // dismissalChannel returns a channel closed when the user presses Enter,

@@ -31,8 +31,8 @@ const (
 )
 
 // ExplainPhase describes where the post-execution explanation stands. The
-// empty value means no explanation was requested because execution has not
-// completed successfully.
+// empty value means no explanation was requested yet (execution either
+// hasn't finished or the user hasn't clicked Generate Explanation).
 type ExplainPhase string
 
 const (
@@ -42,6 +42,19 @@ const (
 	ExplainPhaseSucceeded ExplainPhase = "succeeded"
 	// ExplainPhaseFailed means the explanation could not be produced or read.
 	ExplainPhaseFailed ExplainPhase = "failed"
+)
+
+// FeedbackAction names the follow-on action the interactive feedback loop
+// should take next when ServeFeedback returns.
+type FeedbackAction string
+
+const (
+	// FeedbackActionNone means the session closed or was interrupted.
+	FeedbackActionNone FeedbackAction = ""
+	// FeedbackActionImplement means the user clicked Implement on the page.
+	FeedbackActionImplement FeedbackAction = "implement"
+	// FeedbackActionExplain means the user clicked Generate Explanation.
+	FeedbackActionExplain FeedbackAction = "explain"
 )
 
 // QuizPhase describes where post-explanation quiz generation stands. The

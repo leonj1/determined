@@ -65,6 +65,13 @@
   }
   #implement.on { display: inline-block; }
   #implement:hover { filter: brightness(0.95); }
+  #explain-button {
+    display: none; appearance: none; border: 1px solid var(--accent); border-radius: 8px;
+    padding: 0.5rem 1rem; font-size: 0.85rem; font-weight: 600; line-height: 1.2;
+    cursor: pointer; background: var(--accent); color: #fff; white-space: nowrap;
+  }
+  #explain-button.on { display: inline-block; }
+  #explain-button:hover { filter: brightness(0.95); }
   header .git {
     color: var(--text-muted); font-size: 0.75rem; font-weight: 400; line-height: 1.4;
     white-space: nowrap; text-align: right;
@@ -613,6 +620,7 @@
         <p id="exec-stuck-advice"></p>
       </div>
       <div id="exec-log"></div>
+      <button id="explain-button">📝 Generate Explanation</button>
     </section>
     <section class="panel" id="panel-explain">
       <h2 class="panel-title">Explanation</h2>
@@ -1303,6 +1311,17 @@
     });
   });
 
+  // The Generate Explanation button posts one explanation request, then
+  // jumps to the Explanation tab once generation starts.
+  el("explain-button").addEventListener("click", () => {
+    el("explain-button").disabled = true;
+    fetch("/explain/start", { method: "POST" }).then(() => {
+      history.pushState(null, "", "/explain");
+      selectTab("explain");
+      el("explain-button").disabled = false;
+    });
+  });
+
   // The header's stopped flag jumps to the Execution tab, where the stuck-run
   // alert explains the failure and how to remediate it.
   el("stopped-flag").addEventListener("click", () => {
@@ -1455,6 +1474,9 @@
       !!status.implementOffered && status.phase === "succeeded" &&
       (!status.execPhase || status.execPhase === "failed"));
     el("stopped-flag").classList.toggle("on", status.execPhase === "failed");
+    el("explain-button").classList.toggle("on",
+      (status.execPhase === "succeeded" || status.execPhase === "failed") &&
+      (!status.explainPhase || status.explainPhase === "failed"));
     renderStallModal(status);
   }
 
@@ -1509,7 +1531,7 @@
     setDoc(el("explanation"), "", "");
     if (phase === "") {
       state.classList.add("empty");
-      state.textContent = "Available after execution completes.";
+      state.textContent = "After execution, click ‘Generate Explanation’ on the Execution tab.";
     } else if (phase === "running") {
       state.textContent = "⚙ Generating explanation…";
     } else if (phase === "failed") {

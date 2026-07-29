@@ -34,6 +34,12 @@ type PlanStatusService struct {
 	taskCancel context.CancelFunc
 	taskAction models.TaskAction
 
+	// explain carries the page's request to generate the explanation and quiz
+	// after execution finishes (succeeded or failed). The status page submits
+	// the request, the feedback loop collects it, and the channel buffers one
+	// signal so a racing submit after collection is harmless.
+	explain chan struct{}
+
 	// stallChoice carries the page's tiebreak verdict to an execute run parked
 	// in AwaitStallChoice. It is non-nil only while a run is blocked on the
 	// modal, so SubmitStallChoice can tell whether a wait is pending.
@@ -55,6 +61,7 @@ func NewPlanStatusService(clock Clock, git models.GitContext, tool models.ToolId
 		},
 		annotations: make(chan struct{}, 1),
 		implement:   make(chan struct{}, 1),
+		explain:     make(chan struct{}, 1),
 	}
 }
 
@@ -384,6 +391,45 @@ func execRetryable(phase models.ExecPhase) bool {
 // per accepted request.
 func (s *PlanStatusService) ImplementSignal() <-chan struct{} {
 	return s.implement
+}
+
+// RequestExplain queues one explanation-generation request from the page.
+// Requests are ignored unless execution has finished (succeeded or failed)
+// and the explanation has not already been generated, so repeated clicks
+// start at most one generation while a running or completed explanation
+// blocks further requests.
+func (s *PlanStatusService) RequestExplain() {
+	requested := false
+	s.update(func(st models.PlanSessionStatus) models.PlanSessionStatus {
+		if !explainRequestable(st) {
+			return st
+		}
+		st.ExplainPhase = models.ExplainPhaseRunning
+		requested = true
+		return st
+	})
+	if !requested {
+		return
+	}
+	select {
+	case s.explain <- struct{}{}:
+	default: // already signalled
+	}
+}
+
+// explainRequestable reports whether the page may request explanation
+// generation: execution must be done and the explanation must not have
+// been started yet.
+func explainRequestable(st models.PlanSessionStatus) bool {
+	execDone := st.ExecPhase == models.ExecPhaseSucceeded || st.ExecPhase == models.ExecPhaseFailed
+	explainIdle := st.ExplainPhase == "" || st.ExplainPhase == models.ExplainPhaseFailed
+	return execDone && explainIdle
+}
+
+// ExplainSignal reports explanation requests: the channel receives one value
+// per accepted request.
+func (s *PlanStatusService) ExplainSignal() <-chan struct{} {
+	return s.explain
 }
 
 // StartExecution records a fresh timing window for the execute loop while

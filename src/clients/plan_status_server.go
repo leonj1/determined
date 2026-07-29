@@ -67,6 +67,12 @@ type TaskControlSink interface {
 	RequestStopRun() bool
 }
 
+// ExplainRequester receives the page's request to generate the post-execution
+// explanation and quiz. The real implementation is services.PlanStatusService.
+type ExplainRequester interface {
+	RequestExplain()
+}
+
 // StallChoiceSink receives the page's tiebreak verdict for a stalled execute
 // run, reporting whether a run was parked waiting to receive it. The real
 // implementation is services.PlanStatusService.
@@ -90,6 +96,7 @@ type PlanStatusServer struct {
 	implement   ImplementSink
 	taskControl TaskControlSink
 	stallChoice StallChoiceSink
+	explain     ExplainRequester
 	clock       clock
 	listener    net.Listener
 	server      *http.Server
@@ -122,6 +129,12 @@ func (s *PlanStatusServer) WithTaskControl(sink TaskControlSink) *PlanStatusServ
 // WithStallChoice enables the page's verification-deadlock tiebreak modal.
 func (s *PlanStatusServer) WithStallChoice(sink StallChoiceSink) *PlanStatusServer {
 	s.stallChoice = sink
+	return s
+}
+
+// WithExplainSink enables the page's Generate Explanation button.
+func (s *PlanStatusServer) WithExplainSink(sink ExplainRequester) *PlanStatusServer {
+	s.explain = sink
 	return s
 }
 
@@ -162,6 +175,7 @@ func (s *PlanStatusServer) routes() *http.ServeMux {
 	mux.HandleFunc("/task/skip", s.serveTaskSkip)
 	mux.HandleFunc("/task/stop", s.serveTaskStop)
 	mux.HandleFunc("/stall/choice", s.serveStallChoice)
+	mux.HandleFunc("/explain/start", s.serveExplainStart)
 	mux.HandleFunc("/chat", s.serveChat)
 	mux.HandleFunc("/chat/ask", s.serveChatAsk)
 	return mux
@@ -389,6 +403,23 @@ func (s *PlanStatusServer) serveStallChoice(w http.ResponseWriter, r *http.Reque
 		http.Error(w, "no run awaiting a stall choice", http.StatusConflict)
 		return
 	}
+	w.WriteHeader(http.StatusAccepted)
+}
+
+// serveExplainStart relays the page's confirmed request to generate the
+// explanation and quiz, answering 409 when the session cannot honour the
+// request (execution is still running, no execution has run, or the
+// explanation has already been generated).
+func (s *PlanStatusServer) serveExplainStart(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if s.explain == nil {
+		http.Error(w, "explain unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	s.explain.RequestExplain()
 	w.WriteHeader(http.StatusAccepted)
 }
 

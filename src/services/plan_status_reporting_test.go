@@ -78,6 +78,9 @@ func (r *fakeStatusReporter) AnnotationSignal() <-chan struct{} {
 func (r *fakeStatusReporter) ImplementSignal() <-chan struct{} {
 	return r.implement // nil unless a test arms it; a nil channel never fires
 }
+func (r *fakeStatusReporter) ExplainSignal() <-chan struct{} {
+	return nil // not needed by plan annotation tests
+}
 func (r *fakeStatusReporter) Finish(succeeded bool) {
 	if succeeded {
 		r.events = append(r.events, "finish: succeeded")
