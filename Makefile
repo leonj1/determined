@@ -14,7 +14,7 @@ BUILD_ARGS := --build-arg VERSION=$(VERSION) \
 	--build-arg TARGETOS=$(TARGETOS) \
 	--build-arg TARGETARCH=$(TARGETARCH)
 
-.PHONY: build clean test
+.PHONY: build clean test hooks
 
 # Build the project inside Docker using Dockerfile.build and extract the
 # compiled binary to ./$(BIN_DIR)/$(BINARY).
@@ -24,7 +24,10 @@ build:
 		--output type=local,dest=$(BIN_DIR) .
 
 test:
-	go test -cover ./...
+	docker build -f Dockerfile.test .
+
+hooks:
+	ln -sf ../../scripts/pre-commit .git/hooks/pre-commit
 
 clean:
 	rm -rf $(BIN_DIR)

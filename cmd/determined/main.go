@@ -64,6 +64,8 @@ func main() {
 		"before the final audit, run independent security, performance, and reliability/maintainability reviews")
 	gitCheckpoint := flag.Bool("git-checkpoint", true,
 		"git-commit the working tree after each verified step when running in a git repository")
+	tieBreaker := flag.Bool("tie-breaker", true,
+		"when the coder and verifier deadlock, run an AI invocation to break the tie; its verdict is final and skips further verification")
 	showVersion := flag.Bool("version", false, "print the version and exit")
 	link := flag.Bool("link", false, "print the URL of the interactive status page served by a still-running determined process, and exit")
 	flag.Parse()
@@ -153,7 +155,7 @@ func main() {
 	}
 	if proceed {
 		executor := func(ctx context.Context, status services.ExecStatusReporter) models.Outcome {
-			return runLoop(ctx, executionTool, *budget, *maxStalled, *maxFailures, *maxIterationDuration, *stepMaxRuntime, *verify, *specializedReviews, *gitCheckpoint, status, clock, logs)
+			return runLoop(ctx, executionTool, *budget, *maxStalled, *maxFailures, *maxIterationDuration, *stepMaxRuntime, *verify, *specializedReviews, *gitCheckpoint, *tieBreaker, status, clock, logs)
 		}
 		if *reviewPlan {
 			outcome = runReviewPlan(ctx, selected, *budget, *maxStepPasses, *maxFailures, clock, logs)
@@ -413,7 +415,7 @@ type planExecutor func(ctx context.Context, status services.ExecStatusReporter) 
 
 // runLoop runs the unattended execute loop against PLAN.md / STEPS.md. A
 // non-nil status reporter streams the run to the interactive status page.
-func runLoop(ctx context.Context, tool models.Tool, budget time.Duration, maxStalled, maxFailures int, maxIterationDuration, stepMaxRuntime time.Duration, verify, specializedReviews, gitCheckpoint bool, status services.ExecStatusReporter, clock services.Clock, logs services.LogSink) models.Outcome {
+func runLoop(ctx context.Context, tool models.Tool, budget time.Duration, maxStalled, maxFailures int, maxIterationDuration, stepMaxRuntime time.Duration, verify, specializedReviews, gitCheckpoint, tieBreaker bool, status services.ExecStatusReporter, clock services.Clock, logs services.LogSink) models.Outcome {
 	cfg := models.Config{
 		StopFile:               "STOP.md",
 		PlanFile:               "PLAN.md",
@@ -430,6 +432,7 @@ func runLoop(ctx context.Context, tool models.Tool, budget time.Duration, maxSta
 		Verify:                 verify,
 		SpecializedReviews:     specializedReviews,
 		GitCheckpoint:          gitCheckpoint,
+		TieBreaker:             tieBreaker,
 	}
 	orchestrator := services.NewOrchestrator(
 		clients.NewExecCommandRunner(),

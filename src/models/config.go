@@ -55,4 +55,10 @@ type Config struct {
 	// verification, when the working directory is a git repository. Runs that
 	// go wrong can then be rewound step by step.
 	GitCheckpoint bool
+	// TieBreaker runs an independent AI invocation to break a coder/verifier
+	// deadlock when MaxStalledIterations is hit. The tie-breaker evaluates the
+	// step, goal, implementation, and verifier rejections, then chooses the
+	// objectively correct answer or the most reasonable side. Its verdict is
+	// final: the coder implements it without further verification.
+	TieBreaker bool
 }

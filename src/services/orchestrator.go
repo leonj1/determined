@@ -66,6 +66,15 @@ type StallResolver interface {
 	AwaitStallChoice(ctx context.Context, prompt models.StallPrompt) models.StallGuidance
 }
 
+// tieBreakerVerdict is the parsed output of the AI tie-breaker invocation.
+type tieBreakerVerdict int
+
+const (
+	tieBreakerVerdictInvalid tieBreakerVerdict = iota
+	tieBreakerVerdictAccept
+	tieBreakerVerdictReject
+)
+
 // execOutputSink adapts an ExecStatusReporter onto LogOutputSink so
 // logEntryWriter can stream tool output into the execution log.
 type execOutputSink struct{ status ExecStatusReporter }
@@ -108,6 +117,10 @@ type Orchestrator struct {
 	// alone: the user overrode its acceptance criterion, so there is nothing
 	// to verify.
 	skippedStep int
+	// tieBrokenStep is the index of the step whose verification the AI
+	// tie-breaker waived (-1 otherwise). The tie-breaker's verdict is final:
+	// the step is implemented without further review.
+	tieBrokenStep int
 }
 
 // invocationResult distinguishes a successful tool run from a retryable
@@ -134,15 +147,16 @@ func NewOrchestrator(
 	cfg models.Config,
 ) *Orchestrator {
 	return &Orchestrator{
-		runner:      runner,
-		files:       files,
-		clock:       clock,
-		logs:        logs,
-		terminal:    terminal,
-		guard:       NewTamperGuard(files, cfg.ProtectedFiles),
-		cfg:         cfg,
-		stepIndex:   -1,
-		skippedStep: -1,
+		runner:        runner,
+		files:         files,
+		clock:         clock,
+		logs:          logs,
+		terminal:      terminal,
+		guard:         NewTamperGuard(files, cfg.ProtectedFiles),
+		cfg:           cfg,
+		stepIndex:     -1,
+		skippedStep:   -1,
+		tieBrokenStep: -1,
 	}
 }
 
@@ -209,10 +223,25 @@ func (o *Orchestrator) loop(ctx context.Context) models.Outcome {
 	}
 }
 
-// resolveStall handles a tripped stall guard. Without a resolver it keeps the
-// terminal stop behavior. With one it pauses for the status page's tiebreak
-// verdict and either applies it and resumes (stop=false) or stops the run.
+// resolveStall handles a tripped stall guard. When TieBreaker is enabled it
+// first runs an independent AI invocation to break the deadlock; the AI
+// evaluates the step, the goal, the implementation, and the verifier's
+// rejections, and its verdict is final (no further verification). On success
+// the deadlock is broken and the loop resumes. On failure it falls through to
+// the status page's tiebreak modal. With neither enabled the run stops with
+// OutcomeStalled.
 func (o *Orchestrator) resolveStall(ctx context.Context) (models.Outcome, bool) {
+	if o.cfg.TieBreaker {
+		fmt.Fprintf(o.terminal,
+			"determined: no step checked in %d consecutive iterations; running the AI tie-breaker\n",
+			o.cfg.MaxStalledIterations)
+		if _, stop := o.runTieBreaker(ctx); !stop {
+			// Tie-breaker resolved the deadlock; resume without further verification.
+			o.stalled = 0
+			return models.OutcomeStopped, false
+		}
+		// Tie-breaker failed; fall through to human resolver or stop.
+	}
 	if o.stall == nil {
 		fmt.Fprintf(o.terminal,
 			"determined: no step checked in %d consecutive iterations; stopping\n",
@@ -224,6 +253,136 @@ func (o *Orchestrator) resolveStall(ctx context.Context) (models.Outcome, bool) 
 		o.cfg.MaxStalledIterations)
 	guidance := o.stall.AwaitStallChoice(ctx, o.stallPrompt())
 	return o.applyStallDecision(guidance)
+}
+
+// tieBreakerPrompt builds the instruction for the AI tie-breaker: it reads the
+// plan (goal), the stalled step with its acceptance criterion, the verifier
+// rejections from FIXES.md, and the implementation, then returns a structured
+// verdict. The verdict is final — if ACCEPT the step is checked without
+// verification; if REJECT the coder implements the fix without verification.
+const tieBreakerPrompt = "The execution loop is stuck: the worker keeps marking a step done and " +
+	"a verifier keeps rejecting it. You are the tie-breaker. Read PLAN.md to understand the goal. " +
+	"Read STEPS.md for the stalled step and its Done when: acceptance criterion. " +
+	"Read FIXES.md for the verifier's specific objections (what is wrong or missing). " +
+	"Read NOTES.md if it exists for cross-iteration context. " +
+	"Inspect the implementation (the code changes relevant to this step). " +
+	"Then decide:\n\n" +
+	"1. Is there an objectively correct answer? If the acceptance criterion is clearly met " +
+	"(the verifier's objection is wrong about the facts, or the criterion is satisfied even " +
+	"if the verifier would prefer a different approach) respond ACCEPT. If the acceptance " +
+	"criterion is clearly not met (the implementation genuinely fails the criterion) respond " +
+	"REJECT.\n\n" +
+	"2. If the acceptance criterion is ambiguous and both sides have merit, evaluate which " +
+	"side is more reasonable — the worker's implementation or the verifier's objection — and " +
+	"respond ACCEPT if the worker is more reasonable, or REJECT if the verifier is more " +
+	"reasonable.\n\n" +
+	"Return exactly two lines and nothing else:\n" +
+	"VERDICT: ACCEPT\n" +
+	"or\n" +
+	"VERDICT: REJECT\n" +
+	"Followed by:\n" +
+	"RATIONALE: <one sentence explaining why this verdict is correct>\n" +
+	"If REJECT, also include a third line:\n" +
+	"GUIDANCE: <specific instructions for the worker to fix the implementation so it meets the criterion>\n\n" +
+	"Do not implement anything. Do not modify files. Only produce the verdict."
+
+// runTieBreaker invokes the AI tool as a tie-breaker with a buffer capturing
+// its output, parses the structured verdict, and applies it. On ACCEPT the
+// stalled step is checked and its future verification waived. On REJECT the
+// tie-breaker's guidance is queued in NOTES.md for the worker to follow, and
+// the step's future verification is waived. A failed or unparseable tie-breaker
+// invocation returns stop=true so the run falls through to the next stall
+// resolution layer.
+func (o *Orchestrator) runTieBreaker(ctx context.Context) (models.Outcome, bool) {
+	o.iteration++
+	log, err := o.logs.OpenIteration(o.iteration)
+	if err != nil {
+		return models.OutcomeDroidFailed, true
+	}
+	defer log.Close()
+
+	var captured strings.Builder
+	out := io.MultiWriter(o.terminal, log, &captured)
+	writeProgress(out, o.clock, "running the AI tie-breaker")
+	if o.status != nil {
+		o.status.BeginExecLogEntry("running the AI tie-breaker")
+	}
+
+	runCtx, cancel := o.iterationContext(ctx)
+	defer cancel()
+	o.beginTask(cancel)
+	_, runErr := o.guardedRun(runCtx, tieBreakerPrompt, out)
+	action := o.settleTask()
+	if action == models.TaskActionStop {
+		fmt.Fprintln(o.terminal, "determined: run stopped from the status page")
+		return models.OutcomeUserStopped, true
+	}
+	if runErr != nil {
+		if action == models.TaskActionSkip {
+			return models.OutcomeStalled, true
+		}
+		fmt.Fprintf(o.terminal,
+			"determined: tie-breaker invocation failed: %v; falling through\n", runErr)
+		return models.OutcomeStalled, true
+	}
+
+	output := captured.String()
+	verdict, rationale, guidance := parseTieBreakerVerdict(output)
+	switch verdict {
+	case tieBreakerVerdictAccept:
+		fmt.Fprintf(o.terminal,
+			"determined: tie-breaker accepted the worker: %s\n", rationale)
+		o.acceptStalledStep()
+		// acceptStalledStep already checks the step; no verification needed.
+		o.tieBrokenStep = -1
+		return models.OutcomeStopped, false
+	case tieBreakerVerdictReject:
+		fmt.Fprintf(o.terminal,
+			"determined: tie-breaker rejected the worker: %s\n", rationale)
+		if guidance != "" {
+			o.queueStallGuidance(guidance)
+		}
+		// Mark the current incomplete step so its next completion skips verification.
+		if i, ok := NextIncompleteStepIndex(o.parsedSteps()); ok {
+			o.tieBrokenStep = i
+		}
+		return models.OutcomeStopped, false
+	default:
+		fmt.Fprintf(o.terminal,
+			"determined: tie-breaker produced no parseable verdict; falling through\n")
+		return models.OutcomeStalled, true
+	}
+}
+
+// parseTieBreakerVerdict extracts the VERDICT, RATIONALE, and optional
+// GUIDANCE lines from the tie-breaker's output. It scans for lines beginning
+// with the expected prefixes and returns the first match of each.
+func parseTieBreakerVerdict(output string) (verdict tieBreakerVerdict, rationale string, guidance string) {
+	lines := strings.Split(output, "\n")
+	hasVerdict := false
+	hasRationale := false
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		switch {
+		case !hasVerdict && hasFoldPrefix(trimmed, "VERDICT:"):
+			v := strings.TrimSpace(strings.TrimPrefix(trimmed, trimmed[:len("VERDICT:")]))
+			switch strings.ToUpper(v) {
+			case "ACCEPT":
+				verdict = tieBreakerVerdictAccept
+			case "REJECT":
+				verdict = tieBreakerVerdictReject
+			}
+			hasVerdict = true
+		case !hasRationale && hasFoldPrefix(trimmed, "RATIONALE:"):
+			rationale = strings.TrimSpace(trimmed[len("RATIONALE:"):])
+			hasRationale = true
+		case hasFoldPrefix(trimmed, "GUIDANCE:"):
+			if guidance == "" {
+				guidance = strings.TrimSpace(trimmed[len("GUIDANCE:"):])
+			}
+		}
+	}
+	return
 }
 
 // stalledStepTitle names the step the run keeps failing to check, for the
@@ -678,6 +837,12 @@ func (o *Orchestrator) verifyNewSteps(ctx context.Context, before []Step) (model
 		// overrode its acceptance criterion, so reviewing it would only reopen
 		// the step the user just asked to move past.
 		if i == o.skippedStep {
+			continue
+		}
+		// A step the AI tie-breaker resolved is final: the tie-breaker's
+		// verdict replaces further verification, so skip it.
+		if i == o.tieBrokenStep {
+			o.tieBrokenStep = -1 // consume the waiver so later steps aren't affected
 			continue
 		}
 		result := o.verifyStep(ctx, i, step)

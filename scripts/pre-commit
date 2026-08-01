@@ -1,0 +1,6 @@
+#!/bin/sh
+# Pre-commit hook: runs the full test suite (Go + Node.js) inside Docker.
+# Install with: ln -sf ../../scripts/pre-commit .git/hooks/pre-commit
+set -e
+echo "==> Running make test..."
+make test
