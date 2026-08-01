@@ -356,3 +356,60 @@ func TestTieBreakerDisabledKeepsExistingBehavior(t *testing.T) {
 		t.Fatalf("expected the human resolver to handle stall when tie-breaker disabled, got %d calls", resolver.calls)
 	}
 }
+
+// TestTieBreakerOnlySkipsVerificationForTheDeadlockedStep confirms that when
+// the tie-breaker resolves a deadlock on step 1, subsequent steps (step 2)
+// still receive the full simplicity-check + correctness-verification pass.
+func TestTieBreakerOnlySkipsVerificationForTheDeadlockedStep(t *testing.T) {
+	cfg := tieBreakerConfig()
+	cfg.Verify = true
+	fs := stepsFileStore()
+	var step2SimplicityRan, step2VerifyRan bool
+	runner := &fakeRunner{script: func(call int, out io.Writer) error {
+		switch call {
+		case 3: // tie-breaker rejects step 1
+			io.WriteString(out, tieBreakerRejectOutput)
+		case 4: // worker re-implements step 1 following guidance
+			fs.Write("STEPS.md", twoStepsFirstChecked)
+		case 5: // worker checks step 2 (normal flow)
+			fs.Write("STEPS.md", twoStepsAllChecked)
+		case 6: // simplicity check for step 2
+			step2SimplicityRan = true
+		case 7: // verifier for step 2
+			step2VerifyRan = true
+		case 8: // docs update
+		case 9: // audit approves
+			fs.Write("STOP.md", "audit: plan satisfied")
+		}
+		return nil
+	}}
+	o := services.NewOrchestrator(runner, fs, &fakeClock{now: time.Now()}, &fakeLogSink{}, io.Discard, cfg)
+
+	outcome := o.Run(context.Background())
+
+	if outcome != models.OutcomeStopped || outcome.ExitCode() != 0 {
+		t.Fatalf("expected a clean completion, got %v", outcome)
+	}
+	// Step 1 must have no verifier (tie-broken).
+	for call := 1; call <= runner.calls; call++ {
+		prompt := runner.prompt(call)
+		if strings.Contains(prompt, "claims complete") && strings.Contains(prompt, "1. Add the widget.") {
+			t.Fatalf("expected no verifier for tie-broken step 1, but call %d was verifier", call)
+		}
+	}
+	// Step 2 must have received both simplicity and correctness checks.
+	if !step2SimplicityRan {
+		t.Fatal("expected simplicity check for step 2")
+	}
+	if !step2VerifyRan {
+		t.Fatal("expected correctness verification for step 2")
+	}
+	// Guidance must be in NOTES.md.
+	notes, err := fs.Read("NOTES.md")
+	if err != nil {
+		t.Fatalf("expected NOTES.md: %v", err)
+	}
+	if !strings.Contains(notes, "Add error handling around the file read.") {
+		t.Fatalf("expected tie-breaker guidance in NOTES.md, got:\n%s", notes)
+	}
+}

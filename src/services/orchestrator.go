@@ -359,21 +359,27 @@ func (o *Orchestrator) runTieBreaker(ctx context.Context) (models.Outcome, bool)
 // with the expected prefixes and returns the first match of each.
 func parseTieBreakerVerdict(output string) (verdict tieBreakerVerdict, rationale string, guidance string) {
 	lines := strings.Split(output, "\n")
+	hasVerdict := false
+	hasRationale := false
 	for _, line := range lines {
 		trimmed := strings.TrimSpace(line)
 		switch {
-		case strings.HasPrefix(trimmed, "VERDICT:"):
-			v := strings.TrimSpace(strings.TrimPrefix(trimmed, "VERDICT:"))
+		case !hasVerdict && hasFoldPrefix(trimmed, "VERDICT:"):
+			v := strings.TrimSpace(strings.TrimPrefix(trimmed, trimmed[:len("VERDICT:")]))
 			switch strings.ToUpper(v) {
 			case "ACCEPT":
 				verdict = tieBreakerVerdictAccept
 			case "REJECT":
 				verdict = tieBreakerVerdictReject
 			}
-		case strings.HasPrefix(trimmed, "RATIONALE:"):
-			rationale = strings.TrimSpace(strings.TrimPrefix(trimmed, "RATIONALE:"))
-		case strings.HasPrefix(trimmed, "GUIDANCE:"):
-			guidance = strings.TrimSpace(strings.TrimPrefix(trimmed, "GUIDANCE:"))
+			hasVerdict = true
+		case !hasRationale && hasFoldPrefix(trimmed, "RATIONALE:"):
+			rationale = strings.TrimSpace(trimmed[len("RATIONALE:"):])
+			hasRationale = true
+		case hasFoldPrefix(trimmed, "GUIDANCE:"):
+			if guidance == "" {
+				guidance = strings.TrimSpace(trimmed[len("GUIDANCE:"):])
+			}
 		}
 	}
 	return

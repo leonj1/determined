@@ -344,5 +344,8 @@ the page's markdown renderer is the `marked` library (v16), vendored as a UMD
 bundle under `src/clients/assets/` and loaded straight from the repo.
 
 ```bash
-go test -cover ./...
+make test
 ```
+
+This runs the full Go unit-test suite plus the Node.js browser-behaviour tests
+inside `Dockerfile.test` — no local toolchain needed beyond Docker.

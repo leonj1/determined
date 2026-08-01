@@ -36,3 +36,15 @@ a workflow artifact, and publishes them as tagged GitHub Release assets.
 
 `determined update` uses those GitHub Release assets. It supports the platforms
 published by the workflow: Linux AMD64, Linux ARM64, and macOS ARM64.
+
+## Tests
+
+```bash
+make test    # Go + Node.js suite inside Docker
+```
+
+## Git hooks
+
+```bash
+make hooks   # install the pre-commit hook (runs make test)
+```

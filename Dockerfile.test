@@ -1,0 +1,19 @@
+# syntax=docker/dockerfile:1
+
+# Run the full test suite inside a container: Go unit tests + Node.js
+# browser-behaviour tests for the interactive status page.
+#
+#   docker build -f Dockerfile.test .
+#   make test   # runs the same thing
+
+FROM golang:1.25-alpine
+
+# Node.js 22 (LTS) for the plan-status-page JS test harness. The page's
+# markdown renderer is vendored as a UMD bundle, so no npm install is needed.
+RUN apk add --no-cache nodejs
+
+WORKDIR /src
+COPY . .
+
+# Go tests first (fail fast), then the Node.js page tests.
+RUN go test -cover ./... && node tests/plan_status_page_test.js
