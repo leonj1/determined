@@ -151,7 +151,14 @@ with `--plan` and `-exec` (the session runs first); see
 6. **Checkpoint verified work** — git-commit each newly checked step that
    survives verification.
 7. **Detect stalls** — exit `3` after `--max-stalled-iterations` consecutive
-   iterations without a newly checked step; otherwise return to step 2.
+   iterations without a newly checked step. With `--tie-breaker` (default),
+   an independent AI invocation first evaluates the deadlock: it reads the
+   goal, the stalled step, the implementation, and the verifier's rejections,
+   then decides whether the worker or verifier is correct. Its verdict is
+   final — the step is implemented without further verification — so the run
+   can break the deadlock and continue. Without `--tie-breaker` and without
+   the interactive status page, the run stops with exit `3`; otherwise return
+   to step 2.
 8. **Update the documentation** — once all boxes are checked, bring the
    project's own docs (`README.md`, a `docs/` directory, and any other
    documentation the project already keeps) in line with what the work
@@ -203,6 +210,7 @@ each one is for:
 | `executing step N` | Invoke the tool with exactly the next unchecked step from `STEPS.md` and its acceptance criterion. |
 | `checking simplicity of step N` | Use a fresh reviewer invocation to judge whether the newly checked step's implementation is the simplest solution that satisfies it; a materially simpler alternative unchecks the step and records the simpler approach in `FIXES.md`. |
 | `verifying step N` | Use a fresh reviewer invocation to test the newly checked step's `Done when:` criterion; failure unchecks it and records why in `FIXES.md`. |
+| `running the AI tie-breaker` | When the coder and verifier deadlock, invoke the AI tool to decide whether the worker's implementation or the verifier's objection is correct. Its verdict is final and skips further verification of the step. |
 | `checkpointing step N` | Git-commit the work of a step that survived verification. |
 | `updating project documentation` | Once all boxes are checked, bring the project's own docs in line with what the work changed, before any review gate. |
 | `running security review` | Independent specialist pass over the completed work for security findings; a material issue reopens or adds a remediation step. |
@@ -271,6 +279,7 @@ ideally a clean git checkout, so every change is reviewable and revertible.
 | `--verify`       | `true`   | After each newly checked step, run independent reviewer invocations — a simplicity check, then a correctness verification — either of which unchecks it (recording why in `FIXES.md`) if a materially simpler solution exists or its acceptance criterion is not met. |
 | `--specialized-reviews` | `true` | Before the final audit, run independent security, performance, and reliability/maintainability review gates. |
 | `--git-checkpoint` | `true` | Git-commit the working tree after each verified step when running in a git repository. |
+| `--tie-breaker`  | `true`   | When the coder and verifier deadlock after `--max-stalled-iterations`, run an independent AI invocation to break the tie. The tie-breaker evaluates the step, the goal, the implementation, and the verifier's rejections; its verdict (ACCEPT or REJECT) is final and skips further verification. |
 | `--log-dir`      | `logs`   | Directory for per-iteration log files.                          |
 | `--version`      | —        | Print the binary's semantic version and exit.                  |
 | `init` (`-init`) | `false`  | Download the personal knowledge `CLAUDE.md` to `~/.claude/CLAUDE.md` and `AGENTS.md` to `~/AGENTS.md`, overwriting existing files. |

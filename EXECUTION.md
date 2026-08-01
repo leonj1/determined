@@ -107,9 +107,22 @@ field definitions and curl examples are in [USAGE.md](USAGE.md).
    git repository the checkpoint is skipped with a terminal note; a failed git
    command is noted and ignored.
 8. **Stall detection** — if `--max-stalled-iterations` consecutive iterations
-   (default **3**) finish without a newly checked step → exit **3**. Checking
-   any step resets the counter; a verifier or audit rejection counts as no
-   progress, which bounds worker/reviewer ping-pong. `0` disables stall
+   (default **3**) finish without a newly checked step:
+   - With `--tie-breaker` (default **on**), an independent AI invocation first
+     evaluates the deadlock. It reads the goal, the stalled step, the
+     implementation, and the verifier's rejections from `FIXES.md`, then
+     produces a structured verdict:
+     - **ACCEPT**: the step is checked and the run resumes without further
+       verification of that step.
+     - **REJECT**: the tie-breaker's guidance is queued in `NOTES.md` for the
+       worker to follow; once the worker re-implements the step, its
+       verification is skipped.
+     - If the tie-breaker's output is unparseable or its invocation fails, it
+       falls through to the interactive status page's tiebreak modal.
+   - Without `--tie-breaker` and without the interactive status page, the run
+     stops with exit **3**.
+   Checking any step resets the counter; a verifier or audit rejection counts
+   as no progress, which bounds worker/reviewer ping-pong. `0` disables stall
    detection.
 
 ## Documentation update, specialist reviews, and the whole-plan audit
