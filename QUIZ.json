@@ -1,64 +1,64 @@
 {
   "questions": [
     {
-      "question": "In the rewritten markdownToHtml, why does the lexer run separately from the parser instead of calling md.parse directly?",
+      "question": "After drafting, how does the orchestrator treat a user's answer to the assumptions question that is not bare Enter, y, yes, or ok?",
       "choices": [
-        "So top-level heading tokens can be tagged plansectionEligible before rendering, since the renderer alone cannot tell a top-level heading from one nested in a blockquote",
-        "Because marked's parse method does not support renderer overrides",
-        "To allow the highlighter to run asynchronously on code tokens",
-        "Because unflattenTables must run between lexing and parsing"
+        "It is treated as a correction, applied through the annotation path, and the documents are republished",
+        "It aborts the run with OutcomeInterrupted",
+        "It is ignored and the plan proceeds unchanged",
+        "It triggers a full plan redraft from scratch"
       ],
       "correctIndex": 0,
-      "rationale": "The explanation says the lexer runs separately so top-level heading tokens can be tagged plansectionEligible, which the renderer alone cannot determine.",
-      "sourceSection": "Rewrite markdownToHtml onto marked renderer overrides"
+      "rationale": "Any answer other than a confirmation is treated as a correction and applied via the annotation path before republishing the documents.",
+      "sourceSection": "Assumption confirmation round after drafting"
     },
     {
-      "question": "What desync problem did the old planSections line scan have that the marked-lexer rewrite fixes?",
+      "question": "In the chained-execution approval gate, what happens when the user presses bare Enter at the \"Plan approved — begin execution? [y/N]\" prompt?",
       "choices": [
-        "Its naive ``` fence toggle could desync from the renderer on tilde (~~~) and indented fences, producing TOC anchors pointing at ids the body never emitted",
-        "It counted setext headings that the renderer ignored",
-        "It generated slugs with a different counter format like plan--a-1",
-        "It scanned headings of every depth instead of depths 2 through 4"
+        "Execution starts because Enter accepts the default",
+        "Execution is declined and the plan files are left intact with the plan-ready outcome",
+        "The prompt re-asks until y or n is typed",
+        "The plan files are deleted and the run stalls"
       ],
-      "correctIndex": 0,
-      "rationale": "The old scan's naive fence toggle could disagree with the renderer on tilde and indented fences, causing TOC anchors and body ids to mismatch.",
-      "sourceSection": "Derive planSections from the marked lexer"
+      "correctIndex": 1,
+      "rationale": "The gate defaults to No: only y/yes starts execution, so bare Enter declines and leaves the plan files intact.",
+      "sourceSection": "Explicit approval before chained execution"
     },
     {
-      "question": "How does isSafeUrl defeat bypasses like a java\\tscript: scheme?",
+      "question": "When the refine loop exhausts its pass cap with unresolved findings, what does choosing \"refine\" do?",
       "choices": [
-        "It normalizes away control characters that browsers strip before scheme parsing",
-        "It resolves the URL against the page origin before checking the scheme",
-        "It rejects any URL containing a backslash",
-        "It uses the URL constructor and catches parse exceptions"
+        "Grants unlimited additional passes until the plan is clean",
+        "Deletes REFINEMENTS.md and returns OutcomePlanReady",
+        "Grants exactly one more pass, and a still-dirty pass re-asks with no auto-accept path",
+        "Waits for the user to edit PLAN.md and STEPS.md by hand"
       ],
-      "correctIndex": 0,
-      "rationale": "isSafeUrl normalizes away control characters browsers strip before scheme parsing, so split schemes like java\\tscript: are still caught.",
-      "sourceSection": "Block dangerous URL schemes in links and images"
+      "correctIndex": 2,
+      "rationale": "The refine choice grants exactly one more pass, and a still-dirty pass returns to the gate to re-ask with no auto-accept path.",
+      "sourceSection": "Refine-cap exhaustion gates on accept, refine, or edit"
     },
     {
-      "question": "Which helper survives the deletion of the hand-rolled inline and table renderers, and why?",
+      "question": "What now happens first when ensureAlignment finds a non-empty set of misaligned tests?",
       "choices": [
-        "unflattenTables, because it still preprocesses one-line-flattened tables into proper multi-line input for marked's GFM table tokenizer",
-        "renderInline, because marked cannot handle code-span stashing",
-        "renderTable, because GFM tables need custom row splitting",
-        "isSeparatorRow, because marked has no separator-row detection"
+        "The user is immediately asked to accept, rewrite, or drop each test",
+        "One automatic RealignInvocation runs, rewriting only misaligned sections in place",
+        "The misaligned tests are silently dropped from TESTS.md",
+        "The plan is returned as ready since verdicts are present"
       ],
-      "correctIndex": 0,
-      "rationale": "unflattenTables remains as a string preprocessor so flattened tables reach marked's GFM table tokenizer as multi-line input, while the inline and table helpers are removed as dead code.",
-      "sourceSection": "Delete the hand-rolled inline and table renderers"
+      "correctIndex": 1,
+      "rationale": "A non-empty misaligned set first triggers one automatic RealignInvocation that rewrites only misaligned sections, and only tests still misaligned afterwards block on the accept/rewrite/drop gate.",
+      "sourceSection": "Misaligned tests get an automatic realign pass, then a user gate"
     },
     {
-      "question": "How is the marked library delivered to the plan status page?",
+      "question": "Why does the assumption-correction path pass withDemo=false to annotateAndRepublish?",
       "choices": [
-        "Vendored as a pinned UMD bundle at version 16.4.2, embedded in the Go server's embed.FS, and served from /assets/marked.min.js with no CDN or build step",
-        "Fetched at runtime from a CDN with a subresource integrity hash",
-        "Bundled into the page script by a new npm build step",
-        "Installed as a Go module dependency compiled into the server binary"
+        "Demo generation is broken during the assumptions round",
+        "The status server forbids demo requests before refinement",
+        "Post-completion page annotations no longer need a demo at all",
+        "It runs before the refine loop rewrites the plan, and Run regenerates the demo at the end anyway, so a demo built there would be discarded unused"
       ],
-      "correctIndex": 0,
-      "rationale": "The library is vendored as a pinned marked@16.4.2 UMD bundle, added to embed.FS, and served from /assets/marked.min.js with no CDN or build step.",
-      "sourceSection": "Vendor, embed, and serve the marked asset"
+      "correctIndex": 3,
+      "rationale": "A demo generated during the assumptions round would come from a plan the refine loop is about to rewrite, and Run regenerates the demo after planning succeeds, so skipping it saves one full AI invocation.",
+      "sourceSection": "Assumption corrections skip the wasted demo regeneration"
     }
   ]
 }
