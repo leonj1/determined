@@ -158,6 +158,66 @@ func SkipStep(content string, index int) (string, bool) {
 	return content, false
 }
 
+// indexedStep pairs a step with its current index in the parsed list, for
+// callers that identify steps by text but still display 1-based numbers.
+type indexedStep struct {
+	index int
+	step  Step
+}
+
+// completedTextCounts returns how many completed steps carry each trimmed
+// text: the multiset used to match steps across snapshots of a file whose
+// list order and length reviewers may change between reads.
+func completedTextCounts(steps []Step) map[string]int {
+	counts := map[string]int{}
+	for _, s := range steps {
+		if s.Completed {
+			counts[strings.TrimSpace(s.Text)]++
+		}
+	}
+	return counts
+}
+
+// completedTextCount returns how many completed steps carry the trimmed text.
+func completedTextCount(steps []Step, text string) int {
+	return completedTextCounts(steps)[text]
+}
+
+// newlyCompletedSteps returns, with their current indexes, the steps in
+// current that are completed but have no completed counterpart in before.
+// Steps are matched by trimmed TEXT, never by index: insertions and reorders
+// renumber the list, so an index snapshot would misalign. Duplicate texts use
+// multiset semantics — each completed occurrence in before excuses exactly one
+// completed occurrence in current — so checking a second copy of a repeated
+// step still counts as new, and a shifted-but-unchanged step never does.
+func newlyCompletedSteps(current, before []Step) []indexedStep {
+	seen := completedTextCounts(before)
+	var fresh []indexedStep
+	for i, s := range current {
+		if !s.Completed {
+			continue
+		}
+		text := strings.TrimSpace(s.Text)
+		if seen[text] > 0 {
+			seen[text]--
+			continue
+		}
+		fresh = append(fresh, indexedStep{index: i, step: s})
+	}
+	return fresh
+}
+
+// incompleteStepIndexByText returns the index of the first unchecked step
+// whose trimmed text matches, and whether one exists.
+func incompleteStepIndexByText(steps []Step, text string) (int, bool) {
+	for i, s := range steps {
+		if !s.Completed && strings.TrimSpace(s.Text) == text {
+			return i, true
+		}
+	}
+	return -1, false
+}
+
 // CompletedStepCount returns how many steps are checked complete.
 func CompletedStepCount(steps []Step) int {
 	n := 0

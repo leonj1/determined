@@ -22,6 +22,7 @@ func TestOnlyCompletionExitsCleanly(t *testing.T) {
 		{models.OutcomeStalled, 3},
 		{models.OutcomePlanReviewed, 0},
 		{models.OutcomeStepTimeout, 1},
+		{models.OutcomeSpecialistLimit, 3},
 	}
 	for _, c := range cases {
 		if got := c.outcome.ExitCode(); got != c.wantCode {

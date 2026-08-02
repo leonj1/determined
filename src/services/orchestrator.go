@@ -106,21 +106,45 @@ type Orchestrator struct {
 	// cfg.MaxConsecutiveFailures ends the run with OutcomeDroidFailed. Any
 	// successful invocation resets it.
 	failures int
-	// stepIndex is the index of the unchecked step the loop is currently
-	// aiming at (-1 before the first iteration or once every box is checked),
-	// and stepStarted is when it became the target. Together they bound one
-	// step's cumulative runtime by cfg.StepMaxRuntime.
+	// stepIndex is the current index of the unchecked step the loop is aiming
+	// at (-1 before the first iteration or once every box is checked). It is
+	// display-only: reviewers insert and reorder steps, renumbering the list,
+	// so a step's identity is stepText — the target's trimmed text — and
+	// stepStarted is when a step with that text became the target. Together
+	// stepText and stepStarted bound one step's cumulative runtime by
+	// cfg.StepMaxRuntime; an insertion that shifts the same step to a new
+	// index keeps its timer running.
 	stepIndex   int
+	stepText    string
 	stepStarted time.Time
-	// skippedStep is the index of the step the user skipped from the status
-	// page this iteration (-1 otherwise). The verify pass leaves that step
-	// alone: the user overrode its acceptance criterion, so there is nothing
-	// to verify.
-	skippedStep int
-	// tieBrokenStep is the index of the step whose verification the AI
-	// tie-breaker waived (-1 otherwise). The tie-breaker's verdict is final:
-	// the step is implemented without further review.
-	tieBrokenStep int
+	// skippedStepText is the trimmed text of the step the user skipped from
+	// the status page this iteration ("" otherwise). The verify pass leaves
+	// that step alone: the user overrode its acceptance criterion, so there is
+	// nothing to verify. Text, not index, identifies the step because the
+	// skipped invocation may have inserted steps before being killed.
+	skippedStepText string
+	// tieBrokenStepText is the trimmed text of the step whose verification the
+	// AI tie-breaker waived ("" otherwise). The tie-breaker's verdict is
+	// final: the step is implemented without further review. Text, not index,
+	// identifies the step because iterations run between the verdict and the
+	// step's completion, and any of them can insert or reorder steps.
+	tieBrokenStepText string
+	// docsUpdated records that the completion-phase documentation pass already
+	// ran for the current body of work, and docsStepCount is the step count
+	// snapshotted when it ran — refreshed after each completion reviewer, so
+	// reviewer-appended remediation steps are absorbed into the snapshot.
+	// Signal: docs are current while the step list has gained no step from any
+	// source other than a completion review; remediation cycles only reopen
+	// steps or append them during reviews, so they no longer retrigger the
+	// docs pass, while steps added by work invocations or the user do.
+	docsUpdated   bool
+	docsStepCount int
+	// specialistRounds counts, per specialist review, how many completion
+	// passes that specialist ended by triggering remediation (reopening or
+	// appending a step). It never resets during a run: the same specialist
+	// repeatedly forcing full remediation cycles is exactly the pathology
+	// cfg.MaxSpecialistRounds bounds.
+	specialistRounds map[string]int
 }
 
 // invocationResult distinguishes a successful tool run from a retryable
@@ -147,16 +171,15 @@ func NewOrchestrator(
 	cfg models.Config,
 ) *Orchestrator {
 	return &Orchestrator{
-		runner:        runner,
-		files:         files,
-		clock:         clock,
-		logs:          logs,
-		terminal:      terminal,
-		guard:         NewTamperGuard(files, cfg.ProtectedFiles),
-		cfg:           cfg,
-		stepIndex:     -1,
-		skippedStep:   -1,
-		tieBrokenStep: -1,
+		runner:           runner,
+		files:            files,
+		clock:            clock,
+		logs:             logs,
+		terminal:         terminal,
+		guard:            NewTamperGuard(files, cfg.ProtectedFiles),
+		cfg:              cfg,
+		stepIndex:        -1,
+		specialistRounds: map[string]int{},
 	}
 }
 
@@ -200,7 +223,7 @@ func (o *Orchestrator) loop(ctx context.Context) models.Outcome {
 			return outcome
 		}
 		before := o.parsedSteps()
-		o.skippedStep = -1
+		o.skippedStepText = ""
 		if o.stepOverran(before) {
 			fmt.Fprintf(o.terminal,
 				"determined: step %d has been running for over %s without completing; stopping\n",
@@ -334,7 +357,7 @@ func (o *Orchestrator) runTieBreaker(ctx context.Context) (models.Outcome, bool)
 			"determined: tie-breaker accepted the worker: %s\n", rationale)
 		o.acceptStalledStep()
 		// acceptStalledStep already checks the step; no verification needed.
-		o.tieBrokenStep = -1
+		o.tieBrokenStepText = ""
 		return models.OutcomeStopped, false
 	case tieBreakerVerdictReject:
 		fmt.Fprintf(o.terminal,
@@ -342,9 +365,11 @@ func (o *Orchestrator) runTieBreaker(ctx context.Context) (models.Outcome, bool)
 		if guidance != "" {
 			o.queueStallGuidance(guidance)
 		}
-		// Mark the current incomplete step so its next completion skips verification.
-		if i, ok := NextIncompleteStepIndex(o.parsedSteps()); ok {
-			o.tieBrokenStep = i
+		// Mark the current incomplete step so its next completion skips
+		// verification. Its trimmed text is the identity: later iterations may
+		// insert or reorder steps, so an index would drift off the step.
+		if step, ok := NextIncompleteStep(o.parsedSteps()); ok {
+			o.tieBrokenStepText = strings.TrimSpace(step.Text)
 		}
 		return models.OutcomeStopped, false
 	default:
@@ -622,10 +647,14 @@ func (o *Orchestrator) runComplete(steps []Step) bool {
 // stepOverran tracks how long the loop has been aiming at the same unchecked
 // step and reports whether that step's cumulative runtime has exhausted
 // cfg.StepMaxRuntime. Like the budget, the cap is checked between invocations,
-// so a running invocation always finishes first. Whenever the target step
-// changes — checked complete, or an earlier step reopened — the timer
-// restarts; a step a reviewer unchecks again keeps its timer, so
-// worker/reviewer ping-pong on one step is time-bounded too.
+// so a running invocation always finishes first. The target is identified by
+// its trimmed TEXT, not its index: reviewers insert and reorder steps, and an
+// insertion that merely shifts the same step to a new index must not restart
+// its timer. The timer restarts only when the target step's text changes —
+// checked complete, or an earlier step reopened; a step a reviewer unchecks
+// again keeps its timer, so worker/reviewer ping-pong on one step is
+// time-bounded too. Adjacent duplicate texts share one timer, which errs on
+// the side of enforcing the cap.
 func (o *Orchestrator) stepOverran(steps []Step) bool {
 	if o.cfg.StepMaxRuntime <= 0 {
 		return false
@@ -633,10 +662,14 @@ func (o *Orchestrator) stepOverran(steps []Step) bool {
 	i, ok := NextIncompleteStepIndex(steps)
 	if !ok {
 		o.stepIndex = -1
+		o.stepText = ""
 		return false
 	}
-	if i != o.stepIndex {
-		o.stepIndex = i
+	text := strings.TrimSpace(steps[i].Text)
+	newTarget := o.stepIndex == -1 || text != o.stepText
+	o.stepIndex = i // display-only: messages show the current 1-based number
+	if newTarget {
+		o.stepText = text
 		o.stepStarted = o.clock.Now()
 		return false
 	}
@@ -649,7 +682,7 @@ func (o *Orchestrator) runOnce(ctx context.Context) (models.Outcome, bool) {
 	if AllStepsComplete(o.parsedSteps()) {
 		return o.runCompletionReviews(ctx)
 	}
-	target, _ := NextIncompleteStepIndex(o.parsedSteps())
+	target, _ := NextIncompleteStep(o.parsedSteps())
 	prompt, progress, err := o.iterationPrompt()
 	if err != nil {
 		fmt.Fprintf(o.terminal, "determined: could not read %s: %v\n", o.cfg.StepsFile, err)
@@ -664,18 +697,25 @@ func (o *Orchestrator) runOnce(ctx context.Context) (models.Outcome, bool) {
 
 // skipTargetStep honours the user's Skip on a work invocation: the step the
 // loop was aiming at is checked off so the run moves on to the next one, with
-// the override recorded in NOTES.md for later invocations to see. The step's
-// index is remembered so this iteration's verify pass leaves it alone. The
-// index was captured before the invocation ran, so a tool that checked the
-// step itself just before being killed cannot make the skip land on the next
-// step; SkipStep leaves an already-checked step untouched.
-func (o *Orchestrator) skipTargetStep(i int) {
-	if i < 0 {
+// the override recorded in NOTES.md for later invocations to see. The target
+// was captured before the invocation ran and is identified by its trimmed
+// TEXT: the killed invocation may have inserted or reordered steps, so an
+// index could land the skip on a neighbour. The first still-unchecked step
+// with that text is checked; a tool that checked the step itself just before
+// being killed leaves no such step, making the skip a no-op. The text is
+// remembered so this iteration's verify pass leaves the step alone.
+func (o *Orchestrator) skipTargetStep(target Step) {
+	text := strings.TrimSpace(target.Text)
+	if text == "" {
 		return
 	}
 	content, err := o.files.Read(o.cfg.StepsFile)
 	if err != nil {
 		fmt.Fprintf(o.terminal, "determined: could not read %s to skip the step: %v\n", o.cfg.StepsFile, err)
+		return
+	}
+	i, ok := incompleteStepIndexByText(ParseSteps(content), text)
+	if !ok {
 		return
 	}
 	updated, ok := SkipStep(content, i)
@@ -686,16 +726,22 @@ func (o *Orchestrator) skipTargetStep(i int) {
 		fmt.Fprintf(o.terminal, "determined: could not mark step %d skipped in %s: %v\n", i+1, o.cfg.StepsFile, err)
 		return
 	}
-	o.skippedStep = i
+	o.skippedStepText = text
+	o.noteSkippedStep(i + 1)
+	o.reportTaskSteps()
+}
+
+// noteSkippedStep reports the user's Skip on the terminal and records the
+// override in NOTES.md so later invocations do not reopen the step.
+func (o *Orchestrator) noteSkippedStep(n int) {
 	fmt.Fprintf(o.terminal,
-		"determined: step %d skipped from the status page; marked complete without verification\n", i+1)
+		"determined: step %d skipped from the status page; marked complete without verification\n", n)
 	note := fmt.Sprintf("- Step %d was skipped by the user from the status page: it is checked "+
 		"complete without its acceptance criterion being met or verified. The user chose to move on; "+
-		"do not reopen it.\n", i+1)
+		"do not reopen it.\n", n)
 	if err := o.files.Append("NOTES.md", note); err != nil {
 		fmt.Fprintf(o.terminal, "determined: could not record the skip in NOTES.md: %v\n", err)
 	}
-	o.reportTaskSteps()
 }
 
 // invoke runs one tool invocation with the given prompt, teeing its output to
@@ -817,35 +863,26 @@ func (o *Orchestrator) appendTamperNote(path string) {
 
 // verifyNewSteps runs independent reviewer invocations over every step the
 // last iteration newly checked, comparing the steps file against its
-// pre-iteration snapshot. Each step gets a simplicity check first, then a
-// correctness verification; either reviewer unchecks a step that fails its
-// standard (recording why in FIXES.md), so the loop re-runs it. Ping-pong
-// between worker and reviewers is bounded because a rejection leaves the
-// completed count unchanged, which the stall counter (checked right after
-// this pass) treats as a no-progress iteration. A failed reviewer invocation
-// counts toward the consecutive-failure cap like any other; the step simply
-// stays checked.
+// pre-iteration snapshot. Steps are identified by trimmed TEXT, not list
+// index: the invocation may have inserted or reordered steps, renumbering the
+// list, so an index comparison would flag the wrong step. Duplicate texts get
+// multiset semantics (see newlyCompletedSteps). Each new step gets a
+// simplicity check first, then a correctness verification; either reviewer
+// unchecks a step that fails its standard (recording why in FIXES.md), so the
+// loop re-runs it. Ping-pong between worker and reviewers is bounded because
+// a rejection leaves the completed count unchanged, which the stall counter
+// (checked right after this pass) treats as a no-progress iteration. A failed
+// reviewer invocation counts toward the consecutive-failure cap like any
+// other; the step simply stays checked.
 func (o *Orchestrator) verifyNewSteps(ctx context.Context, before []Step) (models.Outcome, bool) {
 	if !o.cfg.Verify {
 		return models.OutcomeStopped, false
 	}
-	for i, step := range o.parsedSteps() {
-		if !step.Completed || (i < len(before) && before[i].Completed) {
+	for _, is := range newlyCompletedSteps(o.parsedSteps(), before) {
+		if o.reviewWaivedFor(strings.TrimSpace(is.step.Text)) {
 			continue
 		}
-		// A step the user skipped is checked without its work done; the user
-		// overrode its acceptance criterion, so reviewing it would only reopen
-		// the step the user just asked to move past.
-		if i == o.skippedStep {
-			continue
-		}
-		// A step the AI tie-breaker resolved is final: the tie-breaker's
-		// verdict replaces further verification, so skip it.
-		if i == o.tieBrokenStep {
-			o.tieBrokenStep = -1 // consume the waiver so later steps aren't affected
-			continue
-		}
-		result := o.verifyStep(ctx, i, step)
+		result := o.verifyStep(ctx, is.index, is.step)
 		if result.stop {
 			return result.outcome, true
 		}
@@ -856,11 +893,34 @@ func (o *Orchestrator) verifyNewSteps(ctx context.Context, before []Step) (model
 	return models.OutcomeStopped, false // outcome ignored when stop is false
 }
 
+// reviewWaivedFor consumes any per-step review waiver matching the trimmed
+// step text, reporting whether the step's review is waived. A user Skip means
+// the user overrode the step's acceptance criterion, so reviewing it would
+// only reopen the step the user just asked to move past. An AI tie-breaker
+// verdict is final: it replaces further verification. Each waiver covers
+// exactly one step, so a duplicate of the same text elsewhere in the list is
+// still reviewed.
+func (o *Orchestrator) reviewWaivedFor(text string) bool {
+	if text != "" && text == o.skippedStepText {
+		o.skippedStepText = ""
+		return true
+	}
+	if text != "" && text == o.tieBrokenStepText {
+		o.tieBrokenStepText = ""
+		return true
+	}
+	return false
+}
+
 // verifyStep runs the reviewer invocations for one newly checked step: the
 // simplicity check first, then the correctness verification. A simplicity
 // rejection unchecks the step, so the correctness check is skipped — the
-// redone step is reviewed again on a later iteration.
+// redone step is reviewed again on a later iteration. i is the step's current
+// index, used only for the 1-based display number; rejection is detected by
+// step text since a reviewer can insert steps and renumber the list.
 func (o *Orchestrator) verifyStep(ctx context.Context, i int, step Step) invocationResult {
+	text := strings.TrimSpace(step.Text)
+	was := completedTextCount(o.parsedSteps(), text)
 	progress := progressMessage(fmt.Sprintf("checking simplicity of step %d", i+1))
 	result := o.invoke(ctx, simplicityPrompt(i+1, step), progress)
 	if result.skipped {
@@ -869,9 +929,10 @@ func (o *Orchestrator) verifyStep(ctx context.Context, i int, step Step) invocat
 	if result.stop || !result.succeeded {
 		return result
 	}
-	if o.markRejectedStep(i, result.entry) {
+	if o.markRejectedStep(text, was, result.entry) {
 		return result
 	}
+	was = completedTextCount(o.parsedSteps(), text)
 	progress = progressMessage(fmt.Sprintf("verifying step %d", i+1))
 	result = o.invoke(ctx, verifyPrompt(i+1, step), progress)
 	if result.skipped {
@@ -880,7 +941,7 @@ func (o *Orchestrator) verifyStep(ctx context.Context, i int, step Step) invocat
 	if result.stop || !result.succeeded {
 		return result
 	}
-	o.markRejectedStep(i, result.entry)
+	o.markRejectedStep(text, was, result.entry)
 	return result
 }
 
@@ -894,12 +955,14 @@ func reviewWaived(result invocationResult) invocationResult {
 
 // markRejectedStep tints a reviewer's own log entry yellow when that reviewer
 // unchecked the step it just reviewed, and reports whether that rejection
-// happened. A rejection means the step was reported done but was not, which is
-// a warning about the run rather than a failure of the reviewer invocation —
-// that invocation did its job.
-func (o *Orchestrator) markRejectedStep(i, entry int) bool {
-	steps := o.parsedSteps()
-	if i >= len(steps) || steps[i].Completed {
+// happened. The step is identified by its trimmed text: the reviewer rejected
+// it when fewer completed steps carry that text than before the reviewer ran
+// — an index would misalign if the reviewer inserted steps. A rejection means
+// the step was reported done but was not, which is a warning about the run
+// rather than a failure of the reviewer invocation — that invocation did its
+// job.
+func (o *Orchestrator) markRejectedStep(text string, completedBefore, entry int) bool {
+	if completedTextCount(o.parsedSteps(), text) >= completedBefore {
 		return false
 	}
 	o.settleEntry(entry, models.EntryStateWarn)
@@ -917,7 +980,7 @@ type specializedReview struct {
 // A failure or a reviewer-created remediation step prevents later gates from
 // running until the next outer iteration.
 func (o *Orchestrator) runCompletionReviews(ctx context.Context) (models.Outcome, bool) {
-	result := o.invoke(ctx, docsPrompt, "updating project documentation")
+	result := o.updateDocs(ctx)
 	if result.stop {
 		return result.outcome, true
 	}
@@ -934,27 +997,107 @@ func (o *Orchestrator) runCompletionReviews(ctx context.Context) (models.Outcome
 		}
 	}
 	result = o.invoke(ctx, auditPrompt, "auditing the whole plan")
+	o.absorbReviewSteps()
 	if result.succeeded && o.runComplete(o.parsedSteps()) {
 		return models.OutcomeStopped, true
 	}
 	return result.outcome, result.stop
 }
 
+// updateDocs runs the completion-phase documentation pass, unless a prior pass
+// already covered the current body of work and only remediation cycles have
+// happened since (see docsCurrent). A user Skip counts as covered: the user
+// waived the pass, so remediation cycles do not re-ask.
+func (o *Orchestrator) updateDocs(ctx context.Context) invocationResult {
+	if o.docsCurrent() {
+		fmt.Fprintln(o.terminal,
+			"determined: documentation already updated for this work; skipping the docs pass")
+		return invocationResult{outcome: models.OutcomeStopped, succeeded: true}
+	}
+	result := o.invoke(ctx, docsPrompt, "updating project documentation")
+	if result.succeeded || result.skipped {
+		o.markDocsUpdated()
+	}
+	return result
+}
+
+// docsCurrent reports whether documentation is already up to date for the
+// current body of work: a docs pass ran, and every step added since was
+// appended by a completion reviewer (remediation), so the step count still
+// matches the absorbed snapshot. Any other change to the step count means new
+// work landed and the docs pass must run again.
+func (o *Orchestrator) docsCurrent() bool {
+	return o.docsUpdated && len(o.parsedSteps()) == o.docsStepCount
+}
+
+// markDocsUpdated snapshots the step count at a completed docs pass.
+func (o *Orchestrator) markDocsUpdated() {
+	o.docsUpdated = true
+	o.docsStepCount = len(o.parsedSteps())
+}
+
+// absorbReviewSteps refreshes the docs snapshot after a completion reviewer
+// runs, so remediation steps the reviewer appended count as remediation and
+// do not retrigger the docs pass on the next completion cycle.
+func (o *Orchestrator) absorbReviewSteps() {
+	if o.docsUpdated {
+		o.docsStepCount = len(o.parsedSteps())
+	}
+}
+
 func (o *Orchestrator) runSpecializedReviews(ctx context.Context) invocationResult {
 	for _, review := range specializedReviewSequence() {
 		progress := progressMessage(fmt.Sprintf("running %s review", review.name))
 		result := o.invoke(ctx, specializedReviewPrompt(review), progress)
+		o.absorbReviewSteps()
 		if result.stop {
 			return result
 		}
 		if result.skipped {
 			continue // the user waived this specialist's verdict
 		}
-		if !result.succeeded || !AllStepsComplete(o.parsedSteps()) {
+		if !result.succeeded {
 			return invocationResult{outcome: models.OutcomeStopped}
+		}
+		if !AllStepsComplete(o.parsedSteps()) {
+			return o.recordSpecialistRemediation(review.name)
 		}
 	}
 	return invocationResult{outcome: models.OutcomeStopped, succeeded: true}
+}
+
+// recordSpecialistRemediation counts one remediation round triggered by the
+// named specialist and decides whether the loop may keep cycling on it.
+// Within cfg.MaxSpecialistRounds the remediation proceeds normally; past the
+// cap the run stops with OutcomeSpecialistLimit — surfacing the deadlock for
+// user review beats silently waiving a review gate. A cap of 0 or less means
+// unlimited, matching MaxStalledIterations.
+func (o *Orchestrator) recordSpecialistRemediation(name string) invocationResult {
+	o.specialistRounds[name]++
+	rounds := o.specialistRounds[name]
+	if o.cfg.MaxSpecialistRounds <= 0 || rounds <= o.cfg.MaxSpecialistRounds {
+		return invocationResult{outcome: models.OutcomeStopped}
+	}
+	fmt.Fprintf(o.terminal,
+		"determined: the %s review triggered remediation in %d completion passes, exceeding the cap of %d; "+
+			"stopping so you can review its remaining findings in FIXES.md\n",
+		name, rounds, o.cfg.MaxSpecialistRounds)
+	o.noteSpecialistLimit(name, rounds)
+	return invocationResult{outcome: models.OutcomeSpecialistLimit, stop: true}
+}
+
+// noteSpecialistLimit records the exhausted review gate in NOTES.md so the
+// situation survives the stopped run: the user (and any later invocation)
+// sees why the run ended and where the outstanding findings live.
+func (o *Orchestrator) noteSpecialistLimit(name string, rounds int) {
+	note := fmt.Sprintf("\n## %s review remediation cap reached\n\n"+
+		"The %s review triggered remediation in %d completion passes, exceeding the cap of %d, "+
+		"so the run stopped. Its remaining findings are recorded in FIXES.md; the user must "+
+		"review them and resolve or waive them before resuming.\n",
+		name, name, rounds, o.cfg.MaxSpecialistRounds)
+	if err := o.files.Append("NOTES.md", note); err != nil {
+		fmt.Fprintf(o.terminal, "determined: could not record the review cap in NOTES.md: %v\n", err)
+	}
 }
 
 func specializedReviewSequence() []specializedReview {
@@ -966,7 +1109,7 @@ func specializedReviewSequence() []specializedReview {
 }
 
 func specializedReviewPrompt(review specializedReview) string {
-	return fmt.Sprintf("Act as the independent %s specialist. Read PLAN.md, STEPS.md, and the implementation. Review the completed work specifically for %s. Run relevant checks when practical and report only concrete, actionable findings caused or exposed by this work. If you find a material issue, append the finding and evidence to FIXES.md, then reopen the most relevant step in STEPS.md; if no existing step fits, append a new unchecked remediation step with a `Done when:` criterion. If no material issue remains, do nothing. Do not implement fixes during this review.", review.name, review.focus)
+	return fmt.Sprintf("Act as the independent %s specialist. Read PLAN.md, STEPS.md, and the implementation. Review the completed work specifically for %s. Run relevant checks when practical and report only concrete, actionable findings caused or exposed by this work. Report every material finding in this single pass — do not stop at the first one. For each finding, append the finding and evidence to FIXES.md, then reopen the most relevant step in STEPS.md; if no existing step fits, append a new unchecked remediation step with a `Done when:` criterion. Record one remediation step per finding, all in this same pass. If no material issue remains, do nothing. Do not implement fixes during this review.", review.name, review.focus)
 }
 
 // stepClaim states one newly checked step — its text, purpose, and acceptance
@@ -1020,16 +1163,13 @@ func (o *Orchestrator) checkpointNewSteps(ctx context.Context, before []Step) {
 	if !o.cfg.GitCheckpoint {
 		return
 	}
-	for i, step := range o.parsedSteps() {
-		if !step.Completed || (i < len(before) && before[i].Completed) {
-			continue
-		}
+	for _, is := range newlyCompletedSteps(o.parsedSteps(), before) {
 		if !o.files.Exists(".git") {
 			fmt.Fprintln(o.terminal,
 				"determined: not a git repository; skipping git checkpoint")
 			return
 		}
-		o.gitCommit(ctx, i+1, step)
+		o.gitCommit(ctx, is.index+1, is.step)
 	}
 }
 
@@ -1306,6 +1446,9 @@ func execStopReasonAdvice(outcome models.Outcome, cfg models.Config) (string, st
 	case models.OutcomeInterrupted:
 		return "The run was interrupted by a signal before it could finish.",
 			"Click Implement (or rerun determined) to resume from the unchecked steps."
+	case models.OutcomeSpecialistLimit:
+		return fmt.Sprintf("A single specialist review triggered remediation in more than %d completion passes, so the run stopped instead of burning a full review cycle on every finding.", cfg.MaxSpecialistRounds),
+			"Read FIXES.md for the specialist's remaining findings and NOTES.md for the run's record of the deadlock, then resolve or waive the findings yourself. Then click Implement (or rerun determined) to resume."
 	case models.OutcomeUserStopped:
 		return "You stopped the run from the status page before every step completed.",
 			"Completed steps stay checked, so nothing is lost. Click Implement (or rerun determined) to resume from the remaining steps."

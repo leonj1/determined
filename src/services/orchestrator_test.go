@@ -411,6 +411,37 @@ func TestStepMaxRuntimeRestartsWithEachNewStep(t *testing.T) {
 	}
 }
 
+func TestStepTimerSurvivesAnInsertionShiftingItsIndex(t *testing.T) {
+	cfg := config(0)
+	cfg.StepMaxRuntime = 10 * time.Minute
+	clock := &fakeClock{now: time.Now()}
+	fs := stepsFileStore()
+	var terminal bytes.Buffer
+	runner := &fakeRunner{script: func(call int, _ io.Writer) error {
+		clock.advance(6 * time.Minute)
+		if call == 1 { // a checked step lands above the target, shifting its index
+			fs.Write("STEPS.md",
+				"- [x] 0. Wire the gadget.\n  Done when: gadget compiles.\n\n"+twoStepsNoneChecked)
+		}
+		return nil // never checks the target step
+	}}
+	o := services.NewOrchestrator(runner, fs, clock, &fakeLogSink{}, &terminal, cfg)
+
+	outcome := o.Run(context.Background())
+
+	if outcome != models.OutcomeStepTimeout {
+		t.Fatalf("expected a step-timeout stop, got %v", outcome)
+	}
+	// The target's TEXT never changed, so the shift from index 0 to 1 must not
+	// restart its timer: two 6-minute invocations exceed the 10-minute cap.
+	if runner.calls != 2 {
+		t.Fatalf("expected the timer to keep running across the index shift (2 calls), got %d", runner.calls)
+	}
+	if !strings.Contains(terminal.String(), "step 2 has been running for over 10m0s") {
+		t.Fatalf("expected the timeout message to show the step's current number, got:\n%s", terminal.String())
+	}
+}
+
 func TestRunStallsAfterConsecutiveIterationsWithoutProgress(t *testing.T) {
 	cfg := config(0)
 	cfg.MaxStalledIterations = 3
@@ -759,6 +790,101 @@ func TestVerifierRejectionRerunsTheSameStep(t *testing.T) {
 	}
 }
 
+// insertedGadgetStep is a step a tool inserts at the top of STEPS.md mid-run,
+// shifting every existing step's index down by one.
+const insertedGadgetStep = "- [ ] 0. Wire the gadget.\n  Done when: gadget compiles.\n\n"
+
+func TestVerifyTargetsNewlyCheckedStepDespiteInsertedStep(t *testing.T) {
+	cfg := config(0)
+	cfg.Verify = true
+	fs := stepsFileStore()
+	runner := &fakeRunner{script: func(call int, _ io.Writer) error {
+		switch call {
+		case 1: // work: check step 1
+			fs.Write("STEPS.md", twoStepsFirstChecked)
+		case 2, 3: // simplicity + verify approve step 1
+		case 4: // work: check step 2 AND insert a new unchecked step at the top
+			fs.Write("STEPS.md", insertedGadgetStep+twoStepsAllChecked)
+		case 5, 6: // simplicity + verify must target step 2, now at index 3
+		case 7: // work: check the inserted step
+			fs.Write("STEPS.md",
+				strings.Replace(insertedGadgetStep, "[ ]", "[x]", 1)+twoStepsAllChecked)
+		case 8, 9: // simplicity + verify of the inserted step
+		case 10: // the docs update
+		case 11: // the whole-plan audit approves
+			fs.Write("STOP.md", "audit: plan satisfied")
+		}
+		return nil
+	}}
+	o := services.NewOrchestrator(runner, fs, &fakeClock{now: time.Now()}, &fakeLogSink{}, io.Discard, cfg)
+
+	outcome := o.Run(context.Background())
+
+	if outcome != models.OutcomeStopped {
+		t.Fatalf("expected a clean completion, got %v", outcome)
+	}
+	if runner.calls != 11 {
+		t.Fatalf("expected 11 invocations (no re-verification of shifted step 1), got %d", runner.calls)
+	}
+	review := runner.prompt(5)
+	if !strings.Contains(review, "2. Document the widget.") {
+		t.Fatalf("expected the post-insertion review to target the newly checked step, got:\n%s", review)
+	}
+	if !strings.Contains(review, "Step 3 claims complete") {
+		t.Fatalf("expected the review to carry the step's current display number 3, got:\n%s", review)
+	}
+	reviewsOfStepOne := 0
+	for call := 1; call <= runner.calls; call++ {
+		if strings.Contains(runner.prompt(call), "claims complete: 1. Add the widget.") {
+			reviewsOfStepOne++
+		}
+	}
+	if reviewsOfStepOne != 2 {
+		t.Fatalf("expected step 1 reviewed exactly once (its simplicity + verify pair), got %d prompts", reviewsOfStepOne)
+	}
+}
+
+func TestShiftedAlreadyCheckedStepIsNotReVerified(t *testing.T) {
+	cfg := config(0)
+	cfg.Verify = true
+	// Step 1 is already checked (and verified) when the run starts.
+	fs := plannedFileStore(twoStepsFirstChecked)
+	runner := &fakeRunner{script: func(call int, _ io.Writer) error {
+		switch call {
+		case 1: // work inserts a new step at the top, checking nothing: the
+			// completed count is unchanged but checked step 1 shifted down.
+			fs.Write("STEPS.md", insertedGadgetStep+twoStepsFirstChecked)
+		case 2: // work on the inserted step: checks it and step 2
+			fs.Write("STEPS.md",
+				strings.Replace(insertedGadgetStep, "[ ]", "[x]", 1)+twoStepsAllChecked)
+		case 3, 4: // simplicity + verify of the inserted step
+		case 5, 6: // simplicity + verify of step 2
+		case 7: // the docs update
+		case 8: // the whole-plan audit approves
+			fs.Write("STOP.md", "audit: plan satisfied")
+		}
+		return nil
+	}}
+	o := services.NewOrchestrator(runner, fs, &fakeClock{now: time.Now()}, &fakeLogSink{}, io.Discard, cfg)
+
+	outcome := o.Run(context.Background())
+
+	if outcome != models.OutcomeStopped {
+		t.Fatalf("expected a clean completion, got %v", outcome)
+	}
+	if runner.calls != 8 {
+		t.Fatalf("expected 8 invocations with no review of the shifted step, got %d", runner.calls)
+	}
+	if !strings.Contains(runner.prompt(2), "Work on exactly this step") {
+		t.Fatalf("expected call 2 to be a work invocation, not a review of shifted step 1, got:\n%s", runner.prompt(2))
+	}
+	for call := 1; call <= runner.calls; call++ {
+		if strings.Contains(runner.prompt(call), "claims complete: 1. Add the widget.") {
+			t.Fatalf("call %d re-verified the already-checked step that merely shifted index: %q", call, runner.prompt(call))
+		}
+	}
+}
+
 func TestSimplicityRejectionRerunsTheStepWithoutCorrectnessCheck(t *testing.T) {
 	cfg := config(0)
 	cfg.Verify = true
@@ -901,7 +1027,16 @@ func TestSpecializedReviewsRunBeforeTheWholePlanAudit(t *testing.T) {
 			t.Fatalf("review %d should contain %q, got:\n%s", call+1, want, runner.prompt(call+1))
 		}
 	}
-	for _, want := range []string{"reopen the most relevant step", "new unchecked remediation step", "Do not implement fixes"} {
+	wantsInEveryPass := []string{
+		"Report every material finding in this single pass",
+		"do not stop at the first one",
+		"For each finding",
+		"one remediation step per finding",
+		"reopen the most relevant step",
+		"new unchecked remediation step",
+		"Do not implement fixes",
+	}
+	for _, want := range wantsInEveryPass {
 		if !strings.Contains(runner.prompt(2), want) {
 			t.Fatalf("specialist prompt should contain %q, got:\n%s", want, runner.prompt(2))
 		}
@@ -923,7 +1058,7 @@ func TestSpecialistFindingBlocksAuditUntilRemediated(t *testing.T) {
 			fs.Write("FIXES.md", "security: documentation example exposes a secret\n")
 		case 3: // worker remediates the reopened step
 			fs.Write("STEPS.md", twoStepsAllChecked)
-		case 8: // docs rerun, all three rerun specialists approve, then the audit approves
+		case 7: // docs skipped, all three rerun specialists approve, then the audit approves
 			fs.Write("STOP.md", "audit: plan satisfied")
 		}
 		return nil
@@ -935,8 +1070,8 @@ func TestSpecialistFindingBlocksAuditUntilRemediated(t *testing.T) {
 	if outcome != models.OutcomeStopped {
 		t.Fatalf("expected remediation to return through reviews and complete, got %v", outcome)
 	}
-	if runner.calls != 8 {
-		t.Fatalf("expected docs + finding + remediation + docs + three clean reviews + audit, got %d runs", runner.calls)
+	if runner.calls != 7 {
+		t.Fatalf("expected docs + finding + remediation + three clean reviews + audit (docs not rerun), got %d runs", runner.calls)
 	}
 	if !strings.Contains(runner.prompt(3), "2. Document the widget") {
 		t.Fatalf("expected the finding to resume the reopened step, got:\n%s", runner.prompt(3))
@@ -1000,7 +1135,7 @@ func TestRetryableSpecialistFailureCannotReachTheAudit(t *testing.T) {
 		if call == 2 { // 1 is the docs update; the security review fails
 			return errors.New("review tool unavailable")
 		}
-		if call == 7 {
+		if call == 6 {
 			fs.Write("STOP.md", "audit: plan satisfied")
 		}
 		return nil
@@ -1009,12 +1144,203 @@ func TestRetryableSpecialistFailureCannotReachTheAudit(t *testing.T) {
 
 	outcome := o.Run(context.Background())
 
-	if outcome != models.OutcomeStopped || runner.calls != 7 {
-		t.Fatalf("expected a fresh docs update and specialist sequence after retryable failure, got %v and %d runs", outcome, runner.calls)
+	if outcome != models.OutcomeStopped || runner.calls != 6 {
+		t.Fatalf("expected the specialist sequence to retry without repeating the docs update, got %v and %d runs", outcome, runner.calls)
 	}
 	if !strings.Contains(runner.prompt(2), "security specialist") ||
-		!strings.Contains(runner.prompt(4), "security specialist") {
+		!strings.Contains(runner.prompt(3), "security specialist") {
 		t.Fatal("expected the security gate to retry before performance or audit")
+	}
+}
+
+func TestSpecialistExceedingRemediationCapStopsTheRun(t *testing.T) {
+	cfg := config(0)
+	cfg.SpecializedReviews = true
+	cfg.MaxSpecialistRounds = 2
+	fs := plannedFileStore(twoStepsAllChecked)
+	var terminal bytes.Buffer
+	runner := &fakeRunner{script: func(call int, _ io.Writer) error {
+		switch call {
+		case 2, 4, 6: // every security review reopens a step
+			fs.Write("STEPS.md", twoStepsFirstChecked)
+			fs.Write("FIXES.md", "security: finding\n")
+		case 3, 5: // the worker remediates
+			fs.Write("STEPS.md", twoStepsAllChecked)
+		}
+		return nil
+	}}
+	o := services.NewOrchestrator(runner, fs, &fakeClock{now: time.Now()}, &fakeLogSink{}, &terminal, cfg)
+
+	outcome := o.Run(context.Background())
+
+	if outcome != models.OutcomeSpecialistLimit || outcome.ExitCode() != 3 {
+		t.Fatalf("expected the third security remediation to stop the run with exit 3, got %v (exit %d)", outcome, outcome.ExitCode())
+	}
+	if runner.calls != 6 {
+		t.Fatalf("expected docs + three security rounds with two remediations in between (6 runs), got %d", runner.calls)
+	}
+	if !strings.Contains(runner.prompt(6), "security specialist") {
+		t.Fatalf("expected the run to end on the security gate, got:\n%s", runner.prompt(6))
+	}
+	for call := 1; call <= runner.calls; call++ {
+		if strings.Contains(runner.prompt(call), "performance specialist") {
+			t.Fatal("expected the run to stop before ever waiving through to the performance gate")
+		}
+	}
+	want := "the security review triggered remediation in 3 completion passes, exceeding the cap of 2"
+	if !strings.Contains(terminal.String(), want) {
+		t.Fatalf("expected the terminal to explain the cap, got:\n%s", terminal.String())
+	}
+	notes, err := fs.Read("NOTES.md")
+	if err != nil || !strings.Contains(notes, "security review remediation cap reached") ||
+		!strings.Contains(notes, "FIXES.md") {
+		t.Fatalf("expected NOTES.md to record the exhausted gate pointing at FIXES.md, got %q (%v)", notes, err)
+	}
+}
+
+func TestSpecialistRemediationIsUnlimitedWhenCapDisabled(t *testing.T) {
+	cfg := config(0)
+	cfg.SpecializedReviews = true
+	cfg.MaxSpecialistRounds = 0
+	fs := plannedFileStore(twoStepsAllChecked)
+	runner := &fakeRunner{script: func(call int, _ io.Writer) error {
+		switch call {
+		case 2, 4, 6: // the security review reopens a step three times
+			fs.Write("STEPS.md", twoStepsFirstChecked)
+		case 3, 5, 7: // the worker remediates each time
+			fs.Write("STEPS.md", twoStepsAllChecked)
+		case 11: // security finally clean (8), perf (9), reliability (10), audit approves
+			fs.Write("STOP.md", "audit: plan satisfied")
+		}
+		return nil
+	}}
+	o := services.NewOrchestrator(runner, fs, &fakeClock{now: time.Now()}, &fakeLogSink{}, io.Discard, cfg)
+
+	outcome := o.Run(context.Background())
+
+	if outcome != models.OutcomeStopped || outcome.ExitCode() != 0 {
+		t.Fatalf("expected a disabled cap to allow unlimited remediation rounds, got %v", outcome)
+	}
+	if runner.calls != 11 {
+		t.Fatalf("expected three full security remediation rounds then clean gates and the audit (11 runs), got %d", runner.calls)
+	}
+	if fs.Exists("NOTES.md") {
+		t.Fatal("expected no cap note when the cap is disabled")
+	}
+}
+
+func TestSpecialistRemediationRoundsAreCountedPerSpecialist(t *testing.T) {
+	cfg := config(0)
+	cfg.SpecializedReviews = true
+	cfg.MaxSpecialistRounds = 1
+	fs := plannedFileStore(twoStepsAllChecked)
+	runner := &fakeRunner{script: func(call int, _ io.Writer) error {
+		switch call {
+		case 2, 5: // security (2) then performance (5) each trigger one remediation
+			fs.Write("STEPS.md", twoStepsFirstChecked)
+		case 3, 6: // the worker remediates each finding
+			fs.Write("STEPS.md", twoStepsAllChecked)
+		case 10: // all three gates clean (7-9), then the audit approves
+			fs.Write("STOP.md", "audit: plan satisfied")
+		}
+		return nil
+	}}
+	o := services.NewOrchestrator(runner, fs, &fakeClock{now: time.Now()}, &fakeLogSink{}, io.Discard, cfg)
+
+	outcome := o.Run(context.Background())
+
+	if outcome != models.OutcomeStopped || outcome.ExitCode() != 0 {
+		t.Fatalf("expected one round per specialist to stay within a per-specialist cap of 1, got %v", outcome)
+	}
+	if runner.calls != 10 {
+		t.Fatalf("expected docs, one security round, one performance round, clean gates, audit (10 runs), got %d", runner.calls)
+	}
+	if !strings.Contains(runner.prompt(5), "performance specialist") {
+		t.Fatalf("expected the second remediation to come from the performance gate, got:\n%s", runner.prompt(5))
+	}
+}
+
+// docsInvocationCount counts the recorded invocations that carried the
+// completion-phase documentation prompt.
+func docsInvocationCount(r *fakeRunner) int {
+	count := 0
+	for call := 1; call <= r.calls; call++ {
+		if strings.Contains(r.prompt(call), "Update the project's existing documentation") {
+			count++
+		}
+	}
+	return count
+}
+
+func TestDocsUpdateRunsOnceAcrossRemediationOnlyCycles(t *testing.T) {
+	cfg := config(0)
+	cfg.SpecializedReviews = true
+	fs := plannedFileStore(twoStepsAllChecked)
+	remediation := "- [ ] 3. Fix the security finding.\n  Done when: the finding is resolved.\n"
+	runner := &fakeRunner{script: func(call int, _ io.Writer) error {
+		switch call {
+		case 1: // the docs update
+		case 2: // security review appends a remediation step
+			fs.Write("STEPS.md", twoStepsAllChecked+"\n"+remediation)
+		case 3: // worker executes the remediation step
+			fs.Write("STEPS.md", twoStepsAllChecked+"\n"+strings.Replace(remediation, "[ ]", "[x]", 1))
+		case 7: // specialists rerun clean (4-6), then the audit approves
+			fs.Write("STOP.md", "audit: plan satisfied")
+		}
+		return nil
+	}}
+	o := services.NewOrchestrator(runner, fs, &fakeClock{now: time.Now()}, &fakeLogSink{}, io.Discard, cfg)
+
+	outcome := o.Run(context.Background())
+
+	if outcome != models.OutcomeStopped || outcome.ExitCode() != 0 {
+		t.Fatalf("expected the remediation cycle to complete, got %v (exit %d)", outcome, outcome.ExitCode())
+	}
+	if got := docsInvocationCount(runner); got != 1 {
+		t.Fatalf("expected exactly one docs invocation across the remediation-only cycle, got %d", got)
+	}
+	if !strings.Contains(runner.prompt(1), "Update the project's existing documentation") {
+		t.Fatalf("expected the first completion pass to start with the docs update, got:\n%s", runner.prompt(1))
+	}
+	if runner.calls != 7 || !strings.Contains(runner.prompt(4), "security specialist") {
+		t.Fatalf("expected the second completion pass to resume at the security review (7 runs), got %d runs and prompt:\n%s",
+			runner.calls, runner.prompt(4))
+	}
+}
+
+func TestDocsUpdateRerunsWhenNewNonRemediationWorkAppears(t *testing.T) {
+	fs := plannedFileStore(twoStepsAllChecked)
+	remediation := "- [ ] 3. Fix the audit finding.\n  Done when: the finding is resolved.\n"
+	extra := "- [ ] 4. Add the follow-up widget.\n  Done when: follow-up tests pass.\n"
+	remediated := strings.Replace(remediation, "[ ]", "[x]", 1)
+	runner := &fakeRunner{script: func(call int, _ io.Writer) error {
+		switch call {
+		case 1: // the docs update
+		case 2: // the audit appends a remediation step
+			fs.Write("STEPS.md", twoStepsAllChecked+"\n"+remediation)
+		case 3: // worker checks the remediation step and uncovers genuinely new work
+			fs.Write("STEPS.md", twoStepsAllChecked+"\n"+remediated+"\n"+extra)
+		case 4: // worker completes the new step
+			fs.Write("STEPS.md", twoStepsAllChecked+"\n"+remediated+"\n"+strings.Replace(extra, "[ ]", "[x]", 1))
+		case 5: // the docs update reruns for the new work
+		case 6: // the audit approves
+			fs.Write("STOP.md", "audit: plan satisfied")
+		}
+		return nil
+	}}
+	o := services.NewOrchestrator(runner, fs, &fakeClock{now: time.Now()}, &fakeLogSink{}, io.Discard, config(0))
+
+	outcome := o.Run(context.Background())
+
+	if outcome != models.OutcomeStopped || outcome.ExitCode() != 0 {
+		t.Fatalf("expected the run with new work to complete, got %v (exit %d)", outcome, outcome.ExitCode())
+	}
+	if got := docsInvocationCount(runner); got != 2 {
+		t.Fatalf("expected the docs update to rerun once new non-remediation work landed, got %d docs invocations", got)
+	}
+	if runner.calls != 6 || !strings.Contains(runner.prompt(5), "Update the project's existing documentation") {
+		t.Fatalf("expected the second docs update at call 5 of 6, got %d runs and prompt:\n%s",
+			runner.calls, runner.prompt(5))
 	}
 }
 
@@ -1081,8 +1407,7 @@ func TestAuditReopeningAStepResumesTheLoop(t *testing.T) {
 		case 5: // work redoes the reopened step with FIXES.md present
 			fixesAtRerun = fs.Exists("FIXES.md")
 			fs.Write("STEPS.md", twoStepsAllChecked)
-		case 6: // the docs update reruns
-		case 7: // audit approves this time
+		case 6: // audit approves this time (docs already updated, so not rerun)
 			fs.Write("STOP.md", "audit: plan satisfied")
 		}
 		return nil
@@ -1094,8 +1419,8 @@ func TestAuditReopeningAStepResumesTheLoop(t *testing.T) {
 	if outcome != models.OutcomeStopped || outcome.ExitCode() != 0 {
 		t.Fatalf("expected the reopened step to be redone and the run to complete, got %v (exit %d)", outcome, outcome.ExitCode())
 	}
-	if runner.calls != 7 {
-		t.Fatalf("expected the audit rejection to cost an extra work+docs+audit round (7 runs), got %d", runner.calls)
+	if runner.calls != 6 {
+		t.Fatalf("expected the audit rejection to cost an extra work+audit round without a docs rerun (6 runs), got %d", runner.calls)
 	}
 	if !strings.Contains(runner.prompt(5), "2. Document the widget.") {
 		t.Fatalf("expected the loop to resume on the step the audit unchecked, got:\n%s", runner.prompt(5))
@@ -1116,8 +1441,7 @@ func TestAuditAddedTestsRemediationStepResumesTheLoop(t *testing.T) {
 			fs.Write("FIXES.md", "TESTS.md Test 1 is missing\n")
 		case 3: // worker implements the audit-added step
 			fs.Write("STEPS.md", twoStepsAllChecked+"\n"+strings.Replace(remediation, "[ ]", "[x]", 1))
-		case 4: // the docs update reruns
-		case 5: // audit approves after remediation
+		case 4: // audit approves after remediation (docs already updated, so not rerun)
 			fs.Write("STOP.md", "audit: required tests pass")
 		}
 		return nil
@@ -1129,7 +1453,7 @@ func TestAuditAddedTestsRemediationStepResumesTheLoop(t *testing.T) {
 	if outcome != models.OutcomeStopped || outcome.ExitCode() != 0 {
 		t.Fatalf("expected audit-added test remediation to complete, got %v (exit %d)", outcome, outcome.ExitCode())
 	}
-	if runner.calls != 5 || !strings.Contains(runner.prompt(3), "3. Implement TESTS.md Test 1.") {
+	if runner.calls != 4 || !strings.Contains(runner.prompt(3), "3. Implement TESTS.md Test 1.") {
 		t.Fatalf("expected execution to target the audit-added test step, got %d calls and prompt:\n%s", runner.calls, runner.prompt(3))
 	}
 }
@@ -1148,8 +1472,8 @@ func TestAuditRejectionsCountTowardTheStallCap(t *testing.T) {
 	if outcome != models.OutcomeStalled || outcome.ExitCode() != 3 {
 		t.Fatalf("expected do-nothing audits to end as a stall, got %v (exit %d)", outcome, outcome.ExitCode())
 	}
-	if runner.calls != 4 {
-		t.Fatalf("expected the stall cap to bound repeated docs+audit passes (2 passes, 4 runs), got %d", runner.calls)
+	if runner.calls != 3 {
+		t.Fatalf("expected the stall cap to bound repeated audit passes with a single docs run (3 runs), got %d", runner.calls)
 	}
 }
 

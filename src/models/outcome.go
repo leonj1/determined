@@ -42,6 +42,10 @@ const (
 	// OutcomeUserStopped means the user ended the run from the status page's
 	// Stop control before it could finish.
 	OutcomeUserStopped
+	// OutcomeSpecialistLimit means one specialist review triggered remediation
+	// in more completion passes than MaxSpecialistRounds allows, so the run
+	// stopped for the user to review the remaining findings in FIXES.md.
+	OutcomeSpecialistLimit
 )
 
 // ExitCode maps an outcome to a process exit code: 0 only when the work
@@ -53,7 +57,7 @@ func (o Outcome) ExitCode() int {
 	case OutcomeStopped, OutcomePlanReady, OutcomePlanReviewed,
 		OutcomeCriteriaReady, OutcomeCriteriaCancelled:
 		return 0
-	case OutcomeStalled:
+	case OutcomeStalled, OutcomeSpecialistLimit:
 		return 3
 	default:
 		return 1
@@ -92,6 +96,8 @@ func (o Outcome) String() string {
 		return "stopped (a single step exceeded its max runtime)"
 	case OutcomeUserStopped:
 		return "stopped (run stopped from the status page)"
+	case OutcomeSpecialistLimit:
+		return "stopped (a specialist review exceeded its remediation-round cap)"
 	default:
 		return "unknown"
 	}
