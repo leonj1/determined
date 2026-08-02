@@ -94,3 +94,58 @@ func TestEmptyDocumentHasNoJourneyTests(t *testing.T) {
 		t.Fatalf("missing = %v, want none", missing)
 	}
 }
+
+func TestMisalignedTestWithNoteReturnsHeadingAndNote(t *testing.T) {
+	doc := services.NewTestsDocument(
+		"### Test 1: signup journey\n**Alignment:** misaligned\n" +
+			"**Alignment note:** exercises billing, not the signup goal\n")
+
+	misaligned := doc.MisalignedTests()
+
+	if len(misaligned) != 1 {
+		t.Fatalf("misaligned = %v, want one entry", misaligned)
+	}
+	if misaligned[0].Heading != "### Test 1: signup journey" {
+		t.Fatalf("heading = %q", misaligned[0].Heading)
+	}
+	if misaligned[0].Note != "exercises billing, not the signup goal" {
+		t.Fatalf("note = %q", misaligned[0].Note)
+	}
+}
+
+func TestMisalignedTestWithoutNoteReturnsEmptyNote(t *testing.T) {
+	doc := services.NewTestsDocument(
+		"### Test 1: checkout journey\n**Alignment:** misaligned\nNo note here.\n")
+
+	misaligned := doc.MisalignedTests()
+
+	if len(misaligned) != 1 {
+		t.Fatalf("misaligned = %v, want one entry", misaligned)
+	}
+	if misaligned[0].Note != "" {
+		t.Fatalf("note = %q, want empty for a note-free section", misaligned[0].Note)
+	}
+}
+
+func TestAlignedAndPartialTestsAreNotMisaligned(t *testing.T) {
+	doc := services.NewTestsDocument(
+		"### Test 1: login\n**Alignment:** aligned\n**Alignment note:** fine\n\n" +
+			"### Test 2: search\n**Alignment:** partial\n**Alignment note:** covers half\n")
+
+	if misaligned := doc.MisalignedTests(); len(misaligned) != 0 {
+		t.Fatalf("misaligned = %v, want none", misaligned)
+	}
+}
+
+func TestVerdictFreeSectionIsNotMisaligned(t *testing.T) {
+	doc := services.NewTestsDocument(
+		"### Test 1: browse catalog\nUser browses.\n\n" +
+			"### Test 2: refund journey\n**Alignment:** MISALIGNED\n" +
+			"**Alignment note:** proves refunds, goal is checkout\n")
+
+	misaligned := doc.MisalignedTests()
+
+	if len(misaligned) != 1 || misaligned[0].Heading != "### Test 2: refund journey" {
+		t.Fatalf("misaligned = %v, want only the case-insensitive misaligned test", misaligned)
+	}
+}

@@ -36,10 +36,10 @@ func locatorForURL(t *testing.T, serverURL string) fixedChatLocator {
 }
 
 func TestChatClientOneShotPrintsTheCorrelatedReply(t *testing.T) {
-	serverURL, _, stop := startChatServer(t)
+	chatServer, _, stop := startChatServer(t)
 	defer stop()
 	var output bytes.Buffer
-	client := services.NewChatClient(locatorForURL(t, serverURL), clients.NewWebSocketDialer(), strings.NewReader(""), &output, time.Second)
+	client := services.NewChatClient(locatorForURL(t, chatServer.URL()), clients.NewWebSocketDialer(), strings.NewReader(""), &output, time.Second)
 
 	if err := client.Ask(context.Background(), "status"); err != nil {
 		t.Fatalf("ask: %v", err)
@@ -50,11 +50,11 @@ func TestChatClientOneShotPrintsTheCorrelatedReply(t *testing.T) {
 }
 
 func TestChatClientInteractivePrintsRepliesBeforeEOFClose(t *testing.T) {
-	serverURL, _, stop := startChatServer(t)
+	chatServer, _, stop := startChatServer(t)
 	defer stop()
 	var output bytes.Buffer
 	input := strings.NewReader("progress\nshow the plan\n")
-	client := services.NewChatClient(locatorForURL(t, serverURL), clients.NewWebSocketDialer(), input, &output, time.Second)
+	client := services.NewChatClient(locatorForURL(t, chatServer.URL()), clients.NewWebSocketDialer(), input, &output, time.Second)
 
 	if err := client.Converse(context.Background()); err != nil {
 		t.Fatalf("converse: %v", err)

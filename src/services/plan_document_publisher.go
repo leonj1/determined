@@ -1,6 +1,10 @@
 package services
 
-import "determined/src/models"
+import (
+	"strings"
+
+	"determined/src/models"
+)
 
 // PlanDocumentSink receives plan documents prepared for a status snapshot.
 type PlanDocumentSink interface {
@@ -45,6 +49,48 @@ func (p *PlanDocumentPublisher) PublishPlan(sink PlanDocumentSink) {
 	p.publishDemo(sink)
 	p.publishTests(sink)
 	p.publishTaskSteps(sink)
+}
+
+// Assumptions returns the `## Assumptions` section body from PLAN.md, or ""
+// when the plan or the heading is absent. Old-format plans without the
+// section are valid, so this never reports an error.
+func (p *PlanDocumentPublisher) Assumptions() string {
+	plan, err := p.files.Read(p.cfg.PlanFile)
+	if err != nil {
+		return ""
+	}
+	return assumptionsSection(plan)
+}
+
+// assumptionsSection extracts the body between the `## Assumptions` heading
+// and the next level-one or level-two heading (or end of document).
+func assumptionsSection(plan string) string {
+	lines := strings.Split(plan, "\n")
+	start := assumptionsStart(lines)
+	if start < 0 {
+		return ""
+	}
+	end := len(lines)
+	for i := start; i < len(lines); i++ {
+		if sectionHeading(lines[i]) {
+			end = i
+			break
+		}
+	}
+	return strings.TrimSpace(strings.Join(lines[start:end], "\n"))
+}
+
+func assumptionsStart(lines []string) int {
+	for i, line := range lines {
+		if strings.TrimSpace(line) == "## Assumptions" {
+			return i + 1
+		}
+	}
+	return -1
+}
+
+func sectionHeading(line string) bool {
+	return strings.HasPrefix(line, "# ") || strings.HasPrefix(line, "## ")
 }
 
 func (p *PlanDocumentPublisher) publishDemo(sink PlanDocumentSink) {

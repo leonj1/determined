@@ -73,6 +73,7 @@ func planConfig(budget time.Duration) models.PlanConfig {
 		RefineInvocation:   models.Invocation{Binary: "claude", Args: []string{"-p", "refine"}},
 		TestsInvocation:    models.Invocation{Binary: "claude", Args: []string{"-p", "tests"}},
 		AlignInvocation:    models.Invocation{Binary: "claude", Args: []string{"-p", "align"}},
+		RealignInvocation:  models.Invocation{Binary: "claude", Args: []string{"-p", "realign"}},
 		AnnotateInvocation: models.Invocation{Binary: "claude", Args: []string{"-p", "annotate"}},
 		MaxRefinePasses:    0, // refinement off by default; refinement tests opt in
 		GoalFile:           "GOAL.md",
@@ -514,31 +515,161 @@ func TestReviewResumesAPendingInterview(t *testing.T) {
 	}
 }
 
-func TestPlanRefinementStopsAtPassCap(t *testing.T) {
-	fs := newFakeFileStore()
+// exhaustedCapFixture builds a create-mode run whose first call drafts the
+// plan and whose every assessment keeps flagging the same finding, so pass 1
+// of a 1-pass cap always reaches the exhaustion gate. cleanFromCall, when
+// positive, makes assessments from that runner call on report NONE instead.
+func exhaustedCapFixture(fs *fakeFileStore, cleanFromCall int) (*fakeRunner, models.PlanConfig) {
 	cfg := planConfig(0)
-	cfg.MaxRefinePasses = 2
-	runner := &fakeRunner{script: func(call int, _ io.Writer) error {
+	cfg.MaxRefinePasses = 1
+	runner := &fakeRunner{}
+	runner.script = func(call int, _ io.Writer) error {
 		if call == 1 {
 			fs.Write("PLAN.md", "the plan")
 			fs.Write("STEPS.md", "1. Build everything")
 			fs.Write("TESTS.md", validTestsDoc)
 			return nil
 		}
-		// Every assessment keeps flagging a too-large step: it never converges.
+		if runner.prompt(call) != "assess" {
+			return nil
+		}
+		if cleanFromCall > 0 && call >= cleanFromCall {
+			fs.Write("REFINEMENTS.md", "NONE")
+			return nil
+		}
 		fs.Write("REFINEMENTS.md", "- Still too big")
 		return nil
-	}}
+	}
+	return runner, cfg
+}
+
+func TestExhaustedCapWithoutAnswerStallsInsteadOfAccepting(t *testing.T) {
+	fs := newFakeFileStore()
+	runner, cfg := exhaustedCapFixture(fs, 0)
+	// No scripted answers: the gate's question cannot be answered, so the
+	// plan must stall — never silently reach OutcomePlanReady.
 	o := services.NewPlanOrchestrator(runner, fs, &fakePrompter{}, &fakeClock{now: time.Now()}, &fakeLogSink{}, io.Discard, cfg)
 
 	outcome := o.Run(context.Background())
 
-	if outcome != models.OutcomePlanReady {
-		t.Fatalf("expected the usable plan to be returned when the cap is hit, got %v", outcome)
+	if outcome != models.OutcomePlanStalled {
+		t.Fatalf("expected an unanswered exhaustion gate to stall the plan, got %v", outcome)
 	}
-	// plan(1) + assess(2) + breakdown(3) + assess(4), then cap stops it.
-	if runner.calls != 4 {
-		t.Fatalf("expected the cap of 2 passes to stop the loop after 4 runs, got %d", runner.calls)
+	// plan(1) + assess(2), then the gate blocks; nothing else may run.
+	if runner.calls != 2 {
+		t.Fatalf("expected no invocations after the gate, got %d", runner.calls)
+	}
+}
+
+func TestExhaustedCapAcceptCompletesAndPublishesFindings(t *testing.T) {
+	fs := newFakeFileStore()
+	runner, cfg := exhaustedCapFixture(fs, 0)
+	prompter := &fakePrompter{answers: []string{"accept"}}
+	reporter := &fakeStatusReporter{}
+	var terminal strings.Builder
+	o := services.NewPlanOrchestrator(runner, fs, prompter, &fakeClock{now: time.Now()}, &fakeLogSink{}, &terminal, cfg).
+		WithStatusReporter(reporter)
+
+	outcome := o.Run(context.Background())
+
+	if outcome != models.OutcomePlanReady {
+		t.Fatalf("expected accept to complete the plan, got %v", outcome)
+	}
+	if runner.calls != 2 || fs.Exists("REFINEMENTS.md") {
+		t.Fatalf("expected accept to end the loop and clear the assessment, calls=%d files=%#v", runner.calls, fs.data)
+	}
+	if !strings.Contains(terminal.String(), "- Still too big") {
+		t.Fatalf("expected the finding on the terminal, got:\n%s", terminal.String())
+	}
+	found := false
+	for _, event := range reporter.events {
+		if event == "progress: unresolved finding: Still too big" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected the finding on the status reporter, events=%v", reporter.events)
+	}
+}
+
+func TestExhaustedCapRefineGrantsOnePassThenReasksWhileDirty(t *testing.T) {
+	fs := newFakeFileStore()
+	// Assessments stay dirty forever: the granted pass must re-reach the gate.
+	runner, cfg := exhaustedCapFixture(fs, 0)
+	prompter := &fakePrompter{answers: []string{"refine", "accept"}}
+	o := services.NewPlanOrchestrator(runner, fs, prompter, &fakeClock{now: time.Now()}, &fakeLogSink{}, io.Discard, cfg)
+
+	outcome := o.Run(context.Background())
+
+	if outcome != models.OutcomePlanReady {
+		t.Fatalf("expected the second gate's accept to complete the plan, got %v", outcome)
+	}
+	// plan(1) + assess(2) + gate + refine(3) + assess(4) + gate again.
+	if runner.calls != 4 || runner.prompt(3) != "refine" || runner.prompt(4) != "assess" {
+		t.Fatalf("expected refine to grant exactly one more pass, invocations %v", runner.invocations)
+	}
+	if len(prompter.asked) != 2 || prompter.asked[0] != prompter.asked[1] {
+		t.Fatalf("expected the still-dirty pass to re-ask the same gate question, asked %q", prompter.asked)
+	}
+	if !strings.Contains(prompter.asked[0], "accept") ||
+		!strings.Contains(prompter.asked[0], "refine") ||
+		!strings.Contains(prompter.asked[0], "edit") {
+		t.Fatalf("expected the gate question to offer all three choices, got %q", prompter.asked[0])
+	}
+}
+
+func TestExhaustedCapRefineCompletesOnCleanPass(t *testing.T) {
+	fs := newFakeFileStore()
+	// The granted pass converges: assess(4) reports NONE.
+	runner, cfg := exhaustedCapFixture(fs, 4)
+	prompter := &fakePrompter{answers: []string{"refine"}}
+	o := services.NewPlanOrchestrator(runner, fs, prompter, &fakeClock{now: time.Now()}, &fakeLogSink{}, io.Discard, cfg)
+
+	outcome := o.Run(context.Background())
+
+	if outcome != models.OutcomePlanReady {
+		t.Fatalf("expected the clean granted pass to complete the plan, got %v", outcome)
+	}
+	if runner.calls != 4 || len(prompter.asked) != 1 {
+		t.Fatalf("expected one granted pass and no re-ask, calls=%d asked=%q", runner.calls, prompter.asked)
+	}
+}
+
+func TestExhaustedCapEditWaitsForEnterThenReassesses(t *testing.T) {
+	fs := newFakeFileStore()
+	// The user's manual edit resolves the finding: assess(3) reports NONE.
+	runner, cfg := exhaustedCapFixture(fs, 3)
+	prompter := &fakePrompter{answers: []string{"edit", ""}}
+	o := services.NewPlanOrchestrator(runner, fs, prompter, &fakeClock{now: time.Now()}, &fakeLogSink{}, io.Discard, cfg)
+
+	outcome := o.Run(context.Background())
+
+	if outcome != models.OutcomePlanReady {
+		t.Fatalf("expected edit then a clean re-assessment to complete, got %v", outcome)
+	}
+	// plan(1) + assess(2) + gate + edit wait + assess(3): no refine invocation.
+	if runner.calls != 3 || runner.prompt(3) != "assess" {
+		t.Fatalf("expected edit to skip refine and re-assess, invocations %v", runner.invocations)
+	}
+	if len(prompter.asked) != 2 || !strings.Contains(prompter.asked[1], "PLAN.md") ||
+		!strings.Contains(prompter.asked[1], "STEPS.md") {
+		t.Fatalf("expected an edit-wait prompt naming the plan files, asked %q", prompter.asked)
+	}
+}
+
+func TestExhaustedCapInvalidAnswerReasks(t *testing.T) {
+	fs := newFakeFileStore()
+	runner, cfg := exhaustedCapFixture(fs, 0)
+	prompter := &fakePrompter{answers: []string{"maybe", "accept"}}
+	o := services.NewPlanOrchestrator(runner, fs, prompter, &fakeClock{now: time.Now()}, &fakeLogSink{}, io.Discard, cfg)
+
+	outcome := o.Run(context.Background())
+
+	if outcome != models.OutcomePlanReady {
+		t.Fatalf("expected the re-asked gate to accept, got %v", outcome)
+	}
+	if len(prompter.asked) != 2 || prompter.asked[0] != prompter.asked[1] {
+		t.Fatalf("expected the invalid answer to re-ask the same question, asked %q", prompter.asked)
 	}
 }
 
@@ -732,6 +863,252 @@ func TestPlanSkipsAlignmentWhenTestsAreAlreadyJudged(t *testing.T) {
 	}
 	if runner.calls != 1 {
 		t.Fatalf("expected no alignment run when verdicts exist, got %d tool runs", runner.calls)
+	}
+}
+
+func TestPlanRealignsMisalignedTestsOnceWithoutAsking(t *testing.T) {
+	fs := newFakeFileStore()
+	fs.Write("PLAN.md", "existing")
+	fs.Write("STEPS.md", "existing")
+	misaligned := "### Test 1: journey\n**Type:** Journey\n" +
+		"```mermaid\nsequenceDiagram\nUser->>App: open\n```\n" +
+		"**Alignment:** misaligned\n**Alignment note:** proves logging, not the goal.\n"
+	realigned := "### Test 1: journey\n**Type:** Journey\n" +
+		"```mermaid\nsequenceDiagram\nUser->>App: open\n```\n" +
+		"**Alignment:** partial\n**Alignment note:** now covers the goal path.\n"
+	runner := &fakeRunner{script: func(call int, _ io.Writer) error {
+		if call == 1 {
+			fs.Write("TESTS.md", misaligned)
+			return nil
+		}
+		fs.Write("TESTS.md", realigned)
+		return nil
+	}}
+	prompter := &fakePrompter{}
+	o := services.NewPlanOrchestrator(runner, fs, prompter, &fakeClock{now: time.Now()}, &fakeLogSink{}, io.Discard, planConfig(0))
+
+	outcome := o.Run(context.Background())
+
+	if outcome != models.OutcomePlanReady {
+		t.Fatalf("expected a ready plan after the realign rewrite, got %v", outcome)
+	}
+	if runner.calls != 2 {
+		t.Fatalf("expected a tests run then exactly one realign run, got %d tool runs", runner.calls)
+	}
+	if got := runner.invocations[1].Args[1]; got != "realign" {
+		t.Fatalf("expected the realign invocation second, got prompt %q", got)
+	}
+	if len(prompter.asked) != 0 {
+		t.Fatalf("expected no user questions during automatic realign, got %v", prompter.asked)
+	}
+	if fs.data["TESTS.md"] != realigned {
+		t.Fatalf("expected the realigned TESTS.md to remain, got %q", fs.data["TESTS.md"])
+	}
+}
+
+// stubbornTestsDoc keeps its first test misaligned no matter how often the
+// realign invocation rewrites TESTS.md, so the gate always fires.
+const stubbornTestsDoc = "### Test 1: journey\n**Type:** Journey\n" +
+	"```mermaid\nsequenceDiagram\nUser->>App: open\n```\n" +
+	"**Alignment:** misaligned\n**Alignment note:** proves logging, not the goal.\n\n" +
+	"### Test 2: journey\n**Type:** Journey\n" +
+	"```mermaid\nsequenceDiagram\nUser->>App: open\n```\n" +
+	"**Alignment:** aligned\n"
+
+// droppedTestsDoc is stubbornTestsDoc with the misaligned section removed.
+const droppedTestsDoc = "### Test 2: journey\n**Type:** Journey\n" +
+	"```mermaid\nsequenceDiagram\nUser->>App: open\n```\n" +
+	"**Alignment:** aligned\n"
+
+// containsEvent reports whether the fake reporter recorded the event.
+func containsEvent(events []string, want string) bool {
+	for _, event := range events {
+		if event == want {
+			return true
+		}
+	}
+	return false
+}
+
+// misalignedGateFixture builds a run whose tests invocation (call 1) and
+// automatic realign pass (call 2) both leave TESTS.md misaligned, so the gate
+// asks. afterGate scripts every later runner call; nil keeps TESTS.md stubborn.
+func misalignedGateFixture(fs *fakeFileStore, afterGate func(call int)) *fakeRunner {
+	fs.Write("PLAN.md", "existing")
+	fs.Write("STEPS.md", "existing")
+	return &fakeRunner{script: func(call int, _ io.Writer) error {
+		if call <= 2 || afterGate == nil {
+			fs.Write("TESTS.md", stubbornTestsDoc)
+			return nil
+		}
+		afterGate(call)
+		return nil
+	}}
+}
+
+func TestMisalignedGateAcceptCompletesAndPublishesTests(t *testing.T) {
+	fs := newFakeFileStore()
+	runner := misalignedGateFixture(fs, nil)
+	prompter := &fakePrompter{answers: []string{"accept"}}
+	reporter := &fakeStatusReporter{}
+	var terminal strings.Builder
+	o := services.NewPlanOrchestrator(runner, fs, prompter, &fakeClock{now: time.Now()}, &fakeLogSink{}, &terminal, planConfig(0)).
+		WithStatusReporter(reporter)
+
+	outcome := o.Run(context.Background())
+
+	if outcome != models.OutcomePlanReady {
+		t.Fatalf("expected accept to complete the plan, got %v", outcome)
+	}
+	// tests(1) + automatic realign(2); accept must not invoke anything else.
+	if runner.calls != 2 {
+		t.Fatalf("expected no invocation after accept, got %d tool runs", runner.calls)
+	}
+	if len(prompter.asked) != 1 || !strings.Contains(prompter.asked[0], "accept") ||
+		!strings.Contains(prompter.asked[0], "rewrite") || !strings.Contains(prompter.asked[0], "drop") {
+		t.Fatalf("expected one accept/rewrite/drop question, got %v", prompter.asked)
+	}
+	finding := "progress: misaligned test: ### Test 1: journey — proves logging, not the goal."
+	if !containsEvent(reporter.events, finding) {
+		t.Fatalf("expected the misaligned test on the status reporter, got %v", reporter.events)
+	}
+	if !containsEvent(reporter.events, "wait-for-input") {
+		t.Fatalf("expected the gate to signal wait-for-input, got %v", reporter.events)
+	}
+	if !strings.Contains(terminal.String(), "proves logging, not the goal.") {
+		t.Fatalf("expected the alignment note on the terminal, got:\n%s", terminal.String())
+	}
+}
+
+func TestMisalignedGateRewriteRealignsAgainThenCompletes(t *testing.T) {
+	fs := newFakeFileStore()
+	runner := misalignedGateFixture(fs, func(int) {
+		fs.Write("TESTS.md", validTestsDoc)
+	})
+	prompter := &fakePrompter{answers: []string{"rewrite"}}
+	o := services.NewPlanOrchestrator(runner, fs, prompter, &fakeClock{now: time.Now()}, &fakeLogSink{}, io.Discard, planConfig(0))
+
+	outcome := o.Run(context.Background())
+
+	if outcome != models.OutcomePlanReady {
+		t.Fatalf("expected the plan to complete after the second rewrite, got %v", outcome)
+	}
+	if runner.calls != 3 {
+		t.Fatalf("expected tests, auto realign, then one rewrite realign, got %d tool runs", runner.calls)
+	}
+	if got := runner.prompt(3); got != "realign" {
+		t.Fatalf("expected rewrite to re-invoke the realign prompt, got %q", got)
+	}
+	if len(prompter.asked) != 1 {
+		t.Fatalf("expected a clean re-check to ask nothing further, got %v", prompter.asked)
+	}
+}
+
+func TestMisalignedGateDropRemovesSectionsViaConstrainedRealign(t *testing.T) {
+	fs := newFakeFileStore()
+	runner := misalignedGateFixture(fs, func(int) {
+		fs.Write("TESTS.md", droppedTestsDoc)
+	})
+	prompter := &fakePrompter{answers: []string{"drop"}}
+	o := services.NewPlanOrchestrator(runner, fs, prompter, &fakeClock{now: time.Now()}, &fakeLogSink{}, io.Discard, planConfig(0))
+
+	outcome := o.Run(context.Background())
+
+	if outcome != models.OutcomePlanReady {
+		t.Fatalf("expected the plan to complete after the drop, got %v", outcome)
+	}
+	if runner.calls != 3 {
+		t.Fatalf("expected tests, auto realign, then one drop invocation, got %d tool runs", runner.calls)
+	}
+	dropPrompt := runner.prompt(3)
+	if !strings.HasPrefix(dropPrompt, "realign") {
+		t.Fatalf("expected drop to constrain the realign prompt, got %q", dropPrompt)
+	}
+	if !strings.Contains(dropPrompt, "delete that entire section") {
+		t.Fatalf("expected the drop constraint appended to the prompt, got %q", dropPrompt)
+	}
+	if fs.data["TESTS.md"] != droppedTestsDoc {
+		t.Fatalf("expected the misaligned section removed from TESTS.md, got %q", fs.data["TESTS.md"])
+	}
+}
+
+func TestMisalignedGateReasksWhileMisalignedVerdictsRemain(t *testing.T) {
+	fs := newFakeFileStore()
+	// Every rewrite keeps the misaligned verdict, so only accept can finish.
+	runner := misalignedGateFixture(fs, nil)
+	prompter := &fakePrompter{answers: []string{"rewrite", "rewrite", "accept"}}
+	o := services.NewPlanOrchestrator(runner, fs, prompter, &fakeClock{now: time.Now()}, &fakeLogSink{}, io.Discard, planConfig(0))
+
+	outcome := o.Run(context.Background())
+
+	if outcome != models.OutcomePlanReady {
+		t.Fatalf("expected the explicit accept to complete the plan, got %v", outcome)
+	}
+	if len(prompter.asked) != 3 {
+		t.Fatalf("expected the gate to re-ask after each dirty rewrite, got %v", prompter.asked)
+	}
+	// tests(1) + auto realign(2) + two granted rewrites(3,4).
+	if runner.calls != 4 {
+		t.Fatalf("expected each rewrite answer to run one realign invocation, got %d tool runs", runner.calls)
+	}
+}
+
+func TestMisalignedGateInvalidAnswerReasks(t *testing.T) {
+	fs := newFakeFileStore()
+	runner := misalignedGateFixture(fs, nil)
+	prompter := &fakePrompter{answers: []string{"whatever", "accept"}}
+	var terminal strings.Builder
+	o := services.NewPlanOrchestrator(runner, fs, prompter, &fakeClock{now: time.Now()}, &fakeLogSink{}, &terminal, planConfig(0))
+
+	outcome := o.Run(context.Background())
+
+	if outcome != models.OutcomePlanReady {
+		t.Fatalf("expected the retried accept to complete the plan, got %v", outcome)
+	}
+	if len(prompter.asked) != 2 {
+		t.Fatalf("expected the invalid answer to re-ask the same question, got %v", prompter.asked)
+	}
+	if !strings.Contains(terminal.String(), "please answer accept, rewrite, or drop") {
+		t.Fatalf("expected an invalid-answer notice, got:\n%s", terminal.String())
+	}
+}
+
+func TestMisalignedGateWithoutAnswerStallsInsteadOfAccepting(t *testing.T) {
+	fs := newFakeFileStore()
+	runner := misalignedGateFixture(fs, nil)
+	// No scripted answers: the gate's question cannot be answered, so the
+	// plan must stall — never reach OutcomePlanReady with a standing
+	// misaligned verdict absent an explicit accept.
+	o := services.NewPlanOrchestrator(runner, fs, &fakePrompter{}, &fakeClock{now: time.Now()}, &fakeLogSink{}, io.Discard, planConfig(0))
+
+	outcome := o.Run(context.Background())
+
+	if outcome != models.OutcomePlanStalled {
+		t.Fatalf("expected the unanswered gate to stall the plan, got %v", outcome)
+	}
+	// tests(1) + automatic realign(2); nothing may run past the gate.
+	if runner.calls != 2 {
+		t.Fatalf("expected no invocations after the stalled gate, got %d", runner.calls)
+	}
+}
+
+func TestPlanSkipsRealignWhenNoTestIsMisaligned(t *testing.T) {
+	fs := newFakeFileStore()
+	fs.Write("PLAN.md", "existing")
+	fs.Write("STEPS.md", "existing")
+	runner := &fakeRunner{script: func(int, io.Writer) error {
+		fs.Write("TESTS.md", validTestsDoc)
+		return nil
+	}}
+	o := services.NewPlanOrchestrator(runner, fs, &fakePrompter{}, &fakeClock{now: time.Now()}, &fakeLogSink{}, io.Discard, planConfig(0))
+
+	outcome := o.Run(context.Background())
+
+	if outcome != models.OutcomePlanReady {
+		t.Fatalf("expected a ready plan, got %v", outcome)
+	}
+	if runner.calls != 1 {
+		t.Fatalf("expected no realign run when every verdict is aligned, got %d tool runs", runner.calls)
 	}
 }
 
@@ -980,5 +1357,210 @@ func TestPlanInterruptedByCancelledContext(t *testing.T) {
 	}
 	if runner.calls != 0 {
 		t.Fatalf("expected no tool runs after cancellation, got %d", runner.calls)
+	}
+}
+
+// planWithAssumptions is a PLAN.md whose `## Assumptions` section the
+// confirmation round relays to the user.
+const planWithAssumptions = "the plan\n\n## Assumptions\n\n- SQLite database\n- no auth\n"
+
+func TestPlanAssumptionsConfirmationProceedsToRefinement(t *testing.T) {
+	for _, answer := range []string{"", "y"} {
+		t.Run("answer "+answer, func(t *testing.T) {
+			fs := newFakeFileStore()
+			cfg := planConfig(0)
+			cfg.MaxRefinePasses = 1
+			prompter := &fakePrompter{answers: []string{answer}}
+			runner := &fakeRunner{script: func(call int, _ io.Writer) error {
+				switch call {
+				case 1:
+					fs.Write("PLAN.md", planWithAssumptions)
+					fs.Write("STEPS.md", "the steps")
+					fs.Write("TESTS.md", validTestsDoc)
+				case 2:
+					fs.Write("REFINEMENTS.md", "NONE")
+				}
+				return nil
+			}}
+			o := services.NewPlanOrchestrator(runner, fs, prompter, &fakeClock{now: time.Now()}, &fakeLogSink{}, io.Discard, cfg)
+
+			outcome := o.Run(context.Background())
+
+			if outcome != models.OutcomePlanReady {
+				t.Fatalf("expected a ready plan, got %v", outcome)
+			}
+			if len(prompter.asked) != 1 {
+				t.Fatalf("expected exactly one assumptions question, got %d: %q", len(prompter.asked), prompter.asked)
+			}
+			if !strings.Contains(prompter.asked[0], "- SQLite database\n- no auth") {
+				t.Fatalf("expected the question to relay the assumptions list, got %q", prompter.asked[0])
+			}
+			if runner.calls != 2 || runner.prompt(2) != "assess" {
+				t.Fatalf("expected confirmation to go straight to the refinement assessment, got %d call(s), invocations %v", runner.calls, runner.invocations)
+			}
+		})
+	}
+}
+
+func TestPlanAssumptionsCorrectionAnnotatesAndRepublishes(t *testing.T) {
+	fs := newFakeFileStore()
+	prompter := &fakePrompter{answers: []string{"use Postgres, not SQLite"}}
+	var annotationSeen string
+	runner := &fakeRunner{script: func(call int, _ io.Writer) error {
+		switch call {
+		case 1:
+			fs.Write("PLAN.md", planWithAssumptions)
+			fs.Write("STEPS.md", "the steps")
+			fs.Write("TESTS.md", validTestsDoc)
+		case 2:
+			annotationSeen = fs.data["ANNOTATION.md"]
+			fs.Write("PLAN.md", "the plan\n\n## Assumptions\n\n- Postgres database\n- no auth\n")
+		}
+		return nil
+	}}
+	reporter := &fakeStatusReporter{}
+	o := services.NewPlanOrchestrator(runner, fs, prompter, &fakeClock{now: time.Now()}, &fakeLogSink{}, io.Discard, planConfig(0)).
+		WithStatusReporter(reporter)
+
+	outcome := o.Run(context.Background())
+
+	if outcome != models.OutcomePlanReady {
+		t.Fatalf("expected a ready plan, got %v", outcome)
+	}
+	if len(prompter.asked) != 1 {
+		t.Fatalf("expected the correction round to ask exactly once, got %d: %q", len(prompter.asked), prompter.asked)
+	}
+	if runner.calls != 2 || runner.prompt(2) != "annotate" {
+		t.Fatalf("expected the correction to run the annotate invocation, got %d call(s), invocations %v", runner.calls, runner.invocations)
+	}
+	for _, want := range []string{"use Postgres, not SQLite", "plan (PLAN.md)", "Assumptions"} {
+		if !strings.Contains(annotationSeen, want) {
+			t.Fatalf("expected the staged annotation to record %q, got:\n%s", want, annotationSeen)
+		}
+	}
+	if fs.Exists("ANNOTATION.md") {
+		t.Fatal("expected ANNOTATION.md to be cleared after the annotate run")
+	}
+	if reporter.assumptions != "- Postgres database\n- no auth" {
+		t.Fatalf("expected the corrected assumptions to be republished, got %q", reporter.assumptions)
+	}
+	if reporter.plan != "the plan\n\n## Assumptions\n\n- Postgres database\n- no auth\n" {
+		t.Fatalf("expected the corrected plan to be republished, got %q", reporter.plan)
+	}
+}
+
+// An assumptions correction must not regenerate the UI demo: refine is about
+// to rewrite the plan, so the demo is generated once, after planning succeeds.
+func TestAssumptionsCorrectionDefersDemoUntilAfterRefinement(t *testing.T) {
+	fs := newFakeFileStore()
+	cfg := planConfig(0)
+	cfg.MaxRefinePasses = 1
+	cfg.DemoFile = "DEMO.html"
+	cfg.DemoInvocation = models.Invocation{Binary: "claude", Args: []string{"-p", "demo"}}
+	prompter := &fakePrompter{answers: []string{"use Postgres, not SQLite"}}
+	runner := &fakeRunner{script: func(call int, _ io.Writer) error {
+		switch call {
+		case 1:
+			fs.Write("PLAN.md", planWithAssumptions)
+			fs.Write("STEPS.md", "the steps")
+			fs.Write("TESTS.md", validTestsDoc)
+		case 2:
+			fs.Write("PLAN.md", "the plan\n\n## Assumptions\n\n- Postgres database\n- no auth\n")
+		case 3:
+			fs.Write("REFINEMENTS.md", "NONE")
+		case 4:
+			fs.Write("DEMO.html", "<p>postgres demo</p>")
+		}
+		return nil
+	}}
+	reporter := &fakeStatusReporter{}
+	o := services.NewPlanOrchestrator(runner, fs, prompter, &fakeClock{now: time.Now()}, &fakeLogSink{}, io.Discard, cfg).
+		WithStatusReporter(reporter)
+
+	outcome := o.Run(context.Background())
+
+	if outcome != models.OutcomePlanReady {
+		t.Fatalf("expected a ready plan, got %v", outcome)
+	}
+	want := []string{"plan", "annotate", "assess", "demo"}
+	if got := invocationPrompts(runner); strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Fatalf("invocations = %v, want %v (the correction must not run the demo before refinement)", got, want)
+	}
+	if reporter.demo != "<p>postgres demo</p>" {
+		t.Fatalf("expected the end-of-run demo to be published, got %q", reporter.demo)
+	}
+}
+
+func TestPlanWithoutAssumptionsSectionSkipsConfirmation(t *testing.T) {
+	fs := newFakeFileStore()
+	prompter := &fakePrompter{} // any Ask would fail with io.EOF
+	runner := &fakeRunner{script: func(int, io.Writer) error {
+		fs.Write("PLAN.md", "the plan")
+		fs.Write("STEPS.md", "the steps")
+		fs.Write("TESTS.md", validTestsDoc)
+		return nil
+	}}
+	o := services.NewPlanOrchestrator(runner, fs, prompter, &fakeClock{now: time.Now()}, &fakeLogSink{}, io.Discard, planConfig(0))
+
+	outcome := o.Run(context.Background())
+
+	if outcome != models.OutcomePlanReady {
+		t.Fatalf("expected a ready plan, got %v", outcome)
+	}
+	if len(prompter.asked) != 0 {
+		t.Fatalf("expected no assumptions question for a plan without the section, got %q", prompter.asked)
+	}
+}
+
+func TestPlanRefineRelaysAssessorQuestionsInCreateMode(t *testing.T) {
+	fs := newFakeFileStore()
+	cfg := planConfig(0)
+	cfg.MaxRefinePasses = 3
+	prompter := &fakePrompter{answers: []string{"SQLite"}}
+	var answersAtRefine string
+	var questionsPresentAtRefine bool
+	runner := &fakeRunner{script: func(call int, _ io.Writer) error {
+		switch call {
+		case 1: // planning round drafts the full plan
+			fs.Write("PLAN.md", "the plan")
+			fs.Write("STEPS.md", "1. Add storage")
+			fs.Write("TESTS.md", validTestsDoc)
+		case 2: // assessment flags a preference-dependent finding and asks
+			fs.Write("REFINEMENTS.md", "- Storage choice depends on user preference")
+			fs.Write("QUESTIONS.md", "1. Prefer SQLite or Postgres?\n")
+		case 3: // refine runs after the relay: capture what it can see
+			answersAtRefine = fs.data["ANSWERS.md"]
+			questionsPresentAtRefine = fs.Exists("QUESTIONS.md")
+		case 4: // second assessment: clean
+			fs.Write("REFINEMENTS.md", "NONE")
+		}
+		return nil
+	}}
+	o := services.NewPlanOrchestrator(runner, fs, prompter, &fakeClock{now: time.Now()}, &fakeLogSink{}, io.Discard, cfg)
+
+	outcome := o.Run(context.Background())
+
+	if outcome != models.OutcomePlanReady {
+		t.Fatalf("expected a ready plan, got %v", outcome)
+	}
+	if runner.calls != 4 {
+		t.Fatalf("expected plan + assess + refine + assess (4 runs), got %d", runner.calls)
+	}
+	if got := runner.prompt(2); got != "assess" {
+		t.Fatalf("expected run 2 to be the assessment, got %q", got)
+	}
+	if got := runner.prompt(3); got != "refine" {
+		t.Fatalf("expected run 3 to be the refinement, got %q", got)
+	}
+	if len(prompter.asked) != 1 || !strings.Contains(prompter.asked[0], "Prefer SQLite or Postgres?") {
+		t.Fatalf("expected the assessor's question relayed to the user, got %q", prompter.asked)
+	}
+	for _, want := range []string{"Prefer SQLite or Postgres?", "SQLite"} {
+		if !strings.Contains(answersAtRefine, want) {
+			t.Fatalf("expected ANSWERS.md to hold %q before the refine invocation, got:\n%s", want, answersAtRefine)
+		}
+	}
+	if questionsPresentAtRefine {
+		t.Fatal("expected QUESTIONS.md cleared before the refine invocation")
 	}
 }

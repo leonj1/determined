@@ -55,7 +55,7 @@ func (s *chatStatusSource) publish(snapshot models.PlanSessionStatus) {
 	s.updates <- snapshot
 }
 
-func startChatServer(t *testing.T) (string, *chatStatusSource, func()) {
+func startChatServer(t *testing.T) (*clients.PlanStatusServer, *chatStatusSource, func()) {
 	t.Helper()
 	source := newChatStatusSource(chatSnapshot())
 	clock := serverClock{t: time.Date(2026, 7, 21, 10, 2, 0, 0, time.UTC)}
@@ -64,7 +64,23 @@ func startChatServer(t *testing.T) (string, *chatStatusSource, func()) {
 	if err := server.Start(); err != nil {
 		t.Fatalf("start chat server: %v", err)
 	}
-	return server.URL(), source, func() { shutdown(t, server) }
+	return server, source, func() { shutdown(t, server) }
+}
+
+// postChatAsk issues a token-bearing chat question the way the page would.
+func postChatAsk(t *testing.T, server *clients.PlanStatusServer, body string) *http.Response {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodPost, server.URL()+"chat/ask", strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("build chat ask: %v", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set(clients.StatusSessionTokenHeader, server.SessionToken())
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("post chat ask: %v", err)
+	}
+	return resp
 }
 
 func dialChat(t *testing.T, url string) *clients.WebSocketConn {
@@ -105,9 +121,9 @@ func readChatJSON(t *testing.T, connection *clients.WebSocketConn) models.ChatRe
 }
 
 func TestWebSocketChatCorrelatesMessageAndReply(t *testing.T) {
-	url, _, stop := startChatServer(t)
+	server, _, stop := startChatServer(t)
 	defer stop()
-	connection := dialChat(t, url)
+	connection := dialChat(t, server.URL())
 	defer connection.Close() //nolint:errcheck
 
 	writeChatJSON(t, connection, models.ChatRequest{ID: "41", Type: models.ChatRequestMessage, Text: "status"})
@@ -119,9 +135,9 @@ func TestWebSocketChatCorrelatesMessageAndReply(t *testing.T) {
 }
 
 func TestMalformedWebSocketPayloadKeepsChatOpen(t *testing.T) {
-	url, _, stop := startChatServer(t)
+	server, _, stop := startChatServer(t)
 	defer stop()
-	connection := dialChat(t, url)
+	connection := dialChat(t, server.URL())
 	defer connection.Close() //nolint:errcheck
 
 	if err := connection.WriteText([]byte("{not-json")); err != nil {
@@ -143,9 +159,9 @@ func TestMalformedWebSocketPayloadKeepsChatOpen(t *testing.T) {
 }
 
 func TestSubscribedWebSocketReceivesStatusEvent(t *testing.T) {
-	url, source, stop := startChatServer(t)
+	server, source, stop := startChatServer(t)
 	defer stop()
-	connection := dialChat(t, url)
+	connection := dialChat(t, server.URL())
 	defer connection.Close() //nolint:errcheck
 
 	writeChatJSON(t, connection, models.ChatRequest{ID: "sub", Type: models.ChatRequestSubscribe})
@@ -165,12 +181,9 @@ func TestSubscribedWebSocketReceivesStatusEvent(t *testing.T) {
 }
 
 func TestHTTPChatAskUsesTheSameStructuredReply(t *testing.T) {
-	url, _, stop := startChatServer(t)
+	server, _, stop := startChatServer(t)
 	defer stop()
-	response, err := http.Post(url+"chat/ask", "application/json", strings.NewReader(`{"text":"progress"}`))
-	if err != nil {
-		t.Fatalf("post chat ask: %v", err)
-	}
+	response := postChatAsk(t, server, `{"text":"progress"}`)
 	defer response.Body.Close()
 	var reply models.ChatResponse
 	if err := json.NewDecoder(response.Body).Decode(&reply); err != nil {
@@ -182,9 +195,9 @@ func TestHTTPChatAskUsesTheSameStructuredReply(t *testing.T) {
 }
 
 func TestHTTPChatAskRejectsBadMethodAndJSON(t *testing.T) {
-	url, _, stop := startChatServer(t)
+	server, _, stop := startChatServer(t)
 	defer stop()
-	get, err := http.Get(url + "chat/ask")
+	get, err := http.Get(server.URL() + "chat/ask")
 	if err != nil {
 		t.Fatalf("get chat ask: %v", err)
 	}
@@ -192,19 +205,13 @@ func TestHTTPChatAskRejectsBadMethodAndJSON(t *testing.T) {
 	if get.StatusCode != http.StatusMethodNotAllowed {
 		t.Errorf("GET status = %d, want 405", get.StatusCode)
 	}
-	post, err := http.Post(url+"chat/ask", "application/json", strings.NewReader("not-json"))
-	if err != nil {
-		t.Fatalf("post bad chat ask: %v", err)
-	}
+	post := postChatAsk(t, server, "not-json")
 	io.Copy(io.Discard, post.Body) //nolint:errcheck
 	post.Body.Close()
 	if post.StatusCode != http.StatusBadRequest {
 		t.Errorf("bad JSON status = %d, want 400", post.StatusCode)
 	}
-	extra, err := http.Post(url+"chat/ask", "application/json", strings.NewReader(`{"text":"status"}{}`))
-	if err != nil {
-		t.Fatalf("post trailing JSON: %v", err)
-	}
+	extra := postChatAsk(t, server, `{"text":"status"}{}`)
 	extra.Body.Close()
 	if extra.StatusCode != http.StatusBadRequest {
 		t.Errorf("trailing JSON status = %d, want 400", extra.StatusCode)

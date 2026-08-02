@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"flag"
 	"io"
 	"os"
@@ -180,7 +181,7 @@ func TestHeadlessExecutionReceivesLiveStatusAndCleansUpSession(t *testing.T) {
 		t.Fatalf("select tool: %v", err)
 	}
 	executor := &fakePlanExecutor{outcome: models.OutcomeStopped}
-	outcome := runHeadlessExec(context.Background(), tool, executor.Execute, fixedClock{now: time.Now()})
+	outcome := runHeadlessExec(context.Background(), tool, "127.0.0.1", executor.Execute, fixedClock{now: time.Now()})
 
 	if outcome != models.OutcomeStopped || executor.status == nil {
 		t.Fatalf("outcome=%v status=%v, want execution with live reporter", outcome, executor.status)
@@ -524,6 +525,110 @@ func TestDismissalChannelIgnoresEnterDuringExecution(t *testing.T) {
 	<-dismissed
 }
 
+type fakePrompter struct {
+	answer string
+	err    error
+	asked  []string
+}
+
+func (p *fakePrompter) Ask(question string) (string, error) {
+	p.asked = append(p.asked, question)
+	return p.answer, p.err
+}
+
+type fakeInputWaiter struct{ waits int }
+
+func (w *fakeInputWaiter) WaitForInput() { w.waits++ }
+
+func TestChainedExecutionRequiresExplicitYes(t *testing.T) {
+	tests := []struct {
+		name   string
+		answer string
+		want   bool
+	}{
+		{"lowercase y approves", "y", true},
+		{"yes approves", "yes", true},
+		{"uppercase and padding still approve", "  YES ", true},
+		{"bare Enter declines", "", false},
+		{"n declines", "n", false},
+		{"no declines", "no", false},
+		{"unrelated text declines", "sure", false},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			prompter := &fakePrompter{answer: test.answer}
+			if got := approveExecution(prompter, nil); got != test.want {
+				t.Fatalf("approveExecution(%q) = %v, want %v", test.answer, got, test.want)
+			}
+			want := "Plan approved — begin execution? [y/N]"
+			if len(prompter.asked) != 1 || prompter.asked[0] != want {
+				t.Fatalf("asked %v, want exactly one %q", prompter.asked, want)
+			}
+		})
+	}
+}
+
+func TestFailedApprovalReadDeclinesExecution(t *testing.T) {
+	prompter := &fakePrompter{err: errors.New("stdin closed")}
+	if approveExecution(prompter, nil) {
+		t.Fatal("a failed read must not approve execution")
+	}
+}
+
+func TestApprovalShowsTheWaitOnTheStatusPage(t *testing.T) {
+	waiter := &fakeInputWaiter{}
+	approveExecution(&fakePrompter{answer: "y"}, waiter)
+
+	if waiter.waits != 1 {
+		t.Fatalf("WaitForInput calls = %d, want 1", waiter.waits)
+	}
+}
+
+// chainedExecution mirrors both real call sites: the execute loop starts only
+// when the approval gate says yes.
+func chainedExecution(prompter services.Prompter, executor *fakePlanExecutor) (models.Outcome, bool) {
+	if !approveExecution(prompter, nil) {
+		return models.OutcomePlanReady, false
+	}
+	return executor.Execute(context.Background(), nil), true
+}
+
+func TestApprovedChainedExecutionRunsTheExecuteLoop(t *testing.T) {
+	executor := &fakePlanExecutor{outcome: models.OutcomeStopped}
+	outcome, executed := chainedExecution(&fakePrompter{answer: "yes"}, executor)
+
+	if !executed {
+		t.Fatal("a yes answer must start the execute loop")
+	}
+	if outcome != models.OutcomeStopped {
+		t.Fatalf("outcome = %v, want the execute loop's %v", outcome, models.OutcomeStopped)
+	}
+}
+
+func TestDeclinedChainedExecutionKeepsPlanFilesAndPlanReadyOutcome(t *testing.T) {
+	dir := t.TempDir()
+	for _, name := range []string{"PLAN.md", "STEPS.md"} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("# "+name), 0o644); err != nil {
+			t.Fatalf("seed %s: %v", name, err)
+		}
+	}
+	executor := &fakePlanExecutor{outcome: models.OutcomeStopped}
+
+	outcome, executed := chainedExecution(&fakePrompter{answer: ""}, executor)
+
+	if executed {
+		t.Fatal("bare Enter must not start the execute loop")
+	}
+	if outcome != models.OutcomePlanReady {
+		t.Fatalf("outcome = %v, want %v", outcome, models.OutcomePlanReady)
+	}
+	for _, name := range []string{"PLAN.md", "STEPS.md"} {
+		if _, err := os.Stat(filepath.Join(dir, name)); err != nil {
+			t.Fatalf("%s did not survive a declined approval: %v", name, err)
+		}
+	}
+}
+
 func TestPrototypeSkipsQualityRefinement(t *testing.T) {
 	if got := refinePasses(models.PlanModePrototype, 5); got != 0 {
 		t.Fatalf("prototype refinement passes = %d, want 0", got)
@@ -668,5 +773,22 @@ func TestResumedSessionSeedsDocumentsAndShowsPlanningSucceeded(t *testing.T) {
 	}
 	if !snapshot.StartedAt.Equal(now) || !snapshot.EndedAt.Equal(now) {
 		t.Fatalf("planning timing = %v to %v, want %v", snapshot.StartedAt, snapshot.EndedAt, now)
+	}
+}
+
+func TestAssembledPlanConfigsCarryRealignInvocation(t *testing.T) {
+	tool := models.ClaudeTool{}
+	configs := map[string]models.PlanConfig{
+		"create": createPlanConfig(tool, "goal", models.PlanModeStandard, 0, 3, 3),
+		"review": reviewPlanConfig(tool, 0, 3, 3),
+	}
+	for name, cfg := range configs {
+		invocation := cfg.RealignInvocation
+		if invocation.Binary == "" || len(invocation.Args) == 0 {
+			t.Fatalf("expected %s plan config to carry a non-empty RealignInvocation, got %+v", name, invocation)
+		}
+		if !strings.Contains(strings.Join(invocation.Args, " "), "misaligned") {
+			t.Fatalf("expected %s RealignInvocation args to carry the realign prompt, got %+v", name, invocation.Args)
+		}
 	}
 }

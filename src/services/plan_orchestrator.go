@@ -37,6 +37,7 @@ type PlanStatusReporter interface {
 	AppendLogOutput(text string)
 	SetGoal(goal string)
 	SetPlan(plan string)
+	SetAssumptions(assumptions string)
 	SetDemo(demo string)
 	SetTests(tests string)
 	SetTaskSteps(steps []models.TaskStep)
@@ -161,6 +162,9 @@ func (o *PlanOrchestrator) create(ctx context.Context, deadline time.Time) model
 			if outcome, stop := o.ensureTests(ctx); stop {
 				return outcome
 			}
+			if outcome, stop := o.confirmAssumptions(ctx); stop {
+				return outcome
+			}
 			return o.refine(ctx, deadline)
 		case o.budgetExceeded(deadline):
 			return models.OutcomeBudgetExceeded
@@ -175,6 +179,9 @@ func (o *PlanOrchestrator) create(ctx context.Context, deadline time.Time) model
 
 		if o.planDrafted() {
 			if outcome, stop := o.ensureTests(ctx); stop {
+				return outcome
+			}
+			if outcome, stop := o.confirmAssumptions(ctx); stop {
 				return outcome
 			}
 			return o.refine(ctx, deadline)
@@ -323,8 +330,57 @@ func (o *PlanOrchestrator) useExistingGoal() (bool, error) {
 	}
 }
 
+// confirmAssumptions relays the drafted plan's recorded assumptions as one
+// question, so defaults chosen under "use sensible defaults" are confirmed or
+// corrected by the user rather than silently adopted. An empty section skips
+// the round. A correction is applied like annotation feedback against the plan
+// section, which republishes the documents; the demo refresh is skipped because
+// refine is about to rewrite the plan and Run regenerates the demo at the end.
+// It reports whether the loop should stop.
+func (o *PlanOrchestrator) confirmAssumptions(ctx context.Context) (models.Outcome, bool) {
+	assumptions := o.docs.Assumptions()
+	if assumptions == "" {
+		return models.OutcomePlanReady, false
+	}
+	writeProgress(o.terminal, o.clock, "confirming plan assumptions")
+	if o.status != nil {
+		o.status.WaitForInput()
+	}
+	answer, err := o.prompter.Ask(assumptionsQuestion(assumptions))
+	if err != nil {
+		fmt.Fprintf(o.terminal, "determined: could not read your answer: %v\n", err)
+		return models.OutcomeInterrupted, true
+	}
+	if assumptionsConfirmed(answer) {
+		return models.OutcomePlanReady, false
+	}
+	o.annotateAndRepublish(ctx, models.Annotation{
+		Section: models.AnnotationSectionPlan,
+		Target:  "Assumptions",
+		Comment: answer,
+	}, false)
+	return models.OutcomePlanReady, false
+}
+
+func assumptionsQuestion(assumptions string) string {
+	return fmt.Sprintf(
+		"The plan rests on these assumptions:\n\n%s\n\nPress Enter to confirm them, or describe a correction",
+		assumptions)
+}
+
+// assumptionsConfirmed classifies an answer: bare Enter, y, yes, or ok
+// confirms; any other non-empty answer is a correction.
+func assumptionsConfirmed(answer string) bool {
+	switch strings.ToLower(strings.TrimSpace(answer)) {
+	case "", "y", "yes", "ok":
+		return true
+	}
+	return false
+}
+
 // refine independently checks the completed plan and resolves quality findings
-// until it passes, the budget runs out, or the pass cap is hit.
+// until it passes or the budget runs out. Hitting the pass cap with findings
+// remaining gates on an explicit user choice instead of silently accepting.
 func (o *PlanOrchestrator) refine(ctx context.Context, deadline time.Time) models.Outcome {
 	o.reportPlan()
 	if o.cfg.MaxRefinePasses == 0 {
@@ -358,17 +414,21 @@ func (o *PlanOrchestrator) refine(ctx context.Context, deadline time.Time) model
 			o.files.Remove(o.cfg.AssessmentFile)
 			return models.OutcomePlanReady
 		}
-		if o.cfg.Operation == models.PlanOperationReview && o.files.Exists(o.cfg.QuestionsFile) {
+		if o.files.Exists(o.cfg.QuestionsFile) {
 			if outcome, stop := o.relayQuestions(); stop {
 				return outcome
 			}
 		}
 		if pass >= o.cfg.MaxRefinePasses {
-			fmt.Fprintf(o.terminal,
-				"determined: %d planning issue(s) remain after %d refine pass(es); leaving the plan as-is\n",
-				len(issues), pass)
-			o.files.Remove(o.cfg.AssessmentFile)
-			return models.OutcomePlanReady
+			outcome, action := o.gateExhaustedCap(issues, pass)
+			if action == capReturn {
+				return outcome
+			}
+			if action == capReassess {
+				continue
+			}
+			// capRefineMore: fall through to one more refine pass; a
+			// still-dirty assessment brings the loop back to this gate.
 		}
 
 		if outcome, stop := o.runInvocation(
@@ -378,6 +438,106 @@ func (o *PlanOrchestrator) refine(ctx context.Context, deadline time.Time) model
 		o.reportPlan()
 		o.files.Remove(o.cfg.AssessmentFile)
 	}
+}
+
+// refineCapAction tells refine what to do after the exhausted-cap gate:
+// return the paired outcome, restart with a fresh assessment, or run one more
+// refine pass.
+type refineCapAction int
+
+const (
+	capReturn refineCapAction = iota
+	capReassess
+	capRefineMore
+)
+
+// refineCapChoice is the user's answer at the exhausted refine-pass cap.
+type refineCapChoice int
+
+const (
+	capChoiceAccept refineCapChoice = iota
+	capChoiceRefine
+	capChoiceEdit
+	capChoiceStop
+)
+
+const refineCapQuestion = "The refine pass cap is exhausted with findings remaining. " +
+	"Answer accept (finish with the plan as-is), refine (run one more pass), " +
+	"or edit (fix the plan files yourself)"
+
+// gateExhaustedCap surfaces the unresolved findings and blocks on an explicit
+// user choice, so a plan is never silently accepted with known defects. It
+// returns the refine loop's next move; the outcome matters only for capReturn.
+func (o *PlanOrchestrator) gateExhaustedCap(issues []string, pass int) (models.Outcome, refineCapAction) {
+	o.publishRemainingFindings(issues, pass)
+	switch o.askCapChoice() {
+	case capChoiceAccept:
+		o.files.Remove(o.cfg.AssessmentFile)
+		return models.OutcomePlanReady, capReturn
+	case capChoiceEdit:
+		return o.awaitPlanEdits()
+	case capChoiceStop:
+		return models.OutcomePlanStalled, capReturn
+	}
+	return models.OutcomePlanReady, capRefineMore // outcome ignored
+}
+
+// publishRemainingFindings shows the assessor's unresolved findings on the
+// terminal and the status page before the user decides what to do with them.
+func (o *PlanOrchestrator) publishRemainingFindings(issues []string, pass int) {
+	fmt.Fprintf(o.terminal,
+		"determined: %d planning issue(s) remain after %d refine pass(es):\n",
+		len(issues), pass)
+	for _, issue := range issues {
+		fmt.Fprintf(o.terminal, "  - %s\n", issue)
+		notifyProgress(o.status, progressMessage("unresolved finding: "+issue))
+	}
+}
+
+// askCapChoice asks the accept / refine / edit question until it gets a valid
+// answer. A failed read is the Stop path, which stalls the plan.
+func (o *PlanOrchestrator) askCapChoice() refineCapChoice {
+	if o.status != nil {
+		o.status.WaitForInput()
+	}
+	for {
+		answer, err := o.prompter.Ask(refineCapQuestion)
+		if err != nil {
+			fmt.Fprintf(o.terminal, "determined: could not read your answer: %v\n", err)
+			return capChoiceStop
+		}
+		if choice, ok := parseCapChoice(answer); ok {
+			return choice
+		}
+		fmt.Fprintln(o.terminal, "determined: please answer accept, refine, or edit")
+	}
+}
+
+// parseCapChoice reports whether the answer names one of the three choices.
+func parseCapChoice(answer string) (refineCapChoice, bool) {
+	switch strings.ToLower(strings.TrimSpace(answer)) {
+	case "accept":
+		return capChoiceAccept, true
+	case "refine":
+		return capChoiceRefine, true
+	case "edit":
+		return capChoiceEdit, true
+	}
+	return capChoiceStop, false
+}
+
+// awaitPlanEdits blocks until the user reports their manual plan-file edits
+// are done, then hands control back to a fresh assessment.
+func (o *PlanOrchestrator) awaitPlanEdits() (models.Outcome, refineCapAction) {
+	question := fmt.Sprintf(
+		"Press Enter when you have finished editing %s and %s",
+		o.cfg.PlanFile, o.cfg.StepsFile)
+	if _, err := o.prompter.Ask(question); err != nil {
+		fmt.Fprintf(o.terminal, "determined: could not read your answer: %v\n", err)
+		return models.OutcomePlanStalled, capReturn
+	}
+	o.files.Remove(o.cfg.AssessmentFile)
+	return models.OutcomePlanReady, capReassess // outcome ignored
 }
 
 // runInvocation runs a tool invocation, retrying transient failures until the
@@ -609,7 +769,7 @@ func (o *PlanOrchestrator) ensureAlignment(ctx context.Context) (models.Outcome,
 		return models.OutcomePlanStalled, true
 	}
 	if len(missing) == 0 {
-		return models.OutcomePlanReady, false
+		return o.realignMisaligned(ctx)
 	}
 	if outcome, stop := o.runInvocation(ctx, o.cfg.AlignInvocation, "assessing test alignment"); stop {
 		return outcome, stop
@@ -624,7 +784,157 @@ func (o *PlanOrchestrator) ensureAlignment(ctx context.Context) (models.Outcome,
 			"determined: %d test(s) in %s still lack an alignment verdict\n", len(missing), o.cfg.TestsFile)
 		return models.OutcomePlanStalled, true
 	}
-	return models.OutcomePlanReady, false
+	return o.realignMisaligned(ctx)
+}
+
+// realignMisaligned rewrites the tests judged misaligned against the plan's
+// goal: one automatic realign invocation replaces them in place, then any test
+// still misaligned is gated on an explicit user choice.
+// It reports whether the loop should stop.
+func (o *PlanOrchestrator) realignMisaligned(ctx context.Context) (models.Outcome, bool) {
+	misaligned, err := o.misalignedTests()
+	if err != nil {
+		fmt.Fprintf(o.terminal, "determined: could not read %s: %v\n", o.cfg.TestsFile, err)
+		return models.OutcomePlanStalled, true
+	}
+	if len(misaligned) == 0 {
+		return models.OutcomePlanReady, false
+	}
+	if outcome, stop := o.runInvocation(ctx, o.cfg.RealignInvocation, "realigning tests"); stop {
+		return outcome, stop
+	}
+	return o.gateMisaligned(ctx)
+}
+
+// gateMisaligned blocks on an explicit user choice for every test still judged
+// misaligned after the automatic rewrite, so the plan is never ready with a
+// standing misaligned verdict the user did not accept. rewrite re-runs the
+// realign invocation; drop removes the misaligned sections via a constrained
+// variant of the same invocation; both re-parse the verdicts and re-ask while
+// misaligned verdicts remain. A failed prompt read stalls the plan, matching
+// the missing-verdict behaviour in ensureAlignment.
+func (o *PlanOrchestrator) gateMisaligned(ctx context.Context) (models.Outcome, bool) {
+	for {
+		misaligned, err := o.misalignedTests()
+		if err != nil {
+			fmt.Fprintf(o.terminal, "determined: could not read %s: %v\n", o.cfg.TestsFile, err)
+			return models.OutcomePlanStalled, true
+		}
+		if len(misaligned) == 0 {
+			return models.OutcomePlanReady, false
+		}
+		o.publishMisalignedTests(misaligned)
+		choice := o.askAlignChoice()
+		if choice == alignChoiceAccept {
+			return models.OutcomePlanReady, false
+		}
+		if choice == alignChoiceStop {
+			return models.OutcomePlanStalled, true
+		}
+		if outcome, stop := o.runAlignChoice(ctx, choice); stop {
+			return outcome, stop
+		}
+	}
+}
+
+// runAlignChoice executes the invocation the user's rewrite or drop choice
+// calls for. It reports whether the loop should stop.
+func (o *PlanOrchestrator) runAlignChoice(ctx context.Context, choice alignGateChoice) (models.Outcome, bool) {
+	if choice == alignChoiceDrop {
+		inv := constrainedInvocation(o.cfg.RealignInvocation, dropTestsConstraint)
+		return o.runInvocation(ctx, inv, "dropping misaligned tests")
+	}
+	return o.runInvocation(ctx, o.cfg.RealignInvocation, "realigning tests")
+}
+
+// publishMisalignedTests shows each still-misaligned test and its alignment
+// note on the terminal and the status page before the user decides what to do
+// with them. A note-free test renders as its heading alone.
+func (o *PlanOrchestrator) publishMisalignedTests(misaligned []MisalignedTest) {
+	fmt.Fprintf(o.terminal,
+		"determined: %d test(s) in %s remain misaligned after the rewrite:\n",
+		len(misaligned), o.cfg.TestsFile)
+	for _, test := range misaligned {
+		line := test.Heading
+		if test.Note != "" {
+			line += " — " + test.Note
+		}
+		fmt.Fprintf(o.terminal, "  - %s\n", line)
+		notifyProgress(o.status, progressMessage("misaligned test: "+line))
+	}
+}
+
+// alignGateChoice is the user's answer for tests still misaligned after the
+// automatic realign pass.
+type alignGateChoice int
+
+const (
+	alignChoiceAccept alignGateChoice = iota
+	alignChoiceRewrite
+	alignChoiceDrop
+	alignChoiceStop
+)
+
+const alignGateQuestion = "Misaligned tests remain after the automatic rewrite. " +
+	"Answer accept (keep them and finish planning), rewrite (run another realign pass), " +
+	"or drop (remove the misaligned tests)"
+
+// dropTestsConstraint narrows the realign prompt to deletion: the misaligned
+// sections are removed instead of rewritten.
+const dropTestsConstraint = "Constraint for this run: instead of rewriting each test section that carries a " +
+	"`**Alignment:** misaligned` verdict, delete that entire section from TESTS.md — its `### Test N` heading, " +
+	"narrative, diagram or scenario, and verdict lines. Keep every other section verbatim and add no new tests."
+
+// askAlignChoice asks the accept / rewrite / drop question until it gets a
+// valid answer. A failed read is the Stop path, which stalls the plan.
+func (o *PlanOrchestrator) askAlignChoice() alignGateChoice {
+	if o.status != nil {
+		o.status.WaitForInput()
+	}
+	for {
+		answer, err := o.prompter.Ask(alignGateQuestion)
+		if err != nil {
+			fmt.Fprintf(o.terminal, "determined: could not read your answer: %v\n", err)
+			return alignChoiceStop
+		}
+		if choice, ok := parseAlignChoice(answer); ok {
+			return choice
+		}
+		fmt.Fprintln(o.terminal, "determined: please answer accept, rewrite, or drop")
+	}
+}
+
+// parseAlignChoice reports whether the answer names one of the three choices.
+func parseAlignChoice(answer string) (alignGateChoice, bool) {
+	switch strings.ToLower(strings.TrimSpace(answer)) {
+	case "accept":
+		return alignChoiceAccept, true
+	case "rewrite":
+		return alignChoiceRewrite, true
+	case "drop":
+		return alignChoiceDrop, true
+	}
+	return alignChoiceStop, false
+}
+
+// constrainedInvocation returns a copy of inv with instruction appended to its
+// prompt. Every supported tool places the prompt at Args[1] (droid: "exec"
+// <prompt>, pi and claude: "-p" <prompt>).
+func constrainedInvocation(inv models.Invocation, instruction string) models.Invocation {
+	args := append([]string(nil), inv.Args...)
+	if len(args) > 1 {
+		args[1] = args[1] + "\n\n" + instruction
+	}
+	return models.Invocation{Binary: inv.Binary, Args: args}
+}
+
+// misalignedTests lists tests in the tests file whose verdict is misaligned.
+func (o *PlanOrchestrator) misalignedTests() ([]MisalignedTest, error) {
+	content, err := o.files.Read(o.cfg.TestsFile)
+	if err != nil {
+		return nil, err
+	}
+	return NewTestsDocument(content).MisalignedTests(), nil
 }
 
 // testsMissingAlignment lists tests in the tests file with no alignment verdict.
@@ -710,8 +1020,18 @@ func (o *PlanOrchestrator) drainAnnotations(ctx context.Context) {
 // applyAnnotation stages one annotation for the tool, runs the annotate
 // invocation, and republishes the plan documents so the page shows the result.
 // A goal annotation additionally rebuilds the plan, steps, and tests, since
-// they were derived from the goal the annotation just changed.
+// they were derived from the goal the annotation just changed. A plan
+// annotation regenerates the UI demo, keeping the artifact current for the
+// finished plan shown on the page.
 func (o *PlanOrchestrator) applyAnnotation(ctx context.Context, annotation models.Annotation) {
+	o.annotateAndRepublish(ctx, annotation, true)
+}
+
+// annotateAndRepublish is applyAnnotation with a caller-controlled demo step.
+// The assumptions-correction round passes withDemo=false: it runs before the
+// refine loop rewrites the plan, and Run regenerates the demo once after
+// planning succeeds, so a demo generated here would be discarded unused.
+func (o *PlanOrchestrator) annotateAndRepublish(ctx context.Context, annotation models.Annotation, withDemo bool) {
 	if err := o.files.Write(o.cfg.AnnotationFile, annotationDocument(annotation, o.cfg)); err != nil {
 		fmt.Fprintf(o.terminal, "determined: could not write %s: %v\n", o.cfg.AnnotationFile, err)
 		return
@@ -725,7 +1045,7 @@ func (o *PlanOrchestrator) applyAnnotation(ctx context.Context, annotation model
 		o.rebuildFromGoal(ctx)
 		return
 	}
-	if annotation.Section == models.AnnotationSectionPlan {
+	if annotation.Section == models.AnnotationSectionPlan && withDemo {
 		o.refreshDemo(ctx)
 	}
 	o.reportPlan()
@@ -814,6 +1134,7 @@ func (o *PlanOrchestrator) reportPlan() {
 		return
 	}
 	o.docs.PublishPlan(o.status)
+	o.status.SetAssumptions(o.docs.Assumptions())
 }
 
 // reportFinish records the planning phase end and success state.

@@ -153,6 +153,7 @@ type PlanSessionStatus struct {
 	Tool            ToolIdentity `json:"tool"`
 	Goal            string       `json:"goal"`
 	Plan            string       `json:"plan"`
+	Assumptions     string       `json:"assumptions"`
 	Demo            string       `json:"demo"`
 	Tests           string       `json:"tests"`
 	Phase           PlanPhase    `json:"phase"`

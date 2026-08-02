@@ -89,6 +89,39 @@ func TestServeAnnotationsRepublishesAfterEachApplication(t *testing.T) {
 	}
 }
 
+// A plan annotation submitted after the plan completed still regenerates the
+// UI demo — only the pre-refinement assumptions correction skips it.
+func TestPostCompletionPlanAnnotationStillRefreshesDemo(t *testing.T) {
+	fs := newFakeFileStore()
+	fs.Write("PLAN.md", "the plan")
+	fs.Write("STEPS.md", "- [ ] a step\n")
+	fs.Write("TESTS.md", validTestsDoc)
+	fs.Write("GOAL.md", "the goal")
+	cfg := planConfig(0)
+	cfg.DemoFile = "DEMO.html"
+	cfg.DemoInvocation = models.Invocation{Binary: "claude", Args: []string{"-p", "demo"}}
+	runner := &fakeRunner{script: func(call int, _ io.Writer) error {
+		if call == 2 {
+			fs.Write("DEMO.html", "<p>fresh demo</p>")
+		}
+		return nil
+	}}
+	reporter := &fakeStatusReporter{annotations: []models.Annotation{
+		annotation(models.AnnotationSectionPlan, "", "tighten the scope"),
+	}}
+	o := services.NewPlanOrchestrator(runner, fs, &fakePrompter{}, &fakeClock{now: time.Now()}, &fakeLogSink{}, io.Discard, cfg).
+		WithStatusReporter(reporter)
+
+	o.ServeAnnotations(context.Background(), closedChannel())
+
+	if got := invocationPrompts(runner); len(got) != 2 || got[0] != "annotate" || got[1] != "demo" {
+		t.Fatalf("invocations = %v, want the annotate pass then the demo refresh", got)
+	}
+	if reporter.demo != "<p>fresh demo</p>" {
+		t.Fatalf("expected the refreshed demo to be published, got %q", reporter.demo)
+	}
+}
+
 // invocationPrompts lists the second argument of each recorded invocation, the
 // slot planConfig uses to name what the tool was asked to do.
 func invocationPrompts(runner *fakeRunner) []string {

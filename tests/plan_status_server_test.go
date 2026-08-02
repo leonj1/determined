@@ -478,7 +478,7 @@ func TestPlanStatusServerRejectsInvalidLogCursor(t *testing.T) {
 
 // startAnnotateServer boots the production server over fakes for exercising
 // the /annotate and /implement endpoints.
-func startAnnotateServer(t *testing.T) (string, *fakeAnnotationSink, *fakeImplementSink, func()) {
+func startAnnotateServer(t *testing.T) (*clients.PlanStatusServer, *fakeAnnotationSink, *fakeImplementSink, func()) {
 	t.Helper()
 	source := newFakePlanStatusSource(models.PlanSessionStatus{})
 	sink := &fakeAnnotationSink{}
@@ -487,24 +487,37 @@ func startAnnotateServer(t *testing.T) (string, *fakeAnnotationSink, *fakeImplem
 	if err := server.Start(); err != nil {
 		t.Fatalf("start: %v", err)
 	}
-	return server.URL(), sink, implement, func() { shutdown(t, server) }
+	return server, sink, implement, func() { shutdown(t, server) }
 }
 
-func postAnnotation(t *testing.T, url, body string) *http.Response {
+// postWithToken issues a state-changing POST carrying the server's session
+// token, the way the served page does.
+func postWithToken(t *testing.T, server *clients.PlanStatusServer, path, body string) *http.Response {
 	t.Helper()
-	resp, err := http.Post(url+"annotate", "application/json", strings.NewReader(body))
+	req, err := http.NewRequest(http.MethodPost, server.URL()+path, strings.NewReader(body))
 	if err != nil {
-		t.Fatalf("post annotation: %v", err)
+		t.Fatalf("build post %s: %v", path, err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set(clients.StatusSessionTokenHeader, server.SessionToken())
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("post %s: %v", path, err)
 	}
 	resp.Body.Close()
 	return resp
 }
 
+func postAnnotation(t *testing.T, server *clients.PlanStatusServer, body string) *http.Response {
+	t.Helper()
+	return postWithToken(t, server, "annotate", body)
+}
+
 func TestPlanStatusServerAcceptsValidAnnotation(t *testing.T) {
-	url, sink, _, stop := startAnnotateServer(t)
+	server, sink, _, stop := startAnnotateServer(t)
 	defer stop()
 
-	resp := postAnnotation(t, url, `{"section":"steps","target":"Step 2: add the store","comment":"split this step"}`)
+	resp := postAnnotation(t, server, `{"section":"steps","target":"Step 2: add the store","comment":"split this step"}`)
 
 	if resp.StatusCode != http.StatusAccepted {
 		t.Fatalf("status = %d, want 202", resp.StatusCode)
@@ -525,7 +538,7 @@ func TestPlanStatusServerAcceptsValidAnnotation(t *testing.T) {
 }
 
 func TestPlanStatusServerRejectsBadAnnotations(t *testing.T) {
-	url, sink, _, stop := startAnnotateServer(t)
+	server, sink, _, stop := startAnnotateServer(t)
 	defer stop()
 
 	for name, body := range map[string]string{
@@ -533,7 +546,7 @@ func TestPlanStatusServerRejectsBadAnnotations(t *testing.T) {
 		"unknown section": `{"section":"banner","comment":"hello"}`,
 		"blank comment":   `{"section":"plan","comment":"   "}`,
 	} {
-		if resp := postAnnotation(t, url, body); resp.StatusCode != http.StatusBadRequest {
+		if resp := postAnnotation(t, server, body); resp.StatusCode != http.StatusBadRequest {
 			t.Errorf("%s: status = %d, want 400", name, resp.StatusCode)
 		}
 	}
@@ -543,10 +556,10 @@ func TestPlanStatusServerRejectsBadAnnotations(t *testing.T) {
 }
 
 func TestPlanStatusServerRejectsAnnotationGet(t *testing.T) {
-	url, sink, _, stop := startAnnotateServer(t)
+	server, sink, _, stop := startAnnotateServer(t)
 	defer stop()
 
-	resp, err := http.Get(url + "annotate")
+	resp, err := http.Get(server.URL() + "annotate")
 	if err != nil {
 		t.Fatalf("get annotate: %v", err)
 	}
@@ -560,14 +573,10 @@ func TestPlanStatusServerRejectsAnnotationGet(t *testing.T) {
 }
 
 func TestPlanStatusServerAcceptsImplementRequest(t *testing.T) {
-	url, _, implement, stop := startAnnotateServer(t)
+	server, _, implement, stop := startAnnotateServer(t)
 	defer stop()
 
-	resp, err := http.Post(url+"implement", "application/json", strings.NewReader(""))
-	if err != nil {
-		t.Fatalf("post implement: %v", err)
-	}
-	resp.Body.Close()
+	resp := postWithToken(t, server, "implement", "")
 	if resp.StatusCode != http.StatusAccepted {
 		t.Fatalf("status = %d, want 202", resp.StatusCode)
 	}
@@ -577,10 +586,10 @@ func TestPlanStatusServerAcceptsImplementRequest(t *testing.T) {
 }
 
 func TestPlanStatusServerRejectsImplementGet(t *testing.T) {
-	url, _, implement, stop := startAnnotateServer(t)
+	server, _, implement, stop := startAnnotateServer(t)
 	defer stop()
 
-	resp, err := http.Get(url + "implement")
+	resp, err := http.Get(server.URL() + "implement")
 	if err != nil {
 		t.Fatalf("get implement: %v", err)
 	}
@@ -594,11 +603,11 @@ func TestPlanStatusServerRejectsImplementGet(t *testing.T) {
 }
 
 func TestPlanStatusServerServesTestsPath(t *testing.T) {
-	url, _, _, stop := startAnnotateServer(t)
+	server, _, _, stop := startAnnotateServer(t)
 	defer stop()
 
 	for _, path := range []string{"tests", "tests/journey", "tests/bdd", "exec", "explain"} {
-		resp, err := http.Get(url + path)
+		resp, err := http.Get(server.URL() + path)
 		if err != nil {
 			t.Fatalf("get /%s: %v", path, err)
 		}

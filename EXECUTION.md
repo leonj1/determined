@@ -1,9 +1,11 @@
 # Execution behaviour
 
 Execute mode (`./determined -exec`) runs against a `PLAN.md` / `STEPS.md` pair
-in the current working directory. Combined with `--plan`, it starts as soon as
-planning succeeds; invoking `determined` with neither flag defaults to execute
-mode. `STEPS.md` must be a markdown checkbox list — one `- [ ]` item per
+in the current working directory. Combined with `--plan`, it starts after
+planning succeeds and the user answers `y` or `yes` to
+`Plan approved — begin execution? [y/N]` — any other answer, including bare
+Enter, exits with the plan files intact and no execution. Invoking
+`determined` with neither flag defaults to execute mode. `STEPS.md` must be a markdown checkbox list — one `- [ ]` item per
 step, each carrying a `Purpose:` line stating the step's functional intent
 (the outcome it exists to achieve, e.g. "Email messages are throttled to
 prevent DDOS", not "Add message payloads to a queue") and ending with a
@@ -26,6 +28,23 @@ sessions, prints its `http://localhost:<port>/` URL, writes the well-known
 session record, and streams execution progress into it. When execution ends,
 the server shuts down and its record is cleared. A bind failure is reported on
 stderr but does not alter the execute loop or its exit code.
+
+The server binds loopback (`127.0.0.1`) by default, so state-changing
+endpoints such as `POST /implement` — which starts unattended execution — are
+reachable only from the local machine. Exposing the page to the network is an
+explicit opt-in via `--status-host` (e.g. `--status-host 0.0.0.0`).
+
+The loopback bind alone does not stop a hostile web page riding the user's own
+browser, so under the default bind every request must carry a local `Host`
+header (`localhost`/`127.0.0.1`/`[::1]` with the bound port) and the WebSocket
+upgrade rejects a non-local `Origin`. Independently of bind host, all
+state-changing endpoints (`/implement`, `/annotate`, `/task/skip`,
+`/task/stop`, `/stall/choice`, `/explain/start`, `/chat/ask`) require the
+per-session token from the served page's `session-token` meta tag in the
+`X-Session-Token` header; requests without it get `403`. The status page
+itself is served with `X-Frame-Options: DENY` and
+`Content-Security-Policy: frame-ancestors 'none'`, so a hostile site cannot
+iframe it and clickjack the Implement button.
 
 Status snapshots contain workflow state and log-entry headers, not growing log
 bodies. Output is retained in a fixed 2,000-line circular buffer; the event

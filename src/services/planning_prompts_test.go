@@ -28,6 +28,17 @@ func TestPlanRequiresRecommendedTestsFile(t *testing.T) {
 	}
 }
 
+func TestPlanRequiresAssumptionsSection(t *testing.T) {
+	for _, mode := range []models.PlanMode{models.PlanModeStandard, models.PlanModeMVP, models.PlanModePrototype} {
+		prompt := services.PlanningPrompts(mode).Plan
+		for _, expected := range []string{"`## Assumptions` heading", "every assumption and chosen default", "one markdown list item per assumption"} {
+			if !strings.Contains(prompt, expected) {
+				t.Fatalf("expected %s planning prompt to contain %q", mode, expected)
+			}
+		}
+	}
+}
+
 func TestDemoPromptOnlyAllowsTrivialSelfContainedUIChanges(t *testing.T) {
 	prompt := services.PlanningPrompts(models.PlanModeStandard).Demo
 	for _, expected := range []string{
@@ -116,6 +127,33 @@ func TestStandardAssessmentRejectsStepsThatRequireImplementerAssumptions(t *test
 	}
 }
 
+func TestAssessmentSplitsFindingsFromPreferenceQuestions(t *testing.T) {
+	for _, mode := range []models.PlanMode{models.PlanModeStandard, models.PlanModeMVP, models.PlanModePrototype} {
+		prompt := services.PlanningPrompts(mode).Assess
+		for _, expected := range []string{
+			"objective finding as a markdown list item in REFINEMENTS.md",
+			"depends on user preference, product intent, or risk tolerance",
+			"QUESTIONS.md as a markdown numbered list",
+			"do not resolve preference-dependent findings yourself",
+		} {
+			if !strings.Contains(prompt, expected) {
+				t.Fatalf("expected %s assessment prompt to contain %q", mode, expected)
+			}
+		}
+	}
+}
+
+func TestRefinementReadsUserAnswers(t *testing.T) {
+	for _, mode := range []models.PlanMode{models.PlanModeStandard, models.PlanModeMVP, models.PlanModePrototype} {
+		prompt := services.PlanningPrompts(mode).Refine
+		for _, expected := range []string{"ANSWERS.md if it exists", "answers in ANSWERS.md as authoritative"} {
+			if !strings.Contains(prompt, expected) {
+				t.Fatalf("expected %s refinement prompt to contain %q", mode, expected)
+			}
+		}
+	}
+}
+
 func TestMVPPlanUsesReducedQualityGate(t *testing.T) {
 	prompt := services.PlanningPrompts(models.PlanModeMVP).Plan
 	for _, expected := range []string{"MVP mode", "must-have", "smallest usable version"} {
@@ -144,6 +182,25 @@ func TestReviewInterviewsUserAboutConsequentialFindings(t *testing.T) {
 	for _, expected := range []string{"REVIEW_ANSWERS.md", "authoritative", "Do not implement"} {
 		if !strings.Contains(prompts.Refine, expected) {
 			t.Fatalf("expected review refinement prompt to contain %q", expected)
+		}
+	}
+}
+
+func TestRealignPromptReplacesOnlyMisalignedTests(t *testing.T) {
+	for _, prompt := range []string{
+		services.PlanningPrompts(models.PlanModeStandard).Realign,
+		services.ReviewPrompts().Realign,
+	} {
+		for _, expected := range []string{
+			"`**Alignment:** misaligned` verdict",
+			"replace it in place",
+			"functional goal",
+			"Keep every aligned and partial test and everything else in TESTS.md verbatim",
+			"Do not modify PLAN.md or STEPS.md",
+		} {
+			if !strings.Contains(prompt, expected) {
+				t.Fatalf("expected realign prompt to contain %q, got:\n%s", expected, prompt)
+			}
 		}
 	}
 }

@@ -75,6 +75,44 @@ func TestMissingPlanningDocumentsLeavePagePlaceholders(t *testing.T) {
 	}
 }
 
+func TestAssumptionsReturnsSectionBody(t *testing.T) {
+	files := newFakeFileStore()
+	files.data["PLAN.md"] = "# Plan\n\nBuild it.\n\n## Assumptions\n\n- Postgres is the datastore\n- Retries cap at 3\n\n## Steps\n\n- do the thing\n"
+
+	got := services.NewPlanDocumentPublisher(files, documentConfig()).Assumptions()
+
+	want := "- Postgres is the datastore\n- Retries cap at 3"
+	if got != want {
+		t.Fatalf("Assumptions() = %q, want %q", got, want)
+	}
+}
+
+func TestAssumptionsAtEndOfPlanReturnsBody(t *testing.T) {
+	files := newFakeFileStore()
+	files.data["PLAN.md"] = "# Plan\n\n## Assumptions\n\n- Single tenant only\n"
+
+	got := services.NewPlanDocumentPublisher(files, documentConfig()).Assumptions()
+
+	if got != "- Single tenant only" {
+		t.Fatalf("Assumptions() = %q, want %q", got, "- Single tenant only")
+	}
+}
+
+func TestAssumptionsEmptyForOldFormatPlan(t *testing.T) {
+	files := newFakeFileStore()
+	files.data["PLAN.md"] = "# Plan\n\nBuild it.\n\n## Steps\n\n- do the thing\n"
+
+	if got := services.NewPlanDocumentPublisher(files, documentConfig()).Assumptions(); got != "" {
+		t.Fatalf("Assumptions() = %q, want empty for plan without heading", got)
+	}
+}
+
+func TestAssumptionsEmptyWhenPlanMissing(t *testing.T) {
+	if got := services.NewPlanDocumentPublisher(newFakeFileStore(), documentConfig()).Assumptions(); got != "" {
+		t.Fatalf("Assumptions() = %q, want empty when PLAN.md absent", got)
+	}
+}
+
 func TestGoalOnlyResumePublishesNothingElse(t *testing.T) {
 	files := newFakeFileStore()
 	files.data["GOAL.md"] = "goal only"

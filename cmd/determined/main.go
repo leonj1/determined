@@ -45,6 +45,8 @@ func main() {
 	reviewPlan := flag.Bool("review-plan", false, "critique and interactively revise existing PLAN.md and STEPS.md")
 	criteria := flag.Bool("criteria", false, "interactively capture BDD journey tests into CRITERIA.md; with -plan or -exec, the session runs first and the tests become required acceptance criteria")
 	interactive := flag.Bool("interactive", false, "with -plan or -exec, serve a live HTML status page on a local web server")
+	statusHost := flag.String("status-host", "127.0.0.1",
+		"interface the live status page binds to; loopback by default — setting a non-loopback host (e.g. 0.0.0.0) exposes the page and its execution controls to the network")
 	chat := flag.Bool("chat", false, "connect to the running determined session for a persistent conversation")
 	message := flag.String("m", "", "ask one synchronous question (requires -chat)")
 	mvp := flag.Bool("mvp", false, "create a lean plan for the smallest usable outcome (plan mode only)")
@@ -160,14 +162,15 @@ func main() {
 		if *reviewPlan {
 			outcome = runReviewPlan(ctx, selected, *budget, *maxStepPasses, *maxFailures, clock, logs)
 		} else if *plan != "" {
-			outcome = runPlan(ctx, selected, planInput(*plan, flag.Args()), planMode, *budget, *maxStepPasses, *maxFailures, *interactive, executing, executor, clock, logs)
-			if shouldExecuteAfterPlan(executing, *interactive, outcome) {
-				outcome = runHeadlessExec(ctx, executionTool, executor, clock)
+			outcome = runPlan(ctx, selected, planInput(*plan, flag.Args()), planMode, *budget, *maxStepPasses, *maxFailures, *interactive, executing, *statusHost, executor, clock, logs)
+			if shouldExecuteAfterPlan(executing, *interactive, outcome) &&
+				approveExecution(clients.NewStdinPrompter(os.Stdout, os.Stdin), nil) {
+				outcome = runHeadlessExec(ctx, executionTool, *statusHost, executor, clock)
 			}
 		} else if *interactive {
-			outcome = runInteractiveExec(ctx, selected, *budget, *maxFailures, executor, clock, logs)
+			outcome = runInteractiveExec(ctx, selected, *budget, *maxFailures, *statusHost, executor, clock, logs)
 		} else {
-			outcome = runHeadlessExec(ctx, executionTool, executor, clock)
+			outcome = runHeadlessExec(ctx, executionTool, *statusHost, executor, clock)
 		}
 	}
 
@@ -400,6 +403,7 @@ func createPlanConfig(tool models.Tool, goal string, mode models.PlanMode, budge
 		Invocation: tool.Invocation(prompts.Plan), Budget: budget,
 		AssessInvocation: tool.Invocation(prompts.Assess), RefineInvocation: tool.Invocation(prompts.Refine),
 		TestsInvocation: tool.Invocation(prompts.Tests), AlignInvocation: tool.Invocation(prompts.Align),
+		RealignInvocation:  tool.Invocation(prompts.Realign),
 		DemoInvocation:     tool.Invocation(prompts.Demo),
 		AnnotateInvocation: tool.Invocation(prompts.Annotate),
 		MaxRefinePasses:    refinePasses(mode, maxStepPasses), MaxConsecutiveFailures: maxFailures,
@@ -532,7 +536,7 @@ func runUpdateCommand() {
 // questions to the user until a plan is produced. With interactive set, a
 // local web server shows the session live. Executing selects automatic live
 // execution; otherwise the page offers its Implement button after planning.
-func runPlan(ctx context.Context, tool models.Tool, goal string, mode models.PlanMode, budget time.Duration, maxStepPasses, maxFailures int, interactive, executing bool, execute planExecutor, clock services.Clock, logs services.LogSink) models.Outcome {
+func runPlan(ctx context.Context, tool models.Tool, goal string, mode models.PlanMode, budget time.Duration, maxStepPasses, maxFailures int, interactive, executing bool, statusHost string, execute planExecutor, clock services.Clock, logs services.LogSink) models.Outcome {
 	cfg := createPlanConfig(tool, goal, mode, budget, maxStepPasses, maxFailures)
 	orchestrator := services.NewPlanOrchestrator(
 		clients.NewExecCommandRunner(),
@@ -546,16 +550,16 @@ func runPlan(ctx context.Context, tool models.Tool, goal string, mode models.Pla
 	if !interactive {
 		return orchestrator.Run(ctx)
 	}
-	return runInteractivePlan(ctx, orchestrator, tool, executing, execute, clock)
+	return runInteractivePlan(ctx, orchestrator, tool, executing, statusHost, execute, clock)
 }
 
 // runInteractivePlan wraps a planning run with the live status web server. A
 // bind failure aborts before the AI tool is ever invoked. A ready plan either
 // offers implementation or executes automatically, then stays viewable until
 // the user presses Enter or interrupts.
-func runInteractivePlan(ctx context.Context, orchestrator *services.PlanOrchestrator, tool models.Tool, executing bool, execute planExecutor, clock services.Clock) models.Outcome {
+func runInteractivePlan(ctx context.Context, orchestrator *services.PlanOrchestrator, tool models.Tool, executing bool, statusHost string, execute planExecutor, clock services.Clock) models.Outcome {
 	status := newPlanStatusService(clock, clients.NewGitContextReader().Read(ctx), tool.Identity())
-	server, cleanup, ok := startStatusSession(status, clock)
+	server, cleanup, ok := startStatusSession(status, clock, statusHost)
 	if !ok {
 		return models.OutcomeDroidFailed
 	}
@@ -569,6 +573,9 @@ func runInteractivePlan(ctx context.Context, orchestrator *services.PlanOrchestr
 		explain := func(ctx context.Context) { runExplain(ctx, tool, status) }
 		return holdStatusPage(ctx, orchestrator, status, server.URL(), execute, explain, outcome)
 	case postPlanAutoExec:
+		if !approveExecution(clients.NewStdinPrompter(os.Stdout, os.Stdin), status) {
+			return outcome
+		}
 		fmt.Fprintf(os.Stdout, "determined: plan ready — executing now; status page streaming at %s\n", server.URL())
 		hold := completedStatusPageHolder(server.URL(), os.Stdout, os.Stdin)
 		return runAutoExec(ctx, status, execute, hold)
@@ -576,7 +583,7 @@ func runInteractivePlan(ctx context.Context, orchestrator *services.PlanOrchestr
 	return outcome
 }
 
-func startStatusSession(status *services.PlanStatusService, clock services.Clock) (*clients.PlanStatusServer, func(), bool) {
+func startStatusSession(status *services.PlanStatusService, clock services.Clock, statusHost string) (*clients.PlanStatusServer, func(), bool) {
 	historyPath := statusLogHistoryPath()
 	history, err := clients.NewSQLiteLogStore(historyPath)
 	if err != nil {
@@ -586,6 +593,7 @@ func startStatusSession(status *services.PlanStatusService, clock services.Clock
 	status.WithLogHistory(history)
 	chat := services.NewChatService(status, clock)
 	server := clients.NewPlanStatusServer(status, status, status, clock).
+		WithBindHost(statusHost).
 		WithLogSource(status).WithChatResponder(chat).
 		WithTaskControl(status).WithStallChoice(status).
 		WithExplainSink(status)
@@ -629,9 +637,9 @@ func removeStatusLogHistory(path string) {
 
 // runHeadlessExec makes an unattended execution observable while preserving
 // execution as the primary outcome when the optional server cannot start.
-func runHeadlessExec(ctx context.Context, tool models.Tool, execute planExecutor, clock services.Clock) models.Outcome {
+func runHeadlessExec(ctx context.Context, tool models.Tool, statusHost string, execute planExecutor, clock services.Clock) models.Outcome {
 	status := newPlanStatusService(clock, clients.NewGitContextReader().Read(ctx), tool.Identity())
-	_, cleanup, ok := startStatusSession(status, clock)
+	_, cleanup, ok := startStatusSession(status, clock, statusHost)
 	if !ok {
 		return continueHeadlessExec(ctx, status, execute, cleanup, false, nil)
 	}
@@ -649,10 +657,10 @@ func continueHeadlessExec(ctx context.Context, status *services.PlanStatusServic
 	return execute(ctx, status)
 }
 
-func runInteractiveExec(ctx context.Context, tool models.Tool, budget time.Duration, maxFailures int, execute planExecutor, clock services.Clock, logs services.LogSink) models.Outcome {
+func runInteractiveExec(ctx context.Context, tool models.Tool, budget time.Duration, maxFailures int, statusHost string, execute planExecutor, clock services.Clock, logs services.LogSink) models.Outcome {
 	cfg := createPlanConfig(tool, "", models.PlanModeStandard, budget, 0, maxFailures)
 	status := newPlanStatusService(clock, clients.NewGitContextReader().Read(ctx), tool.Identity())
-	server, cleanup, ok := startStatusSession(status, clock)
+	server, cleanup, ok := startStatusSession(status, clock, statusHost)
 	if !ok {
 		return models.OutcomeDroidFailed
 	}
@@ -783,11 +791,10 @@ func runCriteria(ctx context.Context, tool models.Tool, budget time.Duration, cl
 	return orchestrator.Run(ctx)
 }
 
-// runReviewPlan critiques an existing plan, interviews the user about
-// consequential choices, and applies revisions without entering execute mode.
-func runReviewPlan(ctx context.Context, tool models.Tool, budget time.Duration, maxStepPasses, maxFailures int, clock services.Clock, logs services.LogSink) models.Outcome {
+// reviewPlanConfig builds the complete plan-review protocol configuration.
+func reviewPlanConfig(tool models.Tool, budget time.Duration, maxStepPasses, maxFailures int) models.PlanConfig {
 	prompts := services.ReviewPrompts()
-	cfg := models.PlanConfig{
+	return models.PlanConfig{
 		Operation:              models.PlanOperationReview,
 		Budget:                 budget,
 		AssessInvocation:       tool.Invocation(prompts.Assess),
@@ -795,6 +802,7 @@ func runReviewPlan(ctx context.Context, tool models.Tool, budget time.Duration, 
 		TestsInvocation:        tool.Invocation(prompts.Tests),
 		DemoInvocation:         tool.Invocation(prompts.Demo),
 		AlignInvocation:        tool.Invocation(prompts.Align),
+		RealignInvocation:      tool.Invocation(prompts.Realign),
 		MaxRefinePasses:        maxStepPasses,
 		MaxConsecutiveFailures: maxFailures,
 		GoalFile:               "GOAL.md",
@@ -806,6 +814,12 @@ func runReviewPlan(ctx context.Context, tool models.Tool, budget time.Duration, 
 		DemoFile:               "DEMO.html",
 		AssessmentFile:         "REFINEMENTS.md",
 	}
+}
+
+// runReviewPlan critiques an existing plan, interviews the user about
+// consequential choices, and applies revisions without entering execute mode.
+func runReviewPlan(ctx context.Context, tool models.Tool, budget time.Duration, maxStepPasses, maxFailures int, clock services.Clock, logs services.LogSink) models.Outcome {
+	cfg := reviewPlanConfig(tool, budget, maxStepPasses, maxFailures)
 	orchestrator := services.NewPlanOrchestrator(
 		clients.NewExecCommandRunner(),
 		clients.NewOsFileStore(),

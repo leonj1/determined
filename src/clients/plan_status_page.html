@@ -3,6 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="session-token" content="{{SESSION_TOKEN}}">
 <title>determined — planning</title>
 <link rel="stylesheet" href="/assets/diff2html.min.css">
 <style>
@@ -585,6 +586,10 @@
           <ol id="plan-section-list"></ol>
         </nav>
         <div id="plan-body">
+          <div id="plan-assumptions" hidden>
+            <h3>Assumptions</h3>
+            <div id="plan-assumptions-doc" class="doc"></div>
+          </div>
           <div id="plan" class="doc empty">Not produced yet.</div>
           <div id="plan-demo" hidden>
             <h3>UI demo</h3>
@@ -666,6 +671,11 @@
 <script>
   "use strict";
   const el = (id) => document.getElementById(id);
+  // The server injects a per-session token into the meta tag above; every
+  // state-changing POST must carry it, so a cross-site page — which cannot
+  // read this document — cannot forge those requests.
+  const sessionToken = document.querySelector('meta[name="session-token"]').content;
+  const sessionHeaders = { "X-Session-Token": sessionToken };
   let quizAttempt = { payload: "", questions: [], questionIndex: 0, answers: [], results: false };
   let renderedDemo = null;
   let pendingExplanationHash = window.location.hash;
@@ -1054,6 +1064,12 @@
     scrollToPlanSection(targetId);
   }
 
+  function renderAssumptions(assumptions) {
+    const content = assumptions || "";
+    el("plan-assumptions").hidden = !content;
+    setDoc(el("plan-assumptions-doc"), content, "");
+  }
+
   function renderDemo(demo) {
     const content = demo || "";
     el("plan-demo").hidden = !content;
@@ -1254,7 +1270,7 @@
       showStatus("Sending annotation…", "");
       fetch("/annotate", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...sessionHeaders },
         body: JSON.stringify({ section, target: targetOf(), comment }),
       }).then((response) => {
         lock(false);
@@ -1305,7 +1321,7 @@
   // The Implement button posts one execution request and jumps to the
   // Execution tab, where the run streams in.
   el("implement").addEventListener("click", () => {
-    fetch("/implement", { method: "POST" }).then(() => {
+    fetch("/implement", { method: "POST", headers: sessionHeaders }).then(() => {
       history.pushState(null, "", "/exec");
       selectTab("exec");
     });
@@ -1315,7 +1331,7 @@
   // jumps to the Explanation tab once generation starts.
   el("explain-button").addEventListener("click", () => {
     el("explain-button").disabled = true;
-    fetch("/explain/start", { method: "POST" }).then(() => {
+    fetch("/explain/start", { method: "POST", headers: sessionHeaders }).then(() => {
       history.pushState(null, "", "/explain");
       selectTab("explain");
       el("explain-button").disabled = false;
@@ -1358,7 +1374,7 @@
     el("stall-status").hidden = true;
     fetch("/stall/choice", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
+      headers: { "Content-Type": "application/json", ...sessionHeaders },
       body: JSON.stringify({ decision, comment: comment || "" }),
     }).then((response) => {
       stallLock(false);
@@ -1448,6 +1464,7 @@
     setText(el("branch"), status.git.branch, "no branch");
     setDoc(el("goal"), status.goal, "Not written yet.");
     renderPlan(status.plan);
+    renderAssumptions(status.assumptions);
     renderDemo(status.demo);
     const tests = splitTests(status.tests);
     renderTests(el("tests-journey-doc"), tests.journey, "Not produced yet.");
@@ -2170,7 +2187,7 @@
       if (!window.confirm(confirmText)) return;
       taskActionPending = true;
       for (const sibling of button.parentElement.children) sibling.disabled = true;
-      fetch(path, { method: "POST" }).then((response) => {
+      fetch(path, { method: "POST", headers: sessionHeaders }).then((response) => {
         if (!response.ok) taskActionPending = false;
       }, () => { taskActionPending = false; });
     });

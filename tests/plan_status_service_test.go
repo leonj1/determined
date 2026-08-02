@@ -110,6 +110,20 @@ func TestPlanStatusServiceBroadcastsTests(t *testing.T) {
 	}
 }
 
+func TestPlanStatusServiceBroadcastsAssumptions(t *testing.T) {
+	service := newTestPlanStatusService(newSteppingClock(planStart()), models.GitContext{}, models.ToolIdentity{})
+	snapshots, cancel := service.Subscribe()
+	defer cancel()
+	<-snapshots // drain the primed snapshot
+
+	service.SetAssumptions("- SQLite is the storage engine")
+
+	updated := <-snapshots
+	if updated.Assumptions != "- SQLite is the storage engine" {
+		t.Errorf("broadcast assumptions = %q, want %q", updated.Assumptions, "- SQLite is the storage engine")
+	}
+}
+
 func TestPlanStatusServiceBroadcastsDemo(t *testing.T) {
 	service := newTestPlanStatusService(newSteppingClock(planStart()), models.GitContext{}, models.ToolIdentity{})
 	snapshots, cancel := service.Subscribe()
