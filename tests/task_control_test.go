@@ -88,14 +88,9 @@ func startTaskControlServer(t *testing.T, sink clients.TaskControlSink) *clients
 	return server
 }
 
-func postStatus(t *testing.T, url string) int {
+func postStatus(t *testing.T, server *clients.PlanStatusServer, path string) int {
 	t.Helper()
-	resp, err := http.Post(url, "application/json", nil)
-	if err != nil {
-		t.Fatalf("post %s: %v", url, err)
-	}
-	resp.Body.Close()
-	return resp.StatusCode
+	return postWithToken(t, server, path, "").StatusCode
 }
 
 func TestTaskEndpointsRelaySkipAndStop(t *testing.T) {
@@ -103,10 +98,10 @@ func TestTaskEndpointsRelaySkipAndStop(t *testing.T) {
 	server := startTaskControlServer(t, sink)
 	defer shutdown(t, server)
 
-	if code := postStatus(t, server.URL()+"task/skip"); code != http.StatusAccepted {
+	if code := postStatus(t, server, "task/skip"); code != http.StatusAccepted {
 		t.Fatalf("skip status = %d, want 202", code)
 	}
-	if code := postStatus(t, server.URL()+"task/stop"); code != http.StatusAccepted {
+	if code := postStatus(t, server, "task/stop"); code != http.StatusAccepted {
 		t.Fatalf("stop status = %d, want 202", code)
 	}
 	if sink.skips != 1 || sink.stops != 1 {
@@ -118,7 +113,7 @@ func TestTaskEndpointsRejectWhenNothingRuns(t *testing.T) {
 	server := startTaskControlServer(t, &fakeTaskControlSink{accept: false})
 	defer shutdown(t, server)
 
-	if code := postStatus(t, server.URL()+"task/skip"); code != http.StatusConflict {
+	if code := postStatus(t, server, "task/skip"); code != http.StatusConflict {
 		t.Fatalf("skip status = %d, want 409 when no task is active", code)
 	}
 }
@@ -127,7 +122,7 @@ func TestTaskEndpointsRequirePostAndASink(t *testing.T) {
 	server := startTaskControlServer(t, nil)
 	defer shutdown(t, server)
 
-	if code := postStatus(t, server.URL()+"task/skip"); code != http.StatusServiceUnavailable {
+	if code := postStatus(t, server, "task/skip"); code != http.StatusServiceUnavailable {
 		t.Fatalf("skip status = %d, want 503 without a sink", code)
 	}
 	resp, err := http.Get(server.URL() + "task/stop")

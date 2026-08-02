@@ -1,0 +1,255 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DEMO — Planned status-page alignment gates</title>
+<style>
+  :root {
+    color-scheme: light;
+    --text: #1a1a1a;
+    --text-muted: #6b6b6b;
+    --accent: #d97757;
+    --bg: #ffffff;
+    --bg-muted: #f7f7f8;
+    --border: #e5e5e5;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 0 2rem 3rem;
+    font-family: system-ui, -apple-system, sans-serif;
+    font-size: 1rem; line-height: 1.5;
+    background: var(--bg); color: var(--text);
+    max-width: 52rem; margin-inline: auto;
+  }
+  h1, h2, h3, strong { font-weight: 600; }
+  input, textarea, button { font: inherit; }
+  input:focus, button:focus-visible { outline: none; border-color: var(--accent); }
+
+  .demo-banner {
+    margin: 1rem -2rem 1.5rem; padding: 0.6rem 2rem;
+    background: #fff7ed; border-bottom: 1px solid #fed7aa;
+    color: #9a3412; font-size: 0.85rem;
+  }
+  .demo-banner strong { text-transform: uppercase; letter-spacing: 0.06em; }
+
+  header.page {
+    display: flex; justify-content: space-between; align-items: center; gap: 1rem;
+    padding: 0.4rem 0 0.8rem; border-bottom: 1px solid var(--border); margin-bottom: 1.5rem;
+  }
+  header.page .title { color: var(--accent); font-size: 1.25rem; font-weight: 600; }
+  header.page .git { color: var(--text-muted); font-size: 0.85rem; }
+
+  section {
+    background: var(--bg); border: 1px solid var(--border); border-radius: 8px;
+    padding: 1rem 1.2rem; margin-bottom: 1.4rem;
+  }
+  section > h2 {
+    margin: 0 0 0.6rem; font-size: 0.8rem; letter-spacing: 0.08em;
+    text-transform: uppercase; color: var(--text-muted);
+  }
+  .new-tag {
+    display: inline-block; margin-left: 0.5rem; padding: 0.05rem 0.4rem;
+    font-size: 0.65rem; letter-spacing: 0.05em; border-radius: 4px;
+    background: var(--accent); color: #fff; vertical-align: middle;
+  }
+  .explain { color: var(--text-muted); font-size: 0.82rem; margin: 0 0 0.8rem; }
+
+  /* Assumptions block */
+  #assumptions-block {
+    background: var(--bg-muted); border-left: 3px solid var(--accent);
+    border-radius: 0 6px 6px 0; padding: 0.7rem 1rem; margin-bottom: 0.8rem;
+  }
+  #assumptions-block ul { margin: 0.2rem 0 0; padding-left: 1.2rem; }
+  #assumptions-block li { margin: 0.25rem 0; }
+
+  .gate {
+    border-top: 1px dashed var(--border); padding-top: 0.8rem; margin-top: 0.8rem;
+  }
+  .gate .q { font-weight: 600; margin-bottom: 0.5rem; }
+  .gate .hint { color: var(--text-muted); font-size: 0.8rem; margin-top: 0.4rem; }
+  .gate input[type="text"] {
+    width: 100%; padding: 0.4rem 0.6rem; border: 1px solid var(--border);
+    border-radius: 6px; margin-bottom: 0.5rem;
+  }
+  button {
+    padding: 0.35rem 0.9rem; border: 1px solid var(--border); border-radius: 6px;
+    background: var(--bg); cursor: pointer;
+  }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button:hover { border-color: var(--accent); }
+  .btn-row { display: flex; gap: 0.5rem; flex-wrap: wrap; }
+
+  .result {
+    display: none; margin-top: 0.7rem; padding: 0.5rem 0.8rem; border-radius: 6px;
+    font-size: 0.88rem; background: #f0fdf4; border: 1px solid #bbf7d0; color: #166534;
+  }
+  .result.warn { background: #fefce8; border-color: #fde68a; color: #854d0e; }
+  .result.on { display: block; }
+
+  /* Findings list */
+  .finding {
+    padding: 0.55rem 0.8rem; margin: 0.4rem 0; border: 1px solid var(--border);
+    border-radius: 6px; background: var(--bg-muted); font-size: 0.9rem;
+  }
+  .finding .where { color: var(--text-muted); font-size: 0.78rem; }
+
+  /* Misaligned test */
+  .verdict {
+    display: inline-block; padding: 0.05rem 0.45rem; border-radius: 4px;
+    font-size: 0.72rem; font-weight: 600; letter-spacing: 0.04em;
+  }
+  .verdict.misaligned { background: #fee2e2; color: #991b1b; }
+  .verdict.aligned { background: #dcfce7; color: #166534; }
+  .align-note { color: var(--text-muted); font-size: 0.85rem; margin-top: 0.3rem; }
+
+  /* Exec gate */
+  #exec-gate .q code {
+    background: var(--bg-muted); padding: 0.1rem 0.35rem; border-radius: 4px;
+    font-size: 0.85em;
+  }
+  #waiting-chip {
+    display: inline-flex; align-items: center; gap: 0.45rem;
+    color: var(--text-muted); font-size: 0.82rem; margin-bottom: 0.6rem;
+  }
+  #waiting-chip .spinner {
+    width: 0.7rem; height: 0.7rem; border: 2px solid var(--border);
+    border-top-color: var(--accent); border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+</style>
+</head>
+<body>
+
+<div class="demo-banner">
+  <strong>Demo</strong> — static mock of the planned status-page changes
+  (PLAN.md items 1, 3, 4, 5). No backend; buttons only simulate the user
+  gates the real orchestrator will drive.
+</div>
+
+<header class="page">
+  <div class="title">planning</div>
+  <div class="git">determined · run-20260802-124321</div>
+</header>
+
+<!-- Item 4: Assumptions block + confirmation round -->
+<section>
+  <h2>Assumptions<span class="new-tag">new</span></h2>
+  <p class="explain">Extracted from the <code>## Assumptions</code> section of
+  PLAN.md and rendered as its own block. After drafting, one confirmation
+  round runs before refinement begins.</p>
+  <div id="assumptions-block">
+    <ul>
+      <li>Create mode reuses QUESTIONS.md for assessor questions; no new file name.</li>
+      <li>"Edit the plan" means external edit then Enter; no in-tool editor.</li>
+      <li>The exec approval gate covers every <code>-exec</code> chain after planning.</li>
+    </ul>
+  </div>
+  <div class="gate" id="assume-gate">
+    <div class="q">Confirm these assumptions, or type a correction:</div>
+    <input type="text" id="assume-input" placeholder="Enter / y / yes / ok confirms — anything else is a correction">
+    <div class="btn-row">
+      <button class="primary" onclick="answerAssumptions()">Answer</button>
+    </div>
+    <div class="hint">Bare Enter confirms. Any other non-empty answer is applied
+    like annotation feedback and the documents are republished.</div>
+    <div class="result" id="assume-confirmed">Assumptions confirmed — proceeding to refinement.</div>
+    <div class="result warn" id="assume-corrected">Correction recorded → annotate invocation → documents republished. <span id="assume-echo"></span></div>
+  </div>
+</section>
+
+<!-- Item 1: unresolved findings gate -->
+<section>
+  <h2>Unresolved refinement findings<span class="new-tag">new</span></h2>
+  <p class="explain">Refine passes exhausted with open findings. Previously these
+  were discarded and the plan was silently accepted; now each finding is shown
+  and the user must choose.</p>
+  <div class="finding">Success criteria for step 3 do not name the file the test lives in.
+    <div class="where">REFINEMENTS.md · finding 1 of 2</div></div>
+  <div class="finding">The rollback path after a failed republish is unspecified.
+    <div class="where">REFINEMENTS.md · finding 2 of 2</div></div>
+  <div class="gate">
+    <div class="q">2 findings remain after the final refine pass. Accept the plan as-is, refine once more, or edit it yourself?</div>
+    <div class="btn-row">
+      <button class="primary" onclick="findingsChoice('accept')">accept</button>
+      <button onclick="findingsChoice('refine')">refine</button>
+      <button onclick="findingsChoice('edit')">edit</button>
+    </div>
+    <div class="result" id="find-accept">Accepted with open findings — plan ready.</div>
+    <div class="result warn" id="find-refine">One more refine pass granted. If findings remain, this gate re-asks — no auto-accept.</div>
+    <div class="result warn" id="find-edit">Waiting for you to edit PLAN.md / STEPS.md and press Enter, then re-assessing.</div>
+  </div>
+</section>
+
+<!-- Item 3: misaligned test gate -->
+<section>
+  <h2>Misaligned test verdicts<span class="new-tag">new</span></h2>
+  <p class="explain">After one automatic realign pass, a misaligned verdict still
+  stands. It now blocks plan completion until rewritten or explicitly accepted.</p>
+  <div class="finding">
+    <strong>Test: exec gate defaults to No</strong>
+    <span class="verdict misaligned">misaligned</span>
+    <div class="align-note"><strong>Alignment note:</strong> asserts only that the
+    prompt string is printed; never proves the execution loop was not invoked.</div>
+  </div>
+  <div class="gate">
+    <div class="q">1 test remains misaligned. Accept it, rewrite again, or drop it?</div>
+    <div class="btn-row">
+      <button class="primary" onclick="testChoice('accept')">accept</button>
+      <button onclick="testChoice('rewrite')">rewrite</button>
+      <button onclick="testChoice('drop')">drop</button>
+    </div>
+    <div class="result" id="test-accept">Accepted explicitly — recorded; plan may complete.</div>
+    <div class="result warn" id="test-rewrite">Realign invocation re-run → verdicts re-parsed. Gate re-asks while misaligned verdicts remain.</div>
+    <div class="result warn" id="test-drop">Constrained realign invocation removes the test section → verdicts re-parsed.</div>
+  </div>
+</section>
+
+<!-- Item 5: exec approval gate -->
+<section id="exec-gate">
+  <h2>Execution approval<span class="new-tag">new</span></h2>
+  <p class="explain">Planning succeeded on a <code>--plan … -exec</code> chain.
+  Execution no longer starts automatically.</p>
+  <div id="waiting-chip"><span class="spinner"></span>Waiting for your input on the terminal…</div>
+  <div class="gate" style="border-top:0; padding-top:0; margin-top:0;">
+    <div class="q">Plan approved — begin execution? <code>[y/N]</code></div>
+    <input type="text" id="exec-input" placeholder="y / yes executes — anything else (or Enter) exits with plan intact">
+    <div class="btn-row">
+      <button class="primary" onclick="answerExec()">Answer</button>
+    </div>
+    <div class="result" id="exec-yes">Approved — execution loop starts.</div>
+    <div class="result warn" id="exec-no">Not approved — exiting with plan files intact and the plan-ready outcome. No execution.</div>
+  </div>
+</section>
+
+<script>
+  function show(only, ids) {
+    ids.forEach(function (id) {
+      document.getElementById(id).classList.toggle("on", id === only);
+    });
+  }
+  function answerAssumptions() {
+    var v = document.getElementById("assume-input").value.trim().toLowerCase();
+    var confirms = v === "" || v === "y" || v === "yes" || v === "ok";
+    if (!confirms) {
+      document.getElementById("assume-echo").textContent =
+        'Correction: “' + document.getElementById("assume-input").value.trim() + '”';
+    }
+    show(confirms ? "assume-confirmed" : "assume-corrected",
+         ["assume-confirmed", "assume-corrected"]);
+  }
+  function findingsChoice(c) {
+    show("find-" + c, ["find-accept", "find-refine", "find-edit"]);
+  }
+  function testChoice(c) {
+    show("test-" + c, ["test-accept", "test-rewrite", "test-drop"]);
+  }
+  function answerExec() {
+    var v = document.getElementById("exec-input").value.trim().toLowerCase();
+    var yes = v === "y" || v === "yes";
+    show(yes ? "exec-yes" : "exec-no", ["exec-yes", "exec-no"]);
+  }
+</script>
+</body>
+</html>

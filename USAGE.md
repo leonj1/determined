@@ -28,6 +28,14 @@ Discovery is machine-local and currently tracks one session. A stale or
 unverifiable record is deleted and reported as `no running interactive session
 found`.
 
+The status server binds loopback (`127.0.0.1`) by default, so chat and every
+other endpoint are reachable only from the local machine unless the session
+was started with `--status-host` set to a non-loopback interface. Under the
+default bind, requests must carry a local `Host` header
+(`localhost`/`127.0.0.1`/`[::1]` with the bound port); anything else is
+rejected with `403` to defeat DNS rebinding. Curl against `localhost` sends a
+local `Host` automatically.
+
 ## CLI modes
 
 One-shot mode sends one request, prints the human-readable answer, closes, and
@@ -64,7 +72,10 @@ with `-plan`, `-exec`, `-review-plan`, `-criteria`, or `-interactive`.
 Connect to `ws://localhost:<port>/chat` using RFC 6455. Messages are
 unfragmented JSON text frames. Client frames must be masked. Frames over 1 MiB
 close with code `1009`; fragmented or binary frames close with `1003`.
-Ping/pong and a normal close handshake are supported.
+Ping/pong and a normal close handshake are supported. Under the default
+loopback bind the upgrade rejects a non-local `Origin` header; an absent
+`Origin` (the CLI dialer, curl) is accepted, so cross-site browser pages are
+blocked without affecting non-browser clients.
 
 Client request:
 
@@ -119,10 +130,17 @@ fall back to status and include the complete status snapshot in
 
 ## Plain HTTP and curl
 
-Use the curl-friendly endpoint when a persistent WebSocket is unnecessary:
+Use the curl-friendly endpoint when a persistent WebSocket is unnecessary.
+`POST /chat/ask` is a state-changing endpoint, so it requires the per-session
+token in the `X-Session-Token` header; requests without it get
+`403 missing or invalid session token`. The token is embedded in the served
+page's `session-token` meta tag — extract it from `GET /`, then send it:
 
 ```bash
+TOKEN=$(curl -s http://localhost:63431/ \
+  | sed -n 's/.*name="session-token" content="\([^"]*\)".*/\1/p')
 curl -s -X POST http://localhost:63431/chat/ask \
+  -H "X-Session-Token: $TOKEN" \
   -d '{"text":"what is the status of this run?"}'
 ```
 

@@ -65,6 +65,9 @@ freely):
 ```
 
 Running `determined` with neither `--plan` nor `-exec` defaults to `-exec`.
+A chained `--plan ... -exec` run asks `Plan approved — begin execution? [y/N]`
+once the plan is ready; only `y`/`yes` starts execution — anything else,
+including bare Enter, exits with the plan files intact.
 
 **4. Watch it work** — per-iteration logs land in `logs/`, each verified step
 becomes a git commit, and the run ends with an exit code: `0` success (audit
@@ -73,7 +76,21 @@ approved), `1` failure/budget/interrupt, `2` usage error, `3` stalled (see
 
 Every unattended `-exec` run also starts the live status server, prints its
 URL, and records the session for `-link` and `-chat`. The execution still runs
-when that observer server cannot bind.
+when that observer server cannot bind. The server binds loopback
+(`127.0.0.1`) by default, so only the local machine can reach the page and
+its execution controls; pass `--status-host` with a non-loopback interface
+(e.g. `0.0.0.0`) to expose it to the network deliberately. Under the default
+loopback bind, requests whose `Host` header is not a local name
+(`localhost`/`127.0.0.1`/`[::1]` with the bound port) are rejected, and the
+WebSocket chat upgrade rejects a non-local `Origin`, defeating DNS-rebinding
+and cross-site use. Every state-changing endpoint (`/implement`, `/annotate`,
+`/task/skip`, `/task/stop`, `/stall/choice`, `/explain/start`, `/chat/ask`)
+additionally requires an unguessable per-session token in the
+`X-Session-Token` header, regardless of bind host; the served page embeds it
+in a `session-token` meta tag and sends it automatically, so a hostile page in
+your browser cannot forge those requests. The page is also served with
+`X-Frame-Options: DENY` and `Content-Security-Policy: frame-ancestors 'none'`,
+so no site can embed it in an iframe to clickjack its controls.
 
 The live page keeps status updates small: workflow state and invocation headers
 arrive as snapshots, while the Log and Execution tabs pull output in bounded
@@ -94,16 +111,38 @@ skipped and resumes at the oldest available line.
    and invoke the planner again. Repeat until it has enough information.
 4. **Create the plan** — the planner writes `PLAN.md` and a machine-checkable
    `STEPS.md` whose checkbox steps each have a concrete `Done when:` criterion.
-5. **Apply the quality gate** — independently assess completeness, the
-   task-specific template, ordering, step size, and acceptance criteria. Write
-   issues to `REFINEMENTS.md`, refine the plan, and reassess for up to
-   `--max-step-passes` rounds (skipped in prototype mode).
-6. **Generate an optional UI demo** — in interactive mode, run a distinct
+   Every assumption and chosen default is recorded under a `## Assumptions`
+   heading in `PLAN.md`.
+5. **Confirm the assumptions** — relay the `## Assumptions` section (also
+   rendered as its own block on the status page) as one question. Bare Enter,
+   `y`, `yes`, or `ok` confirms; any other answer is treated as a correction,
+   applied to the plan, and the documents are republished. A plan without the
+   section skips this round.
+6. **Apply the quality gate** — independently assess completeness, the
+   task-specific template, ordering, step size, and acceptance criteria.
+   Objective issues go to `REFINEMENTS.md`; preference-, intent-, and
+   risk-dependent findings become numbered questions in `QUESTIONS.md`, which
+   are asked on the terminal and answered into `ANSWERS.md` before the refiner
+   runs. Refine and reassess for up to `--max-step-passes` rounds (skipped in
+   prototype mode). When the pass cap is exhausted with findings remaining,
+   each finding is shown (terminal and status page) and you choose `accept`
+   (finish as-is), `refine` (one more pass), or `edit` (fix the plan files
+   yourself, press Enter, and reassess) — the plan is never silently accepted
+   with known defects.
+7. **Recommend and align tests** — write recommended journey/BDD tests to
+   `TESTS.md` and judge each against the plan's functional goal. Tests judged
+   `misaligned` get one automatic rewrite pass; any that remain misaligned are
+   shown with their alignment notes and gated on `accept` (keep them),
+   `rewrite` (another realign pass), or `drop` (remove those tests). Planning
+   cannot finish with a standing misaligned verdict you did not accept.
+8. **Generate an optional UI demo** — in interactive mode, run a distinct
    post-plan check. Only a trivial UI change that fits in one self-contained
    HTML file produces `DEMO.html`; when present, it appears beneath the Plan tab.
-7. **Finish planning** — leave `PLAN.md` and `STEPS.md` in place and exit `0`,
+9. **Finish planning** — leave `PLAN.md` and `STEPS.md` in place and exit `0`,
    ready for `./determined -exec` to execute them. With `-exec` on the same
-   command line, execution starts immediately after planning succeeds.
+   command line, you are asked `Plan approved — begin execution? [y/N]`; only
+   `y` or `yes` starts execution — anything else, including bare Enter, exits
+   with the plan files intact.
 
 See [PLANNING.md](PLANNING.md) for details.
 
@@ -203,8 +242,11 @@ each one is for:
 | `writing planning goal` | Write the supplied goal text (or goal file contents) to `GOAL.md` so the planner has a fixed statement of intent. |
 | `planning project` | Invoke the AI tool to read the goal and either raise clarifying questions or write `PLAN.md` / `STEPS.md`. |
 | `answering planning questions` | Relay each question from `QUESTIONS.md` to you on the terminal and record your responses in `ANSWERS.md` for the next planner pass. |
-| `assessing plan` | Independently grade the drafted plan for completeness, ordering, step size, and concrete `Done when:` criteria, writing issues to `REFINEMENTS.md`. |
-| `refining plan` | Rework the plan to resolve the assessment's issues, then reassess — up to `--max-step-passes` rounds. |
+| `confirming plan assumptions` | Relay the plan's `## Assumptions` section for confirmation or correction before refinement begins. |
+| `assessing plan` | Independently grade the drafted plan for completeness, ordering, step size, and concrete `Done when:` criteria, writing objective issues to `REFINEMENTS.md` and preference-dependent findings to `QUESTIONS.md`. |
+| `refining plan` | Rework the plan to resolve the assessment's issues, then reassess — up to `--max-step-passes` rounds; an exhausted cap with findings remaining asks accept / refine / edit. |
+| `realigning tests` | Rewrite `TESTS.md` tests judged `misaligned` against the plan's goal — once automatically, again on a `rewrite` answer at the misaligned-test gate. |
+| `dropping misaligned tests` | Remove still-misaligned test sections from `TESTS.md` when the user answers `drop` at the misaligned-test gate. |
 | `generating UI demo` | After the plan is final, create `DEMO.html` only when its UI change is trivial and can be shown without external dependencies. |
 | `applying annotation` | Apply one user annotation from the plan page to the plan documents and republish them. |
 | `executing step N` | Invoke the tool with exactly the next unchecked step from `STEPS.md` and its acceptance criterion. |
@@ -261,9 +303,10 @@ ideally a clean git checkout, so every change is reviewable and revertible.
 | `--model`        | —        | Optional model ID or alias for `droid` or `claude`; rejected with `pi`. |
 | `--exec-model`   | —        | Optional model ID or alias used only for execution steps; falls back to `--model` when empty, is rejected with `pi`, and requires an execution phase. |
 | `--plan`         | —        | Goal text or a file path to plan interactively; produces `PLAN.md` + `STEPS.md`. Add `-exec` to continue into execution once the plan is ready. |
-| `--exec`         | `false`  | Run the execute loop against `PLAN.md` + `STEPS.md`. Add `--interactive` to seed the live page from existing planning documents, stream execution, and annotate then retry a failed run. With `--plan`, execution follows successful planning; incompatible with `--review-plan`. Without an operation flag, execution is the default. |
+| `--exec`         | `false`  | Run the execute loop against `PLAN.md` + `STEPS.md`. Add `--interactive` to seed the live page from existing planning documents, stream execution, and annotate then retry a failed run. With `--plan`, execution follows successful planning only after an affirmative answer to `Plan approved — begin execution? [y/N]`; incompatible with `--review-plan`. Without an operation flag, execution is the default. |
 | `--review-plan`  | `false`  | Critique existing `PLAN.md` + `STEPS.md`, interview the user about consequential choices, and revise without executing. |
 | `--criteria`     | `false`  | Interactively capture BDD journey tests into `CRITERIA.md` (accept / modify / skip / end / cancel per proposal). Runs before `--plan` / `-exec` when combined; incompatible with `--review-plan`. |
+| `--status-host`  | `127.0.0.1` | Interface the live status page binds to. Loopback by default; setting a non-loopback host (e.g. `0.0.0.0`) exposes the page — including its state-changing controls such as Implement — to the network. |
 | `--interactive`  | `false`  | With `--plan` or `--exec`, serve a live HTML status page showing planning documents and workflow steps. A trivial, self-contained UI change may include a generated demo beneath the Plan tab. For an existing plan, execution starts immediately; after failure, annotate the page and click Implement to retry in the same session. After success, the Explanation tab (`/explain`) shows an AI-generated walkthrough with colored diffs, followed by a five-question Quiz tab (`/quiz`) whose questions link to their source explanation sections. |
 | `--link`         | `false`  | Print the URL of the status page served by a live interactive or headless execution session, then exit. Prints the URL on exit `0` only after verifying the process, port, and determined status page; otherwise exits `1`. |
 | `--chat`         | `false`  | Connect to the verified live session over WebSocket, subscribe to events, and exchange stdin lines for replies. Incompatible with run/session mode flags. |

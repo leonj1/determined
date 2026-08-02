@@ -46,6 +46,18 @@ const alignProtocol = "Read GOAL.md if it exists, PLAN.md, STEPS.md, and TESTS.m
 	"Change nothing else in TESTS.md: keep every heading, narrative, mermaid diagram, and Gherkin scenario " +
 	"exactly as written. Do not modify PLAN.md or STEPS.md, implement anything, or create STOP.md."
 
+// realignProtocol replaces the tests judged misaligned with tests that prove
+// the plan's functional goal, leaving every other part of TESTS.md untouched.
+const realignProtocol = "Read GOAL.md if it exists, PLAN.md, STEPS.md, and TESTS.md. Rewrite each test whose " +
+	"section carries a `**Alignment:** misaligned` verdict: replace it in place with a test that proves the " +
+	"plan's functional goal — the user-facing outcome the plan exists to deliver — keeping its " +
+	"`### Test N: <name>` heading number and the same format: a journey narrative with its mermaid sequence " +
+	"diagram in a fenced ```mermaid block, or a Gherkin scenario in a fenced ```gherkin block. " +
+	alignmentRequirement +
+	"Keep every aligned and partial test and everything else in TESTS.md verbatim: do not change their " +
+	"headings, narratives, diagrams, scenarios, or verdict lines. Do not modify PLAN.md or STEPS.md, " +
+	"implement anything, or create STOP.md."
+
 const annotateProtocol = "Read ANNOTATION.md. It contains the user's feedback on one section of the plan " +
 	"documents, naming the section (goal/plan/steps/tests), the specific target within it when there is one, " +
 	"and the requested adjustment. Apply the adjustment to the referenced file only — GOAL.md, PLAN.md, " +
@@ -75,6 +87,8 @@ const planProtocol = "Read GOAL.md and ANSWERS.md if it exists. Treat GOAL.md as
 	"Every step must end with `Done when:` and a concrete acceptance condition. " +
 	"If CRITERIA.md exists, treat its BDD journey tests as required acceptance tests: include steps that " +
 	"implement each one as an automated test, and require those tests to pass in the relevant `Done when:` conditions. " +
+	"PLAN.md must record every assumption and chosen default under a `## Assumptions` heading, one markdown " +
+	"list item per assumption, instead of burying them in prose. " +
 	"Do not implement anything or create STOP.md. "
 
 const standardQuality = "Before writing the files, enforce this quality gate: the intended outcome, target user/use case, " +
@@ -107,6 +121,7 @@ func PlanningPrompts(mode models.PlanMode) models.PlanningPrompts {
 		Refine:   refinementPrompt(mode),
 		Tests:    testsProtocol,
 		Align:    alignProtocol,
+		Realign:  realignProtocol,
 		Annotate: annotateProtocol,
 	}
 }
@@ -127,8 +142,9 @@ func ReviewPrompts() models.PlanningPrompts {
 			"Preserve confirmed scope, make assumptions and edge-case decisions explicit, order dependencies, and give each incomplete " +
 			"`- [ ]` step a `Purpose:` line stating its functional intent and a concrete `Done when:` acceptance condition. " +
 			"Do not implement anything or create STOP.md.",
-		Tests: testsProtocol,
-		Align: alignProtocol,
+		Tests:   testsProtocol,
+		Align:   alignProtocol,
+		Realign: realignProtocol,
 	}
 }
 
@@ -145,12 +161,17 @@ func assessmentPrompt(mode models.PlanMode) string {
 		"intent in a `Purpose:` line, and can be completed and reviewed independently. Also flag steps that are out of order, " +
 		"have vague `Done when:` criteria such as `works correctly`, `is implemented`, `looks good`, or unqualified `tests pass`, " +
 		"or whose `Purpose:` merely restates the technical action instead of the functional outcome it serves. " +
-		"Write each specific, actionable finding as a markdown list item in REFINEMENTS.md. " +
-		"If there are no findings, write exactly NONE. Do not modify the plan or implement anything."
+		"Write each specific, actionable objective finding as a markdown list item in REFINEMENTS.md. " +
+		"If there are no findings, write exactly NONE. " +
+		"For each consequential finding that depends on user preference, product intent, or risk tolerance, also write one concrete " +
+		"question to QUESTIONS.md as a markdown numbered list; include options and tradeoffs when useful. " +
+		"Do not ask about choices that can be safely inferred, and do not resolve preference-dependent findings yourself. " +
+		"Do not modify the plan or implement anything."
 }
 
 func refinementPrompt(mode models.PlanMode) string {
-	return "Read GOAL.md, PLAN.md, STEPS.md, and REFINEMENTS.md. Resolve every listed planning issue by rewriting PLAN.md " +
+	return "Read GOAL.md, PLAN.md, STEPS.md, REFINEMENTS.md, and ANSWERS.md if it exists. " +
+		"Treat the user's answers in ANSWERS.md as authoritative. Resolve every listed planning issue by rewriting PLAN.md " +
 		"and/or STEPS.md while preserving the user's scope. Split oversized steps, make dependencies explicit and ordered, " +
 		"and replace vague acceptance criteria with commands or observable behavior specific to the step. Apply the " +
 		string(mode) + " quality gate and task template. Keep each step as one incomplete `- [ ]` item with a `Purpose:` line " +

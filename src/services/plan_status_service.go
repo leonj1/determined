@@ -125,6 +125,14 @@ func (s *PlanStatusService) SetPlan(plan string) {
 	})
 }
 
+// SetAssumptions publishes the plan's `## Assumptions` section body.
+func (s *PlanStatusService) SetAssumptions(assumptions string) {
+	s.update(func(st models.PlanSessionStatus) models.PlanSessionStatus {
+		st.Assumptions = assumptions
+		return st
+	})
+}
+
 // SetDemo publishes the optional self-contained UI demonstration.
 func (s *PlanStatusService) SetDemo(demo string) {
 	s.update(func(st models.PlanSessionStatus) models.PlanSessionStatus {

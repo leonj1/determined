@@ -8,5 +8,6 @@ type PlanningPrompts struct {
 	Refine   string
 	Tests    string
 	Align    string
+	Realign  string
 	Annotate string
 }

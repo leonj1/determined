@@ -1,14 +1,20 @@
 package clients
 
 import (
+	"bytes"
 	"context"
+	"crypto/rand"
+	"crypto/subtle"
 	"embed"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -16,12 +22,21 @@ import (
 )
 
 const (
+	statusServerLoopbackHost                          = "127.0.0.1"
 	statusServerReadHeaderTimeout                     = 5 * time.Second
 	statusServerReadTimeout                           = 15 * time.Second
 	statusServerWriteTimeout                          = 15 * time.Second
 	statusServerIdleTimeout                           = 60 * time.Second
 	statusLogBatchSize            models.LogBatchSize = 200
 	statusLogBackBatchSize        models.LogBatchSize = 10
+	// StatusSessionTokenHeader carries the per-session credential on
+	// state-changing requests. The served page reads the token from its
+	// session-token meta tag and sends it here; cross-site pages cannot read
+	// that page, so they cannot present the token.
+	StatusSessionTokenHeader = "X-Session-Token"
+	// statusSessionTokenPlaceholder is replaced with the live token when the
+	// embedded page is served.
+	statusSessionTokenPlaceholder = "{{SESSION_TOKEN}}"
 )
 
 //go:embed plan_status_page.html
@@ -101,6 +116,8 @@ type PlanStatusServer struct {
 	listener    net.Listener
 	server      *http.Server
 	chat        ChatResponder
+	host        string
+	token       string
 	connections map[*WebSocketConn]struct{}
 	mu          sync.Mutex
 }
@@ -110,6 +127,7 @@ type PlanStatusServer struct {
 func NewPlanStatusServer(source PlanStatusSource, annotations AnnotationSink, implement ImplementSink, clock clock) *PlanStatusServer {
 	return &PlanStatusServer{
 		source: source, annotations: annotations, implement: implement, clock: clock,
+		host:        statusServerLoopbackHost,
 		connections: make(map[*WebSocketConn]struct{}),
 	}
 }
@@ -138,23 +156,37 @@ func (s *PlanStatusServer) WithExplainSink(sink ExplainRequester) *PlanStatusSer
 	return s
 }
 
+// WithBindHost overrides the loopback-only default bind interface. Exposing a
+// non-loopback interface lets any host that can reach the port drive the
+// page's state-changing endpoints — /implement starts unattended execution —
+// so remote exposure must be an explicit caller opt-in, never the default.
+func (s *PlanStatusServer) WithBindHost(host string) *PlanStatusServer {
+	s.host = host
+	return s
+}
+
 // WithChatResponder enables the read-only chat endpoints.
 func (s *PlanStatusServer) WithChatResponder(chat ChatResponder) *PlanStatusServer {
 	s.chat = chat
 	return s
 }
 
-// Start binds an ephemeral port on all interfaces and begins serving. It
-// returns an error when the port cannot be bound; the caller treats that as
-// fatal.
+// Start binds an ephemeral port on the configured host — loopback unless
+// WithBindHost opted into wider exposure — and begins serving. It returns an
+// error when the port cannot be bound; the caller treats that as fatal.
 func (s *PlanStatusServer) Start() error {
-	listener, err := net.Listen("tcp", "0.0.0.0:0")
+	token, err := newSessionToken()
+	if err != nil {
+		return err
+	}
+	s.token = token
+	listener, err := net.Listen("tcp", net.JoinHostPort(s.host, "0"))
 	if err != nil {
 		return fmt.Errorf("could not bind status server: %w", err)
 	}
 	s.listener = listener
 	s.server = &http.Server{
-		Handler:           s.routes(),
+		Handler:           s.hostGuard(s.routes()),
 		ReadHeaderTimeout: statusServerReadHeaderTimeout,
 		ReadTimeout:       statusServerReadTimeout,
 		WriteTimeout:      statusServerWriteTimeout,
@@ -162,6 +194,88 @@ func (s *PlanStatusServer) Start() error {
 	}
 	go s.server.Serve(listener) //nolint:errcheck // Serve always returns on Shutdown/Close
 	return nil
+}
+
+func newSessionToken() (string, error) {
+	raw := make([]byte, 32)
+	if _, err := rand.Read(raw); err != nil {
+		return "", fmt.Errorf("generate session token: %w", err)
+	}
+	return hex.EncodeToString(raw), nil
+}
+
+// SessionToken returns the per-session credential required on state-changing
+// endpoints. Valid only after Start; the served page embeds it.
+func (s *PlanStatusServer) SessionToken() string {
+	return s.token
+}
+
+// hostGuard rejects every request whose Host header names a non-local origin
+// while the server is bound to loopback. DNS rebinding points an
+// attacker-controlled name at 127.0.0.1 to make this server same-origin with a
+// hostile page; a rebound request carries that foreign name in Host, so
+// refusing it here closes the browser read-back vector.
+func (s *PlanStatusServer) hostGuard(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !s.allowedHost(r.Host) {
+			http.Error(w, "forbidden: unrecognized Host", http.StatusForbidden)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+// allowedHost admits only local names with the bound port under a loopback
+// bind; an explicit non-loopback opt-in disables the check because the server
+// is then reached through arbitrary hostnames by design.
+func (s *PlanStatusServer) allowedHost(host string) bool {
+	if !loopbackName(s.host) {
+		return true
+	}
+	name, port := splitHostOptionalPort(host)
+	return loopbackName(name) && (port == "" || port == strconv.Itoa(s.Port()))
+}
+
+func splitHostOptionalPort(host string) (string, string) {
+	name, port, err := net.SplitHostPort(host)
+	if err != nil {
+		return strings.Trim(host, "[]"), ""
+	}
+	return name, port
+}
+
+func loopbackName(name string) bool {
+	switch strings.ToLower(name) {
+	case "localhost", statusServerLoopbackHost, "::1":
+		return true
+	}
+	return false
+}
+
+// allowedOrigin admits an absent Origin (non-browser clients such as the CLI
+// chat dialer send none) and any local page origin under a loopback bind. A
+// browser always stamps the true page origin, so refusing foreign ones blocks
+// cross-site WebSocket use.
+func (s *PlanStatusServer) allowedOrigin(origin string) bool {
+	if origin == "" || !loopbackName(s.host) {
+		return true
+	}
+	parsed, err := url.Parse(origin)
+	if err != nil {
+		return false
+	}
+	return s.allowedHost(parsed.Host)
+}
+
+// authorized admits requests presenting the per-session token; everything else
+// — including requests arriving before Start assigned one — is refused.
+func (s *PlanStatusServer) authorized(w http.ResponseWriter, r *http.Request) bool {
+	presented := r.Header.Get(StatusSessionTokenHeader)
+	if s.token != "" && subtle.ConstantTimeCompare([]byte(presented), []byte(s.token)) == 1 {
+		return true
+	}
+	http.Error(w, "missing or invalid session token", http.StatusForbidden)
+	return false
 }
 
 func (s *PlanStatusServer) routes() *http.ServeMux {
@@ -181,8 +295,9 @@ func (s *PlanStatusServer) routes() *http.ServeMux {
 	return mux
 }
 
-// URL returns the address browsers should open. The server listens on all
-// interfaces, so the printed host is localhost; remote users substitute the
+// URL returns the address browsers should open. The server listens on
+// loopback by default, so the printed host is localhost; only when the caller
+// opted into a wider bind via WithBindHost can remote users substitute the
 // machine's external IP with the same port. Valid only after Start.
 func (s *PlanStatusServer) URL() string {
 	return fmt.Sprintf("http://localhost:%d/", s.Port())
@@ -224,7 +339,12 @@ func (s *PlanStatusServer) servePage(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set(StatusPageHeader, "1")
-	w.Write(planStatusPage) //nolint:errcheck // best-effort page write
+	// The status page is never legitimately framed; forbid embedding so a
+	// hostile site cannot clickjack the token-bearing Implement button.
+	w.Header().Set("X-Frame-Options", "DENY")
+	w.Header().Set("Content-Security-Policy", "frame-ancestors 'none'")
+	page := bytes.ReplaceAll(planStatusPage, []byte(statusSessionTokenPlaceholder), []byte(s.token))
+	w.Write(page) //nolint:errcheck // best-effort page write
 }
 
 func (s *PlanStatusServer) serveEvents(w http.ResponseWriter, r *http.Request) {
@@ -341,6 +461,9 @@ func (s *PlanStatusServer) serveAnnotate(w http.ResponseWriter, r *http.Request)
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	if !s.authorized(w, r) {
+		return
+	}
 	var annotation models.Annotation
 	if err := json.NewDecoder(r.Body).Decode(&annotation); err != nil {
 		http.Error(w, "invalid annotation payload", http.StatusBadRequest)
@@ -360,6 +483,9 @@ func (s *PlanStatusServer) serveAnnotate(w http.ResponseWriter, r *http.Request)
 func (s *PlanStatusServer) serveImplement(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if !s.authorized(w, r) {
 		return
 	}
 	s.implement.RequestImplement()
@@ -384,6 +510,9 @@ func (s *PlanStatusServer) serveTaskStop(w http.ResponseWriter, r *http.Request)
 func (s *PlanStatusServer) serveStallChoice(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if !s.authorized(w, r) {
 		return
 	}
 	if s.stallChoice == nil {
@@ -415,6 +544,9 @@ func (s *PlanStatusServer) serveExplainStart(w http.ResponseWriter, r *http.Requ
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	if !s.authorized(w, r) {
+		return
+	}
 	if s.explain == nil {
 		http.Error(w, "explain unavailable", http.StatusServiceUnavailable)
 		return
@@ -431,6 +563,9 @@ func (s *PlanStatusServer) serveTaskAction(w http.ResponseWriter, r *http.Reques
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
+	if !s.authorized(w, r) {
+		return
+	}
 	if s.taskControl == nil {
 		http.Error(w, "task control unavailable", http.StatusServiceUnavailable)
 		return
@@ -445,6 +580,10 @@ func (s *PlanStatusServer) serveTaskAction(w http.ResponseWriter, r *http.Reques
 func (s *PlanStatusServer) serveChat(w http.ResponseWriter, r *http.Request) {
 	if s.chat == nil {
 		http.Error(w, "chat unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	if !s.allowedOrigin(r.Header.Get("Origin")) {
+		http.Error(w, "forbidden: foreign origin", http.StatusForbidden)
 		return
 	}
 	connection, err := UpgradeWebSocket(w, r)
@@ -552,6 +691,9 @@ func (s *PlanStatusServer) writeChat(connection *WebSocketConn, response models.
 func (s *PlanStatusServer) serveChatAsk(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if !s.authorized(w, r) {
 		return
 	}
 	if s.chat == nil {

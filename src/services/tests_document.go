@@ -11,6 +11,7 @@ var bddTypePattern = regexp.MustCompile(`(?i)bdd|gherkin`)
 var sequenceDiagramPattern = regexp.MustCompile("(?s)```mermaid\\s*\\n\\s*sequenceDiagram")
 var gherkinFencePattern = regexp.MustCompile("```gherkin")
 var alignmentLinePattern = regexp.MustCompile(`(?i)\*\*Alignment:\*\*\s*(aligned|partial|misaligned)`)
+var alignmentNotePattern = regexp.MustCompile(`(?i)\*\*Alignment note:\*\*\s*([^\n]*)`)
 
 // TestsDocument reads the recommended-tests markdown and answers questions
 // about its journey tests.
@@ -52,6 +53,40 @@ func (d TestsDocument) TestsMissingAlignment() []string {
 		missing = append(missing, strings.SplitN(strings.TrimSpace(section), "\n", 2)[0])
 	}
 	return missing
+}
+
+// MisalignedTest pairs one misaligned test's heading with the assessor's
+// explanation of why it fails to prove the goal.
+type MisalignedTest struct {
+	Heading string
+	Note    string
+}
+
+// MisalignedTests returns every test whose `**Alignment:**` verdict is
+// misaligned, with its `**Alignment note:**` text. A missing note yields an
+// empty Note; verdict-free, aligned, and partial sections are skipped.
+func (d TestsDocument) MisalignedTests() []MisalignedTest {
+	misaligned := []MisalignedTest{}
+	for _, section := range d.sections() {
+		match := alignmentLinePattern.FindStringSubmatch(section)
+		if match == nil || !strings.EqualFold(match[1], "misaligned") {
+			continue
+		}
+		misaligned = append(misaligned, MisalignedTest{
+			Heading: strings.SplitN(strings.TrimSpace(section), "\n", 2)[0],
+			Note:    d.alignmentNote(section),
+		})
+	}
+	return misaligned
+}
+
+// alignmentNote extracts the trimmed note text, or "" when the line is absent.
+func (d TestsDocument) alignmentNote(section string) string {
+	match := alignmentNotePattern.FindStringSubmatch(section)
+	if match == nil {
+		return ""
+	}
+	return strings.TrimSpace(match[1])
 }
 
 // sections splits the document at each `### Test N` heading, dropping any

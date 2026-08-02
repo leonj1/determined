@@ -75,9 +75,9 @@ func readRawFrame(t *testing.T, reader *bufio.Reader) (byte, []byte) {
 }
 
 func TestWebSocketAnswersPingWithPong(t *testing.T) {
-	serverURL, _, stop := startChatServer(t)
+	chatServer, _, stop := startChatServer(t)
 	defer stop()
-	connection, reader := rawWebSocket(t, serverURL)
+	connection, reader := rawWebSocket(t, chatServer.URL())
 	defer connection.Close()
 
 	writeMaskedFrame(t, connection, 0x89, []byte("alive"))
@@ -90,9 +90,9 @@ func TestWebSocketAnswersPingWithPong(t *testing.T) {
 func TestWebSocketRejectsUnsupportedFrames(t *testing.T) {
 	for name, first := range map[string]byte{"binary": 0x82, "fragmented": 0x01} {
 		t.Run(name, func(t *testing.T) {
-			serverURL, _, stop := startChatServer(t)
+			chatServer, _, stop := startChatServer(t)
 			defer stop()
-			connection, reader := rawWebSocket(t, serverURL)
+			connection, reader := rawWebSocket(t, chatServer.URL())
 			defer connection.Close()
 			writeMaskedFrame(t, connection, first, nil)
 			opcode, payload := readRawFrame(t, reader)
@@ -104,9 +104,9 @@ func TestWebSocketRejectsUnsupportedFrames(t *testing.T) {
 }
 
 func TestWebSocketRejectsOversizedFrameBeforeReadingPayload(t *testing.T) {
-	serverURL, _, stop := startChatServer(t)
+	chatServer, _, stop := startChatServer(t)
 	defer stop()
-	connection, reader := rawWebSocket(t, serverURL)
+	connection, reader := rawWebSocket(t, chatServer.URL())
 	defer connection.Close()
 	header := []byte{0x81, 0xff, 0, 0, 0, 0, 0, 0x10, 0, 0x01}
 	if _, err := connection.Write(header); err != nil {

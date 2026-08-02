@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"strings"
 
 	"determined/src/models"
 	"determined/src/services"
@@ -32,6 +33,28 @@ func postPlanActionFor(executing bool, outcome models.Outcome) postPlanAction {
 		return postPlanAutoExec
 	}
 	return postPlanOffer
+}
+
+// inputWaiter is the slice of the status page the approval gate needs: it
+// surfaces the terminal wait so the browser user returns to the terminal.
+// A nil waiter (headless chains without a page) disables the notice.
+type inputWaiter interface {
+	WaitForInput()
+}
+
+// approveExecution gates chained execution on explicit user consent: only a
+// y/yes answer starts the execute loop. Anything else — bare Enter, any other
+// text, or a failed read — declines, leaving the plan files intact.
+func approveExecution(prompter services.Prompter, status inputWaiter) bool {
+	if status != nil {
+		status.WaitForInput()
+	}
+	answer, err := prompter.Ask("Plan approved — begin execution? [y/N]")
+	if err != nil {
+		return false
+	}
+	normalized := strings.ToLower(strings.TrimSpace(answer))
+	return normalized == "y" || normalized == "yes"
 }
 
 // runAutoExec starts execution with the live status reporter, then holds the

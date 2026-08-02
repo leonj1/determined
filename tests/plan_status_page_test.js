@@ -108,6 +108,8 @@ function createFakeDocument(registry, tabs, panels, testTabs) {
     documentElement: new FakeNode("html", registry),
     createElement: (tagName) => new FakeNode(tagName, registry),
     getElementById: (id) => registry.get(id) || null,
+    querySelector: (selector) =>
+      selector === 'meta[name="session-token"]' ? { content: "test-session-token" } : null,
     querySelectorAll: (selector) => selectNodes(selector, tabs, panels, testTabs),
   };
   return document;
@@ -524,6 +526,26 @@ test("the Plan tab renders a generated demo in a network-isolated frame", () => 
   browser.run(`renderDemo("")`);
   assert.equal(browser.run(`document.getElementById("plan-demo").hidden`), true);
   assert.equal(browser.run(`document.getElementById("demo-frame").srcdoc`), "");
+});
+
+test("the Plan tab renders the assumptions section as its own block", () => {
+  const browser = createPageEnvironment();
+  browser.run(`
+    render({
+      git: {}, tool: {}, phase: "running", goal: "Goal", plan: "Plan",
+      assumptions: "- SQLite is the storage engine\\n- Auth uses sessions",
+      tests: "", taskSteps: [], log: [], steps: [], pendingAnnotations: [],
+      execLog: [], execPhase: "", explainPhase: "", quizPhase: "",
+    });
+  `);
+
+  assert.equal(browser.run(`document.getElementById("plan-assumptions").hidden`), false);
+  const doc = browser.run(`document.getElementById("plan-assumptions-doc").innerHTML`);
+  assert.match(doc, /SQLite is the storage engine/);
+  assert.match(doc, /Auth uses sessions/);
+
+  browser.run(`renderAssumptions("")`);
+  assert.equal(browser.run(`document.getElementById("plan-assumptions").hidden`), true);
 });
 
 test("only the current unfinished planning artifact is marked running", () => {

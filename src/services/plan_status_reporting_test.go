@@ -14,9 +14,10 @@ import (
 // fakeStatusReporter records every status event the orchestrator emits, in
 // order, so tests can assert the exact reporting sequence.
 type fakeStatusReporter struct {
-	events    []string
-	goal      string
-	plan      string
+	events      []string
+	goal        string
+	plan        string
+	assumptions string
 	demo      string
 	tests     string
 	taskSteps []models.TaskStep
@@ -45,6 +46,10 @@ func (r *fakeStatusReporter) SetGoal(goal string) {
 func (r *fakeStatusReporter) SetPlan(plan string) {
 	r.plan = plan
 	r.events = append(r.events, "plan")
+}
+func (r *fakeStatusReporter) SetAssumptions(assumptions string) {
+	r.assumptions = assumptions
+	r.events = append(r.events, "assumptions")
 }
 func (r *fakeStatusReporter) SetDemo(demo string) {
 	r.demo = demo
@@ -123,12 +128,14 @@ func TestSuccessfulPlanReportsFullStatusSequence(t *testing.T) {
 		"wait-for-input",
 		"progress: planning project",
 		"log-entry: planning project",
-		"plan",       // refine entry publishes the finished plan
-		"tests",      // ...the recommended TESTS.md
-		"task-steps", // ...and the parsed STEPS.md items
-		"plan",       // reportFinish re-publishes the final plan text
-		"tests",      // ...the final recommended tests
-		"task-steps", // ...and the final step list
+		"plan",        // refine entry publishes the finished plan
+		"tests",       // ...the recommended TESTS.md
+		"task-steps",  // ...the parsed STEPS.md items
+		"assumptions", // ...and the plan's assumptions section
+		"plan",        // reportFinish re-publishes the final plan text
+		"tests",       // ...the final recommended tests
+		"task-steps",  // ...the final step list
+		"assumptions", // ...and the final assumptions section
 		"finish: succeeded",
 	}
 	if len(reporter.events) != len(want) {

@@ -40,6 +40,7 @@ func (stubClock) Now() time.Time { return time.Unix(0, 0) }
 
 func stallServer(sink StallChoiceSink) *PlanStatusServer {
 	s := NewPlanStatusServer(stubSource{}, nil, nil, stubClock{})
+	s.token = "stall-test-token"
 	if sink != nil {
 		s = s.WithStallChoice(sink)
 	}
@@ -48,6 +49,7 @@ func stallServer(sink StallChoiceSink) *PlanStatusServer {
 
 func postStall(s *PlanStatusServer, method, body string) *httptest.ResponseRecorder {
 	req := httptest.NewRequest(method, "/stall/choice", strings.NewReader(body))
+	req.Header.Set(StatusSessionTokenHeader, s.token)
 	rec := httptest.NewRecorder()
 	s.serveStallChoice(rec, req)
 	return rec
