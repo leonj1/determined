@@ -24,6 +24,21 @@ func NewTestsDocument(content string) TestsDocument {
 	return TestsDocument{content: content}
 }
 
+// TestCount returns the number of numbered test sections in the document.
+func (d TestsDocument) TestCount() int {
+	return len(d.sections())
+}
+
+// HasJourneyTest reports whether any test section is a journey test.
+func (d TestsDocument) HasJourneyTest() bool {
+	for _, section := range d.sections() {
+		if d.isJourney(section) {
+			return true
+		}
+	}
+	return false
+}
+
 // JourneyTestsMissingDiagrams returns the heading line of every journey test
 // that lacks a mermaid sequence diagram. A section counts as a journey test
 // when its Type line names journey/end-to-end/e2e, or when it is untyped and

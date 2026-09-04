@@ -95,6 +95,16 @@ func TestEmptyDocumentHasNoJourneyTests(t *testing.T) {
 	}
 }
 
+func TestDocumentReportsTestCountAndJourneyPresence(t *testing.T) {
+	doc := services.NewTestsDocument(
+		"### Test 1: journey\nUser browses.\n\n" +
+			"### Test 2: scenario\n```gherkin\nScenario: search\n```\n")
+
+	if doc.TestCount() != 2 || !doc.HasJourneyTest() {
+		t.Fatalf("count=%d journey=%v, want 2 and true", doc.TestCount(), doc.HasJourneyTest())
+	}
+}
+
 func TestMisalignedTestWithNoteReturnsHeadingAndNote(t *testing.T) {
 	doc := services.NewTestsDocument(
 		"### Test 1: signup journey\n**Alignment:** misaligned\n" +

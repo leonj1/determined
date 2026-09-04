@@ -109,12 +109,18 @@ skipped and resumes at the oldest available line.
 2. **Invoke the planner** — ask the selected AI tool to read the goal and
    either create clarifying questions or produce the plan files.
 3. **Run the interview** — if the tool writes `QUESTIONS.md`, ask each question
-   in the status page for interactive runs or on the terminal otherwise, append the responses to `ANSWERS.md`, clear the questions,
+   in the status page for interactive runs or on the terminal otherwise, append the responses to `ANSWERS.md` beneath a preamble
+   stating that answers only clarify `GOAL.md`, clear the questions,
    and invoke the planner again. Repeat until it has enough information.
 4. **Create the plan** — the planner writes `PLAN.md` and a machine-checkable
    `STEPS.md` whose checkbox steps each have a concrete `Done when:` criterion.
+   `PLAN.md` records an auditable `## Size` classification (`trivial`, `small`,
+   `medium`, or `large`) that caps the plan at 3, 6, 12, or unlimited steps,
+   respectively, and records deliberately accepted risks under
+   `## Accepted trade-offs`.
    Every assumption and chosen default is recorded under a `## Assumptions`
-   heading in `PLAN.md`.
+   heading in `PLAN.md`. A single simplicity pass then removes speculative
+   decisions, tests, and steps and merges work whose behavior can be checked together.
 5. **Confirm the assumptions** — relay the `## Assumptions` section (also
    rendered as its own block on the status page) as one question. Bare Enter,
    `y`, `yes`, or `ok` confirms; any other answer is treated as a correction,
@@ -123,17 +129,20 @@ skipped and resumes at the oldest available line.
    page; ordinary runs continue to use stdin.
 6. **Apply the quality gate** — independently assess completeness, the
    task-specific template, ordering, step size, and acceptance criteria.
-   Objective issues go to `REFINEMENTS.md`; preference-, intent-, and
-   risk-dependent findings become numbered questions in `QUESTIONS.md`, which
-   are asked on the terminal and answered into `ANSWERS.md` before the refiner
-   runs. Refine and reassess for up to `--max-step-passes` rounds (skipped in
+   Objective issues go to `REFINEMENTS.md`. Questions are asked only when a
+   phrase in `GOAL.md` is ambiguous about behavior the plan must implement;
+   answers cannot add scope, and new behavior belongs in `GOAL.md`. Refine and
+   reassess for up to `--max-step-passes` rounds (skipped in
    prototype mode). When the pass cap is exhausted with findings remaining,
    each finding is shown (terminal and status page) and you choose `accept`
    (finish as-is), `refine` (one more pass), or `edit` (fix the plan files
    yourself, press Enter, and reassess) — the plan is never silently accepted
    with known defects.
 7. **Recommend and align tests** — write recommended journey/BDD tests to
-   `TESTS.md` and judge each against the plan's functional goal. Tests judged
+   `TESTS.md` and judge each against the plan's functional goal. Trivial and
+   small plans carry exactly one test, which may be Gherkin-only; medium and
+   large plans carry up to three, including a journey diagram and Gherkin.
+   Tests judged
    `misaligned` get one automatic rewrite pass; any that remain misaligned are
    shown with their alignment notes and gated on `accept` (keep them),
    `rewrite` (another realign pass), or `drop` (remove those tests). Planning
@@ -185,11 +194,10 @@ with `--plan` and `-exec` (the session runs first); see
 4. **Invoke the tool** — stream output live and tee it to `logs/`. Kill an
    invocation after `--max-iteration-duration`, retry failures, and exit `1`
    after `--max-consecutive-failures` consecutive failures.
-5. **Verify completed work** — for every newly checked step, first use a fresh
-   reviewer invocation to check the implementation is the simplest solution
-   that satisfies the step, then another to test its acceptance criterion. A
-   rejection by either reviewer unchecks the step and records the reason in
-   `FIXES.md`.
+5. **Verify completed work** — for every newly checked step, use a fresh
+   reviewer invocation to test its acceptance criterion. A rejection unchecks
+   the step and records the reason in `FIXES.md`. Add `--step-simplicity` to
+   run the former per-step simplicity reviewer before correctness verification.
 6. **Checkpoint verified work** — git-commit each newly checked step that
    survives verification.
 7. **Detect stalls** — exit `3` after `--max-stalled-iterations` consecutive
@@ -244,7 +252,8 @@ each one is for:
 |------|---------|
 | `writing planning goal` | Write the supplied goal text (or goal file contents) to `GOAL.md` so the planner has a fixed statement of intent. |
 | `planning project` | Invoke the AI tool to read the goal and either raise clarifying questions or write `PLAN.md` / `STEPS.md`. |
-| `answering planning questions` | Relay each question from `QUESTIONS.md` to the active input surface and record responses in `ANSWERS.md` for the next planner pass. |
+| `answering planning questions` | Relay goal-clarifying questions from `QUESTIONS.md` and record scoped responses in `ANSWERS.md` for the next planner pass. |
+| `simplifying plan` | Once per newly drafted plan, remove or merge work, decisions, and tests that `GOAL.md` does not require. |
 | `confirming plan assumptions` | Relay the plan's `## Assumptions` section for confirmation or correction before refinement begins. |
 | `assessing plan` | Independently grade the drafted plan for completeness, ordering, step size, and concrete `Done when:` criteria, writing objective issues to `REFINEMENTS.md` and preference-dependent findings to `QUESTIONS.md`. |
 | `refining plan` | Rework the plan to resolve the assessment's issues, then reassess — up to `--max-step-passes` rounds; an exhausted cap with findings remaining asks accept / refine / edit. |
@@ -253,7 +262,7 @@ each one is for:
 | `generating UI demo` | After the plan is final, create `DEMO.html` only when its UI change is trivial and can be shown without external dependencies. |
 | `applying annotation` | Apply one user annotation from the plan page to the plan documents and republish them. |
 | `executing step N` | Invoke the tool with exactly the next unchecked step from `STEPS.md` and its acceptance criterion. |
-| `checking simplicity of step N` | Use a fresh reviewer invocation to judge whether the newly checked step's implementation is the simplest solution that satisfies it; a materially simpler alternative unchecks the step and records the simpler approach in `FIXES.md`. |
+| `checking simplicity of step N` | With `--step-simplicity`, judge whether the newly checked step's implementation is the simplest solution that satisfies it. |
 | `verifying step N` | Use a fresh reviewer invocation to test the newly checked step's `Done when:` criterion; failure unchecks it and records why in `FIXES.md`. |
 | `running the AI tie-breaker` | When the coder and verifier deadlock, invoke the AI tool to decide whether the worker's implementation or the verifier's objection is correct. Its verdict is final and skips further verification of the step. |
 | `checkpointing step N` | Git-commit the work of a step that survived verification. |
@@ -322,7 +331,8 @@ ideally a clean git checkout, so every change is reviewable and revertible.
 | `--step-max-runtime` | `15m` | Stop (exit `1`) when a single step's total runtime across invocations exceeds this, checked between invocations. `0` = unlimited. |
 | `--max-consecutive-failures` | `3` | Abort after this many consecutive failed tool invocations; any success resets the count. |
 | `--max-stalled-iterations` | `3` | Stop (exit `3`) after this many consecutive iterations check no new step. `0` disables stall detection. |
-| `--verify`       | `true`   | After each newly checked step, run independent reviewer invocations — a simplicity check, then a correctness verification — either of which unchecks it (recording why in `FIXES.md`) if a materially simpler solution exists or its acceptance criterion is not met. |
+| `--verify`       | `true`   | After each newly checked step, run an independent correctness reviewer; failure unchecks it and records why in `FIXES.md`. |
+| `--step-simplicity` | `false` | Before correctness verification, also run the legacy per-step simplicity reviewer. Planning already performs one whole-plan simplicity pass. |
 | `--specialized-reviews` | `true` | Before the final audit, run independent security, performance, and reliability/maintainability review gates. |
 | `--git-checkpoint` | `true` | Git-commit the working tree after each verified step when running in a git repository. |
 | `--tie-breaker`  | `true`   | When the coder and verifier deadlock after `--max-stalled-iterations`, run an independent AI invocation to break the tie. The tie-breaker evaluates the step, the goal, the implementation, and the verifier's rejections; its verdict (ACCEPT or REJECT) is final and skips further verification. |

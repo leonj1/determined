@@ -98,6 +98,10 @@ func reviewConfig() models.PlanConfig {
 	return cfg
 }
 
+func withSize(plan, size string) string {
+	return plan + "\n## Size\n\n**Size:** " + size + "\n"
+}
+
 // --- Functional tests ---
 
 func TestPlanAsksQuestionsThenCompletes(t *testing.T) {
@@ -138,6 +142,229 @@ func TestPlanAsksQuestionsThenCompletes(t *testing.T) {
 	}
 	if len(prompter.asked) != 2 {
 		t.Fatalf("expected the user to be asked 2 questions, got %d", len(prompter.asked))
+	}
+}
+
+func TestPlanIsSimplifiedOnceBeforeTestsAndAssessment(t *testing.T) {
+	fs := newFakeFileStore()
+	cfg := planConfig(0)
+	cfg.MaxRefinePasses = 1
+	cfg.SimplifyInvocation = models.Invocation{Binary: "droid", Args: []string{"exec", "simplify"}}
+	runner := &fakeRunner{script: func(call int, _ io.Writer) error {
+		switch call {
+		case 1:
+			fs.Write("PLAN.md", withSize("# PLAN", "small"))
+			fs.Write("STEPS.md", "- [ ] a\n  Purpose: p\n  Done when: d\n- [ ] b\n  Purpose: p\n  Done when: d\n")
+		case 2:
+			fs.Write("STEPS.md", "- [ ] a\n  Purpose: p\n  Done when: d\n")
+			fs.Write("PLAN.md", fs.data["PLAN.md"]+"\n## Simplifications\n- merged b into a\n")
+		case 3:
+			fs.Write("TESTS.md", validTestsDoc)
+		case 4:
+			fs.Write("REFINEMENTS.md", "NONE")
+		}
+		return nil
+	}}
+	o := services.NewPlanOrchestrator(runner, fs, &fakePrompter{}, &fakeClock{now: time.Now()}, &fakeLogSink{}, io.Discard, cfg)
+
+	if outcome := o.Run(context.Background()); outcome != models.OutcomePlanReady {
+		t.Fatalf("expected a ready plan, got %v", outcome)
+	}
+	if runner.prompt(2) != "simplify" || runner.calls != 4 {
+		t.Fatalf("prompts=%v calls=%d, want simplify second and four calls", runner.invocations, runner.calls)
+	}
+}
+
+func TestResumedPlanIsNotSimplifiedAgain(t *testing.T) {
+	fs := newFakeFileStore()
+	fs.Write("PLAN.md", withSize("# PLAN", "large"))
+	fs.Write("STEPS.md", "- [ ] a\n  Purpose: p\n  Done when: d\n")
+	fs.Write("TESTS.md", validTestsDoc)
+	cfg := planConfig(0)
+	cfg.MaxRefinePasses = 1
+	cfg.SimplifyInvocation = models.Invocation{Binary: "droid", Args: []string{"exec", "simplify"}}
+	runner := &fakeRunner{script: func(_ int, _ io.Writer) error {
+		fs.Write("REFINEMENTS.md", "NONE")
+		return nil
+	}}
+	o := services.NewPlanOrchestrator(runner, fs, &fakePrompter{}, &fakeClock{now: time.Now()}, &fakeLogSink{}, io.Discard, cfg)
+
+	if outcome := o.Run(context.Background()); outcome != models.OutcomePlanReady {
+		t.Fatalf("expected a ready resumed plan, got %v", outcome)
+	}
+	if runner.calls != 1 || runner.prompt(1) == "simplify" {
+		t.Fatalf("resumed plan prompts=%v, want only assessment", runner.invocations)
+	}
+}
+
+func TestTrivialPlanOverTheStepCapIsRefinedAfterCleanAssessment(t *testing.T) {
+	fs := newFakeFileStore()
+	cfg := planConfig(0)
+	cfg.MaxRefinePasses = 3
+	cfg.SimplifyInvocation = models.Invocation{Binary: "droid", Args: []string{"exec", "simplify"}}
+	fifteen := strings.Repeat("- [ ] step\n  Purpose: p\n  Done when: d\n", 15)
+	runner := &fakeRunner{script: func(call int, _ io.Writer) error {
+		switch call {
+		case 1:
+			fs.Write("PLAN.md", withSize("# PLAN", "trivial"))
+			fs.Write("STEPS.md", fifteen)
+			fs.Write("TESTS.md", validTestsDoc)
+		case 3, 5:
+			fs.Write("REFINEMENTS.md", "NONE")
+		case 4:
+			if !strings.Contains(fs.data["REFINEMENTS.md"], "15 steps exceeds the trivial cap of 3") {
+				t.Fatalf("refiner did not receive size finding: %q", fs.data["REFINEMENTS.md"])
+			}
+			fs.Write("STEPS.md", strings.Repeat("- [ ] step\n  Purpose: p\n  Done when: d\n", 3))
+		}
+		return nil
+	}}
+	o := services.NewPlanOrchestrator(runner, fs, &fakePrompter{}, &fakeClock{now: time.Now()}, &fakeLogSink{}, io.Discard, cfg)
+
+	if outcome := o.Run(context.Background()); outcome != models.OutcomePlanReady || runner.calls != 5 {
+		t.Fatalf("outcome=%v calls=%d, want ready after five calls", outcome, runner.calls)
+	}
+}
+
+func TestMissingSizeLineIsAPlanningFinding(t *testing.T) {
+	fs := newFakeFileStore()
+	cfg := planConfig(0)
+	cfg.MaxRefinePasses = 3
+	cfg.SimplifyInvocation = models.Invocation{Binary: "droid", Args: []string{"exec", "simplify"}}
+	runner := &fakeRunner{script: func(call int, _ io.Writer) error {
+		switch call {
+		case 1:
+			fs.Write("PLAN.md", "# PLAN\n")
+			fs.Write("STEPS.md", "- [ ] step\n  Purpose: p\n  Done when: d\n")
+			fs.Write("TESTS.md", validTestsDoc)
+		case 3, 5:
+			fs.Write("REFINEMENTS.md", "NONE")
+		case 4:
+			if !strings.Contains(fs.data["REFINEMENTS.md"], "PLAN.md has no `**Size:**` line under `## Size`") {
+				t.Fatalf("refiner did not receive missing-size finding: %q", fs.data["REFINEMENTS.md"])
+			}
+			fs.Write("PLAN.md", withSize("# PLAN", "trivial"))
+		}
+		return nil
+	}}
+	o := services.NewPlanOrchestrator(runner, fs, &fakePrompter{}, &fakeClock{now: time.Now()}, &fakeLogSink{}, io.Discard, cfg)
+
+	if outcome := o.Run(context.Background()); outcome != models.OutcomePlanReady {
+		t.Fatalf("expected missing size to be repaired, got %v", outcome)
+	}
+}
+
+func TestAnswersFileOpensWithClarificationPreambleOnce(t *testing.T) {
+	fs := newFakeFileStore()
+	prompter := &fakePrompter{answers: []string{"the key, raw", "use sensible defaults"}}
+	runner := &fakeRunner{script: func(call int, _ io.Writer) error {
+		switch call {
+		case 1:
+			fs.Write("QUESTIONS.md", "1. What value is stored?\n")
+		case 2:
+			fs.Write("QUESTIONS.md", "1. Which storage key name?\n")
+		case 3:
+			fs.Write("PLAN.md", withSize("# PLAN", "trivial"))
+			fs.Write("STEPS.md", "- [ ] a\n  Purpose: p\n  Done when: d\n")
+			fs.Write("TESTS.md", validTestsDoc)
+		}
+		return nil
+	}}
+	o := services.NewPlanOrchestrator(runner, fs, prompter, &fakeClock{now: time.Now()}, &fakeLogSink{}, io.Discard, planConfig(0))
+
+	if outcome := o.Run(context.Background()); outcome != models.OutcomePlanReady {
+		t.Fatalf("expected a ready plan, got %v", outcome)
+	}
+	answers := fs.data["ANSWERS.md"]
+	preamble := "Answers below clarify the questions asked. They do not extend GOAL.md"
+	if !strings.HasPrefix(answers, preamble) || strings.Count(answers, preamble) != 1 || strings.Count(answers, "## Round") != 2 {
+		t.Fatalf("unexpected answers history:\n%s", answers)
+	}
+}
+
+func TestTrivialPlanAcceptsSingleGherkinTestWithoutDiagram(t *testing.T) {
+	fs := newFakeFileStore()
+	cfg := planConfig(0)
+	cfg.MaxRefinePasses = 1
+	cfg.SimplifyInvocation = models.Invocation{Binary: "droid", Args: []string{"exec", "simplify"}}
+	gherkin := "### Test 1: saves key\n```gherkin\nScenario: key persists\n  Given ...\n  When ...\n  Then ...\n```\n**Alignment:** aligned\n"
+	runner := &fakeRunner{script: func(call int, _ io.Writer) error {
+		if call == 1 {
+			fs.Write("PLAN.md", withSize("# PLAN", "trivial"))
+			fs.Write("STEPS.md", "- [ ] a\n  Purpose: p\n  Done when: d\n")
+			fs.Write("TESTS.md", gherkin)
+		}
+		if call == 3 {
+			fs.Write("REFINEMENTS.md", "NONE")
+		}
+		return nil
+	}}
+	o := services.NewPlanOrchestrator(runner, fs, &fakePrompter{}, &fakeClock{now: time.Now()}, &fakeLogSink{}, io.Discard, cfg)
+
+	if outcome := o.Run(context.Background()); outcome != models.OutcomePlanReady || runner.calls != 3 {
+		t.Fatalf("outcome=%v calls=%d, want plan + simplify + assess", outcome, runner.calls)
+	}
+	if fs.data["TESTS.md"] != gherkin {
+		t.Fatal("gherkin-only trivial test was regenerated")
+	}
+}
+
+func TestMediumPlanStillRequiresJourneyDiagram(t *testing.T) {
+	fs := newFakeFileStore()
+	cfg := planConfig(0)
+	cfg.MaxRefinePasses = 1
+	cfg.SimplifyInvocation = models.Invocation{Binary: "droid", Args: []string{"exec", "simplify"}}
+	missingDiagram := "### Test 1: journey\n**Type:** Journey\nUser saves.\n**Alignment:** aligned\n"
+	runner := &fakeRunner{script: func(call int, _ io.Writer) error {
+		switch call {
+		case 1:
+			fs.Write("PLAN.md", withSize("# PLAN", "medium"))
+			fs.Write("STEPS.md", "- [ ] a\n  Purpose: p\n  Done when: d\n")
+			fs.Write("TESTS.md", missingDiagram)
+		case 3:
+			fs.Write("TESTS.md", validTestsDoc)
+		case 4:
+			fs.Write("REFINEMENTS.md", "NONE")
+		}
+		return nil
+	}}
+	o := services.NewPlanOrchestrator(runner, fs, &fakePrompter{}, &fakeClock{now: time.Now()}, &fakeLogSink{}, io.Discard, cfg)
+
+	if outcome := o.Run(context.Background()); outcome != models.OutcomePlanReady || runner.calls != 4 {
+		t.Fatalf("outcome=%v calls=%d, want regeneration before assessment", outcome, runner.calls)
+	}
+	if runner.prompt(3) != "tests" {
+		t.Fatalf("third invocation = %q, want tests regeneration", runner.prompt(3))
+	}
+}
+
+func TestTrivialPlanWithThreeTestsIsAPlanningFinding(t *testing.T) {
+	fs := newFakeFileStore()
+	cfg := planConfig(0)
+	cfg.MaxRefinePasses = 3
+	cfg.SimplifyInvocation = models.Invocation{Binary: "droid", Args: []string{"exec", "simplify"}}
+	threeTests := validTestsDoc + strings.Replace(validTestsDoc, "Test 1", "Test 2", 1) +
+		strings.Replace(validTestsDoc, "Test 1", "Test 3", 1)
+	runner := &fakeRunner{script: func(call int, _ io.Writer) error {
+		switch call {
+		case 1:
+			fs.Write("PLAN.md", withSize("# PLAN", "trivial"))
+			fs.Write("STEPS.md", "- [ ] a\n  Purpose: p\n  Done when: d\n")
+			fs.Write("TESTS.md", threeTests)
+		case 3, 5:
+			fs.Write("REFINEMENTS.md", "NONE")
+		case 4:
+			if !strings.Contains(fs.data["REFINEMENTS.md"], "3 tests exceeds the trivial limit of 1") {
+				t.Fatalf("refiner did not receive test-count finding: %q", fs.data["REFINEMENTS.md"])
+			}
+			fs.Write("TESTS.md", validTestsDoc)
+		}
+		return nil
+	}}
+	o := services.NewPlanOrchestrator(runner, fs, &fakePrompter{}, &fakeClock{now: time.Now()}, &fakeLogSink{}, io.Discard, cfg)
+
+	if outcome := o.Run(context.Background()); outcome != models.OutcomePlanReady {
+		t.Fatalf("expected extra tests to be refined, got %v", outcome)
 	}
 }
 
@@ -466,6 +693,9 @@ func TestUserCanReviewExistingPlanThroughAnInterview(t *testing.T) {
 		if !strings.Contains(fs.data["REVIEW_ANSWERS.md"], want) {
 			t.Fatalf("expected review answers to contain %q, got %q", want, fs.data["REVIEW_ANSWERS.md"])
 		}
+	}
+	if !strings.HasPrefix(fs.data["REVIEW_ANSWERS.md"], "Answers below clarify the questions asked") {
+		t.Fatalf("review answers lack clarification preamble: %q", fs.data["REVIEW_ANSWERS.md"])
 	}
 	if !strings.Contains(fs.data["PLAN.md"], "skip and report invalid rows") {
 		t.Fatalf("expected the answer to be reflected in PLAN.md, got %q", fs.data["PLAN.md"])

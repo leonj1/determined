@@ -186,6 +186,27 @@ Sec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=
 On curl builds with WebSocket URL support,
 `curl --include ws://localhost:63431/chat` can perform the upgrade, but a
 WebSocket client is still needed to mask and exchange the JSON frames reliably.
+
+## Proportional planning and verification
+
+New plans record `## Size` in PLAN.md with a `**Size:**` value of `trivial`,
+`small`, `medium`, or `large` and an auditable `**Why:**` line. The respective
+step caps are 3, 6, 12, and unlimited. Trivial and small plans use the lean
+quality gate and recommend exactly one test; medium and large plans recommend
+up to three, including a journey diagram and a Gherkin scenario. Edit the size
+line before execution to override a misclassification.
+
+The first draft receives one whole-plan simplicity review before test backfill
+and refinement. Per-step execution then uses one correctness reviewer by
+default; pass `--step-simplicity` to add a simplicity reviewer before every
+correctness review.
+
+Planning and review questions only clarify ambiguous behavior already named in
+GOAL.md. ANSWERS.md begins with a preamble explaining that answers cannot widen
+the goal; add new behavior to GOAL.md instead. PLAN.md records deliberately
+accepted risks under `## Accepted trade-offs`, which specialist reviews may
+note as advisories but do not reopen as execution steps.
+
 # Milestone execution
 
 Use `-milestones` with `-plan` or `-exec`. `-plan-tool` selects the independent gate tool (default: `-tool`). `-max-plan-revisions` and `-max-intent-retries` bound the outer loop; zero means unlimited.

@@ -637,6 +637,31 @@ func TestMaxStepPassesDefaultsToTwo(t *testing.T) {
 	}
 }
 
+func TestStepSimplicityFlagDefaultsOffAndCanBeEnabled(t *testing.T) {
+	flags := flag.NewFlagSet("determined", flag.ContinueOnError)
+	stepSimplicity := registerStepSimplicityFlag(flags)
+	if *stepSimplicity {
+		t.Fatal("step simplicity should default off")
+	}
+	if err := flags.Parse([]string{"-step-simplicity"}); err != nil {
+		t.Fatalf("parse step simplicity flag: %v", err)
+	}
+	if !*stepSimplicity {
+		t.Fatal("step simplicity flag should enable the review")
+	}
+}
+
+func TestExecutionConfigCarriesStepSimplicityChoice(t *testing.T) {
+	cfg := buildExecutionConfig(
+		models.DroidTool{}, 0, 0, 0, 0, 0, 0,
+		true, true, false, false, false,
+	)
+
+	if !cfg.Verify || !cfg.SimplicityReviews {
+		t.Fatalf("verification settings = verify:%v simplicity:%v, want both true", cfg.Verify, cfg.SimplicityReviews)
+	}
+}
+
 func TestUserCanSetMaxDurationWithShortFlag(t *testing.T) {
 	flags := flag.NewFlagSet("determined", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
@@ -777,5 +802,14 @@ func TestAssembledPlanConfigsCarryRealignInvocation(t *testing.T) {
 		if !strings.Contains(strings.Join(invocation.Args, " "), "misaligned") {
 			t.Fatalf("expected %s RealignInvocation args to carry the realign prompt, got %+v", name, invocation.Args)
 		}
+	}
+}
+
+func TestCreatePlanConfigCarriesSimplifyInvocation(t *testing.T) {
+	cfg := createPlanConfig(models.ClaudeTool{}, "goal", models.PlanModeStandard, 0, 3, 3)
+
+	if cfg.SimplifyInvocation.Binary == "" ||
+		!strings.Contains(strings.Join(cfg.SimplifyInvocation.Args, " "), "Simplifications") {
+		t.Fatalf("create config lacks simplify invocation: %+v", cfg.SimplifyInvocation)
 	}
 }

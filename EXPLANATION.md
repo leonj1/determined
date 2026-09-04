@@ -1,4 +1,8 @@
-This run turns determined's planning flow from a pipeline that silently adopts its own decisions into one that stops at every consequential judgment call and asks the user. The AI's assumptions are now surfaced and confirmable, assessor questions reach the user in create mode, an exhausted refine cap and misaligned tests block on explicit choices instead of auto-accepting, and chained execution never starts without a y/yes approval. Alongside the alignment gates, the live status server — which can trigger unattended execution — is hardened against remote and browser-borne attacks: it binds to loopback, validates `Host` and `Origin`, requires a per-session token on state-changing endpoints, and forbids framing. A single end-to-end journey test drives every gate in one run so regressions in their interaction cannot slip past the per-gate unit tests.
+Determined now scales planning ceremony to the goal. PLAN.md records an auditable trivial/small/medium/large classification, Go enforces its step and test caps, and one plan-time simplicity pass can remove or merge speculative work before refinement. Interview answers clarify but never widen GOAL.md, while accepted trade-offs remain advisory during specialist review.
+
+Execution verification now costs one correctness reviewer per checked step by default. The former per-step simplicity review remains available with `--step-simplicity`; this keeps the guard available without charging every ordinary execution for work already performed at plan time.
+
+This run also retains determined's earlier planning gates and status-server hardening: assumptions remain confirmable, exhausted refinement and misaligned tests still require explicit choices, and state-changing status endpoints remain token-protected.
 
 ## Assumption confirmation round after drafting
 

@@ -71,11 +71,64 @@ func (r *hangingRunner) Run(ctx context.Context, _ models.Invocation, _ io.Write
 
 func config(budget time.Duration) models.Config {
 	return models.Config{
-		StopFile:  "STOP.md",
-		PlanFile:  "PLAN.md",
-		StepsFile: "STEPS.md",
-		Tool:      models.DroidTool{},
-		Budget:    budget,
+		StopFile:          "STOP.md",
+		PlanFile:          "PLAN.md",
+		StepsFile:         "STEPS.md",
+		Tool:              models.DroidTool{},
+		Budget:            budget,
+		SimplicityReviews: true,
+	}
+}
+
+func TestVerifyCostsTwoInvocationsPerStepByDefault(t *testing.T) {
+	cfg := config(0)
+	cfg.Verify = true
+	cfg.SimplicityReviews = false
+	fs := plannedFileStore("- [ ] one\n  Purpose: p\n  Done when: d\n")
+	runner := &fakeRunner{script: func(call int, _ io.Writer) error {
+		if call == 1 {
+			fs.Write("STEPS.md", "- [x] one\n  Purpose: p\n  Done when: d\n")
+		}
+		if call == 4 {
+			fs.Write("STOP.md", "audit: plan satisfied")
+		}
+		return nil
+	}}
+	o := services.NewOrchestrator(runner, fs, &fakeClock{now: time.Now()}, &fakeLogSink{}, io.Discard, cfg)
+
+	o.Run(context.Background())
+
+	if !strings.Contains(runner.prompt(2), "Verify by reading the code") {
+		t.Fatalf("second invocation should verify correctness, got %q", runner.prompt(2))
+	}
+	for call := 1; call <= runner.calls; call++ {
+		if strings.Contains(runner.prompt(call), "for simplicity") {
+			t.Fatalf("simplicity review ran on call %d with opt-in disabled", call)
+		}
+	}
+}
+
+func TestVerifyRunsSimplicityReviewWhenEnabled(t *testing.T) {
+	cfg := config(0)
+	cfg.Verify = true
+	cfg.SimplicityReviews = true
+	fs := plannedFileStore("- [ ] one\n  Purpose: p\n  Done when: d\n")
+	runner := &fakeRunner{script: func(call int, _ io.Writer) error {
+		if call == 1 {
+			fs.Write("STEPS.md", "- [x] one\n  Purpose: p\n  Done when: d\n")
+		}
+		if call == 5 {
+			fs.Write("STOP.md", "audit: plan satisfied")
+		}
+		return nil
+	}}
+	o := services.NewOrchestrator(runner, fs, &fakeClock{now: time.Now()}, &fakeLogSink{}, io.Discard, cfg)
+
+	o.Run(context.Background())
+
+	if !strings.Contains(runner.prompt(2), "for simplicity") ||
+		!strings.Contains(runner.prompt(3), "Verify by reading the code") {
+		t.Fatalf("prompts=%v, want simplicity then correctness", runner.invocations)
 	}
 }
 

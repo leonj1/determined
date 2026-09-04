@@ -65,7 +65,8 @@ func main() {
 	stepMaxRuntime := flag.Duration("step-max-runtime", 15*time.Minute,
 		"stop the run when a single step's total runtime across invocations exceeds this, checked between invocations; 0 means unlimited")
 	verify := flag.Bool("verify", true,
-		"after each newly checked step, run independent reviewer invocations — a simplicity check, then a correctness verification — either of which unchecks it (recording why in FIXES.md) if a materially simpler solution exists or its acceptance criterion is not met")
+		"after each newly checked step, run an independent correctness reviewer that unchecks it and records why in FIXES.md when its acceptance criterion is not met")
+	stepSimplicity := registerStepSimplicityFlag(flag.CommandLine)
 	specializedReviews := flag.Bool("specialized-reviews", true,
 		"before the final audit, run independent security, performance, and reliability/maintainability reviews")
 	maxSpecialistRounds := flag.Int("max-specialist-rounds", 2,
@@ -176,7 +177,7 @@ func main() {
 	if proceed {
 		milestoneCfg := milestoneExecutionConfig{Enabled: *milestones, PlanTool: selectedPlanTool, MaxPlanRevisions: *maxPlanRevisions, MaxIntentRetries: *maxIntentRetries}
 		executor := func(ctx context.Context, status services.ExecStatusReporter) models.Outcome {
-			return runLoop(ctx, executionTool, *budget, *maxStalled, *maxFailures, *maxSpecialistRounds, *maxIterationDuration, *stepMaxRuntime, *verify, *specializedReviews, *gitCheckpoint, *tieBreaker, status, clock, logs, milestoneCfg)
+			return runLoop(ctx, executionTool, *budget, *maxStalled, *maxFailures, *maxSpecialistRounds, *maxIterationDuration, *stepMaxRuntime, *verify, *stepSimplicity, *specializedReviews, *gitCheckpoint, *tieBreaker, status, clock, logs, milestoneCfg)
 		}
 		if *reviewPlan {
 			outcome = runReviewPlan(ctx, selected, *budget, *maxStepPasses, *maxFailures, clock, logs)
@@ -210,6 +211,11 @@ func registerInitFlag(flags *flag.FlagSet) *bool {
 func registerMaxStepPassesFlag(flags *flag.FlagSet) *int {
 	return flags.Int("max-step-passes", 2,
 		"max quality assess/refine rounds during planning; 0 disables")
+}
+
+func registerStepSimplicityFlag(flags *flag.FlagSet) *bool {
+	return flags.Bool("step-simplicity", false,
+		"run an additional simplicity reviewer before each checked step's correctness review")
 }
 
 func runInitCommand() {
@@ -442,7 +448,8 @@ func createPlanConfig(tool models.Tool, goal string, mode models.PlanMode, budge
 		Operation: models.PlanOperationCreate, Goal: goal,
 		Invocation: tool.Invocation(prompts.Plan), Budget: budget,
 		AssessInvocation: tool.Invocation(prompts.Assess), RefineInvocation: tool.Invocation(prompts.Refine),
-		TestsInvocation: tool.Invocation(prompts.Tests), AlignInvocation: tool.Invocation(prompts.Align),
+		SimplifyInvocation: tool.Invocation(prompts.Simplify),
+		TestsInvocation:    tool.Invocation(prompts.Tests), AlignInvocation: tool.Invocation(prompts.Align),
 		RealignInvocation:  tool.Invocation(prompts.Realign),
 		DemoInvocation:     tool.Invocation(prompts.Demo),
 		AnnotateInvocation: tool.Invocation(prompts.Annotate),
@@ -467,8 +474,8 @@ type milestoneExecutionConfig struct {
 
 // runLoop runs the unattended execute loop against PLAN.md / STEPS.md. A
 // non-nil status reporter streams the run to the interactive status page.
-func runLoop(ctx context.Context, tool models.Tool, budget time.Duration, maxStalled, maxFailures, maxSpecialistRounds int, maxIterationDuration, stepMaxRuntime time.Duration, verify, specializedReviews, gitCheckpoint, tieBreaker bool, status services.ExecStatusReporter, clock services.Clock, logs services.LogSink, milestone milestoneExecutionConfig) models.Outcome {
-	cfg := buildExecutionConfig(tool, budget, maxStalled, maxFailures, maxSpecialistRounds, maxIterationDuration, stepMaxRuntime, verify, specializedReviews, gitCheckpoint, tieBreaker)
+func runLoop(ctx context.Context, tool models.Tool, budget time.Duration, maxStalled, maxFailures, maxSpecialistRounds int, maxIterationDuration, stepMaxRuntime time.Duration, verify, stepSimplicity, specializedReviews, gitCheckpoint, tieBreaker bool, status services.ExecStatusReporter, clock services.Clock, logs services.LogSink, milestone milestoneExecutionConfig) models.Outcome {
+	cfg := buildExecutionConfig(tool, budget, maxStalled, maxFailures, maxSpecialistRounds, maxIterationDuration, stepMaxRuntime, verify, stepSimplicity, specializedReviews, gitCheckpoint, tieBreaker)
 	if milestone.Enabled {
 		return runMilestoneLoop(ctx, cfg, milestone, status, clock, logs)
 	}
@@ -488,7 +495,7 @@ func runLoop(ctx context.Context, tool models.Tool, budget time.Duration, maxSta
 }
 
 // buildExecutionConfig maps CLI execution settings to the domain configuration.
-func buildExecutionConfig(tool models.Tool, budget time.Duration, maxStalled, maxFailures, maxSpecialistRounds int, maxIterationDuration, stepMaxRuntime time.Duration, verify, specializedReviews, gitCheckpoint, tieBreaker bool) models.Config {
+func buildExecutionConfig(tool models.Tool, budget time.Duration, maxStalled, maxFailures, maxSpecialistRounds int, maxIterationDuration, stepMaxRuntime time.Duration, verify, stepSimplicity, specializedReviews, gitCheckpoint, tieBreaker bool) models.Config {
 	return models.Config{
 		StopFile:               "STOP.md",
 		PlanFile:               "PLAN.md",
@@ -503,6 +510,7 @@ func buildExecutionConfig(tool models.Tool, budget time.Duration, maxStalled, ma
 		MaxIterationDuration:   maxIterationDuration,
 		StepMaxRuntime:         stepMaxRuntime,
 		Verify:                 verify,
+		SimplicityReviews:      stepSimplicity,
 		SpecializedReviews:     specializedReviews,
 		MaxSpecialistRounds:    maxSpecialistRounds,
 		GitCheckpoint:          gitCheckpoint,

@@ -871,9 +871,9 @@ func (o *Orchestrator) appendTamperNote(path string) {
 // index: the invocation may have inserted or reordered steps, renumbering the
 // list, so an index comparison would flag the wrong step. Duplicate texts get
 // multiset semantics (see newlyCompletedSteps). Each new step gets a
-// simplicity check first, then a correctness verification; either reviewer
-// unchecks a step that fails its standard (recording why in FIXES.md), so the
-// loop re-runs it. Ping-pong between worker and reviewers is bounded because
+// correctness verification, preceded by a simplicity review only when
+// SimplicityReviews is enabled. Either reviewer can uncheck a rejected step
+// and record why in FIXES.md, so the loop re-runs it. Ping-pong is bounded because
 // a rejection leaves the completed count unchanged, which the stall counter
 // (checked right after this pass) treats as a no-progress iteration. A failed
 // reviewer invocation counts toward the consecutive-failure cap like any
@@ -916,29 +916,19 @@ func (o *Orchestrator) reviewWaivedFor(text string) bool {
 	return false
 }
 
-// verifyStep runs the reviewer invocations for one newly checked step: the
-// simplicity check first, then the correctness verification. A simplicity
-// rejection unchecks the step, so the correctness check is skipped — the
-// redone step is reviewed again on a later iteration. i is the step's current
-// index, used only for the 1-based display number; rejection is detected by
-// step text since a reviewer can insert steps and renumber the list.
+// verifyStep runs the enabled reviewer invocations for one newly checked step.
+// i is the current index, used only for display; rejection is detected by step
+// text because a reviewer may insert steps and renumber the list.
 func (o *Orchestrator) verifyStep(ctx context.Context, i int, step Step) invocationResult {
 	text := strings.TrimSpace(step.Text)
+	if o.cfg.SimplicityReviews {
+		result, rejected := o.reviewStepSimplicity(ctx, i, step, text)
+		if result.stop || !result.succeeded || rejected {
+			return result
+		}
+	}
 	was := completedTextCount(o.parsedSteps(), text)
-	progress := progressMessage(fmt.Sprintf("checking simplicity of step %d", i+1))
-	result := o.invoke(ctx, simplicityPrompt(i+1, step), progress)
-	if result.skipped {
-		return reviewWaived(result)
-	}
-	if result.stop || !result.succeeded {
-		return result
-	}
-	if o.markRejectedStep(text, was, result.entry) {
-		return result
-	}
-	was = completedTextCount(o.parsedSteps(), text)
-	progress = progressMessage(fmt.Sprintf("verifying step %d", i+1))
-	result = o.invoke(ctx, verifyPrompt(i+1, step), progress)
+	result := o.invoke(ctx, verifyPrompt(i+1, step), progressMessage(fmt.Sprintf("verifying step %d", i+1)))
 	if result.skipped {
 		return reviewWaived(result)
 	}
@@ -947,6 +937,19 @@ func (o *Orchestrator) verifyStep(ctx context.Context, i int, step Step) invocat
 	}
 	o.markRejectedStep(text, was, result.entry)
 	return result
+}
+
+func (o *Orchestrator) reviewStepSimplicity(ctx context.Context, i int, step Step, text string) (invocationResult, bool) {
+	was := completedTextCount(o.parsedSteps(), text)
+	progress := progressMessage(fmt.Sprintf("checking simplicity of step %d", i+1))
+	result := o.invoke(ctx, simplicityPrompt(i+1, step), progress)
+	if result.skipped {
+		return reviewWaived(result), false
+	}
+	if result.stop || !result.succeeded {
+		return result, false
+	}
+	return result, o.markRejectedStep(text, was, result.entry)
 }
 
 // reviewWaived turns a user-skipped reviewer invocation into a passed review:
@@ -1113,7 +1116,7 @@ func specializedReviewSequence() []specializedReview {
 }
 
 func specializedReviewPrompt(review specializedReview) string {
-	return fmt.Sprintf("Act as the independent %s specialist. Read PLAN.md, STEPS.md, and the implementation. Review the completed work specifically for %s. Run relevant checks when practical and report only concrete, actionable findings caused or exposed by this work. Report every material finding in this single pass — do not stop at the first one. For each finding, append the finding and evidence to FIXES.md, then reopen the most relevant step in STEPS.md; if no existing step fits, append a new unchecked remediation step with a `Done when:` criterion. Record one remediation step per finding, all in this same pass. If no material issue remains, do nothing. Do not implement fixes during this review.", review.name, review.focus)
+	return fmt.Sprintf("Act as the independent %s specialist. Read PLAN.md, STEPS.md, and the implementation. Review the completed work specifically for %s. Run relevant checks when practical and report only concrete, actionable findings caused or exposed by this work. PLAN.md lists deliberately accepted risks under `## Accepted trade-offs`. Do not report a finding that restates one of them, and do not reopen or append a step for it. If you believe an accepted trade-off is unsafe, append one advisory line to NOTES.md beginning `Advisory (%s):` and change nothing else for that concern. Report every material finding in this single pass — do not stop at the first one — subject to the accepted-trade-off rule above. For each finding, append the finding and evidence to FIXES.md, then reopen the most relevant step in STEPS.md; if no existing step fits, append a new unchecked remediation step with a `Done when:` criterion. Record one remediation step per finding, all in this same pass. If no material issue remains, do nothing. Do not implement fixes during this review.", review.name, review.focus, review.name)
 }
 
 // stepClaim states one newly checked step — its text, purpose, and acceptance
