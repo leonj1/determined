@@ -13,7 +13,7 @@ import (
 // Prompter asks the user a single question and returns their answer. The real
 // implementation is clients.StdinPrompter.
 type Prompter interface {
-	Ask(question string) (string, error)
+	Ask(context.Context, models.UserPrompt) (string, error)
 }
 
 // FileStore is the small slice of filesystem behaviour the planning loop needs:
@@ -41,7 +41,6 @@ type PlanStatusReporter interface {
 	SetDemo(demo string)
 	SetTests(tests string)
 	SetTaskSteps(steps []models.TaskStep)
-	WaitForInput()
 	Finish(succeeded bool)
 	TakeAnnotation() (models.Annotation, bool)
 	AnnotationSignal() <-chan struct{}
@@ -100,6 +99,13 @@ func NewPlanOrchestrator(
 // orchestrator for chaining. Without one the session runs terminal-only.
 func (o *PlanOrchestrator) WithStatusReporter(status PlanStatusReporter) *PlanOrchestrator {
 	o.status = status
+	return o
+}
+
+// WithPrompter replaces the input adapter and returns the orchestrator. The
+// interactive command uses the status service; ordinary commands retain stdin.
+func (o *PlanOrchestrator) WithPrompter(prompter Prompter) *PlanOrchestrator {
+	o.prompter = prompter
 	return o
 }
 
@@ -169,7 +175,7 @@ func (o *PlanOrchestrator) create(ctx context.Context, deadline time.Time) model
 		case o.budgetExceeded(deadline):
 			return models.OutcomeBudgetExceeded
 		}
-		if outcome, stop := o.seedGoal(); stop {
+		if outcome, stop := o.seedGoal(ctx); stop {
 			return outcome
 		}
 
@@ -187,7 +193,7 @@ func (o *PlanOrchestrator) create(ctx context.Context, deadline time.Time) model
 			return o.refine(ctx, deadline)
 		}
 		if o.files.Exists(o.cfg.QuestionsFile) {
-			if outcome, stop := o.relayQuestions(); stop {
+			if outcome, stop := o.relayQuestions(ctx); stop {
 				return outcome
 			}
 			continue
@@ -209,7 +215,7 @@ func (o *PlanOrchestrator) review(ctx context.Context, deadline time.Time) model
 		return outcome
 	}
 	if o.files.Exists(o.cfg.QuestionsFile) {
-		if outcome, stop := o.relayQuestions(); stop {
+		if outcome, stop := o.relayQuestions(ctx); stop {
 			return outcome
 		}
 	}
@@ -222,17 +228,17 @@ func (o *PlanOrchestrator) review(ctx context.Context, deadline time.Time) model
 
 // seedGoal ensures the planning tool has a goal to read without silently
 // replacing a goal file the user may have prepared by hand.
-func (o *PlanOrchestrator) seedGoal() (models.Outcome, bool) {
+func (o *PlanOrchestrator) seedGoal(ctx context.Context) (models.Outcome, bool) {
 	if o.goalSeeded {
 		return models.OutcomePlanReady, false
 	}
-	if useExisting, outcome, stop := o.resolveExistingGoal(); stop || useExisting {
+	if useExisting, outcome, stop := o.resolveExistingGoal(ctx); stop || useExisting {
 		return outcome, stop
 	}
 	return o.writeGoal()
 }
 
-func (o *PlanOrchestrator) resolveExistingGoal() (bool, models.Outcome, bool) {
+func (o *PlanOrchestrator) resolveExistingGoal(ctx context.Context) (bool, models.Outcome, bool) {
 	if !o.files.Exists(o.cfg.GoalFile) {
 		return false, models.OutcomePlanReady, false
 	}
@@ -245,7 +251,7 @@ func (o *PlanOrchestrator) resolveExistingGoal() (bool, models.Outcome, bool) {
 		fmt.Fprintf(o.terminal, "determined: %s is empty or only a bare heading; replacing it with --plan input\n", o.cfg.GoalFile)
 		return false, models.OutcomePlanReady, false
 	}
-	useExisting, err := o.useExistingGoal()
+	useExisting, err := o.useExistingGoal(ctx)
 	if err != nil {
 		fmt.Fprintf(o.terminal, "determined: could not read your answer: %v\n", err)
 		return false, models.OutcomeInterrupted, true
@@ -313,9 +319,9 @@ func (o *PlanOrchestrator) goalSourcePath() string {
 	return ""
 }
 
-func (o *PlanOrchestrator) useExistingGoal() (bool, error) {
+func (o *PlanOrchestrator) useExistingGoal(ctx context.Context) (bool, error) {
 	for {
-		answer, err := o.prompter.Ask(fmt.Sprintf("%s already exists. Use it for this plan? [y/N]", o.cfg.GoalFile))
+		answer, err := o.prompter.Ask(ctx, models.ConfirmPrompt("Use existing goal?", fmt.Sprintf("%s already exists. Use it for this plan? [y/N]", o.cfg.GoalFile), true))
 		if err != nil {
 			return false, err
 		}
@@ -343,10 +349,7 @@ func (o *PlanOrchestrator) confirmAssumptions(ctx context.Context) (models.Outco
 		return models.OutcomePlanReady, false
 	}
 	writeProgress(o.terminal, o.clock, "confirming plan assumptions")
-	if o.status != nil {
-		o.status.WaitForInput()
-	}
-	answer, err := o.prompter.Ask(assumptionsQuestion(assumptions))
+	answer, err := o.prompter.Ask(ctx, models.ConfirmPrompt("Confirm plan assumptions", assumptionsQuestion(assumptions), true))
 	if err != nil {
 		fmt.Fprintf(o.terminal, "determined: could not read your answer: %v\n", err)
 		return models.OutcomeInterrupted, true
@@ -415,12 +418,12 @@ func (o *PlanOrchestrator) refine(ctx context.Context, deadline time.Time) model
 			return models.OutcomePlanReady
 		}
 		if o.files.Exists(o.cfg.QuestionsFile) {
-			if outcome, stop := o.relayQuestions(); stop {
+			if outcome, stop := o.relayQuestions(ctx); stop {
 				return outcome
 			}
 		}
 		if pass >= o.cfg.MaxRefinePasses {
-			outcome, action := o.gateExhaustedCap(issues, pass)
+			outcome, action := o.gateExhaustedCap(ctx, issues, pass)
 			if action == capReturn {
 				return outcome
 			}
@@ -468,14 +471,14 @@ const refineCapQuestion = "The refine pass cap is exhausted with findings remain
 // gateExhaustedCap surfaces the unresolved findings and blocks on an explicit
 // user choice, so a plan is never silently accepted with known defects. It
 // returns the refine loop's next move; the outcome matters only for capReturn.
-func (o *PlanOrchestrator) gateExhaustedCap(issues []string, pass int) (models.Outcome, refineCapAction) {
+func (o *PlanOrchestrator) gateExhaustedCap(ctx context.Context, issues []string, pass int) (models.Outcome, refineCapAction) {
 	o.publishRemainingFindings(issues, pass)
-	switch o.askCapChoice() {
+	switch o.askCapChoice(ctx) {
 	case capChoiceAccept:
 		o.files.Remove(o.cfg.AssessmentFile)
 		return models.OutcomePlanReady, capReturn
 	case capChoiceEdit:
-		return o.awaitPlanEdits()
+		return o.awaitPlanEdits(ctx)
 	case capChoiceStop:
 		return models.OutcomePlanStalled, capReturn
 	}
@@ -496,12 +499,11 @@ func (o *PlanOrchestrator) publishRemainingFindings(issues []string, pass int) {
 
 // askCapChoice asks the accept / refine / edit question until it gets a valid
 // answer. A failed read is the Stop path, which stalls the plan.
-func (o *PlanOrchestrator) askCapChoice() refineCapChoice {
-	if o.status != nil {
-		o.status.WaitForInput()
-	}
+func (o *PlanOrchestrator) askCapChoice(ctx context.Context) refineCapChoice {
 	for {
-		answer, err := o.prompter.Ask(refineCapQuestion)
+		answer, err := o.prompter.Ask(ctx, models.ChoicePrompt("Resolve remaining findings", refineCapQuestion, []models.PromptChoice{
+			{Value: "accept", Label: "Accept"}, {Value: "refine", Label: "Refine"}, {Value: "edit", Label: "Edit"},
+		}))
 		if err != nil {
 			fmt.Fprintf(o.terminal, "determined: could not read your answer: %v\n", err)
 			return capChoiceStop
@@ -528,11 +530,11 @@ func parseCapChoice(answer string) (refineCapChoice, bool) {
 
 // awaitPlanEdits blocks until the user reports their manual plan-file edits
 // are done, then hands control back to a fresh assessment.
-func (o *PlanOrchestrator) awaitPlanEdits() (models.Outcome, refineCapAction) {
+func (o *PlanOrchestrator) awaitPlanEdits(ctx context.Context) (models.Outcome, refineCapAction) {
 	question := fmt.Sprintf(
 		"Press Enter when you have finished editing %s and %s",
 		o.cfg.PlanFile, o.cfg.StepsFile)
-	if _, err := o.prompter.Ask(question); err != nil {
+	if _, err := o.prompter.Ask(ctx, models.ConfirmPrompt("Continue after editing", question, true)); err != nil {
 		fmt.Fprintf(o.terminal, "determined: could not read your answer: %v\n", err)
 		return models.OutcomePlanStalled, capReturn
 	}
@@ -646,7 +648,7 @@ func (o *PlanOrchestrator) recordFailure(ctx context.Context, err error) (models
 // relayQuestions reads the tool's questions, asks the user each one, appends the
 // round to the answers history, and clears the questions file so the next tool
 // run starts clean. It reports whether the loop should stop.
-func (o *PlanOrchestrator) relayQuestions() (models.Outcome, bool) {
+func (o *PlanOrchestrator) relayQuestions(ctx context.Context) (models.Outcome, bool) {
 	content, err := o.files.Read(o.cfg.QuestionsFile)
 	if err != nil {
 		fmt.Fprintf(o.terminal, "determined: could not read %s: %v\n", o.cfg.QuestionsFile, err)
@@ -658,14 +660,10 @@ func (o *PlanOrchestrator) relayQuestions() (models.Outcome, bool) {
 		return models.OutcomePlanStalled, true
 	}
 	writeProgress(o.terminal, o.clock, o.questionProgress())
-	if o.status != nil {
-		o.status.WaitForInput()
-	}
-
 	var round strings.Builder
 	fmt.Fprintf(&round, "## Round %d\n\n", o.iteration)
 	for _, q := range questions {
-		answer, err := o.prompter.Ask(q)
+		answer, err := o.prompter.Ask(ctx, models.TextPrompt("Planning question", q, true))
 		if err != nil {
 			fmt.Fprintf(o.terminal, "determined: could not read your answer: %v\n", err)
 			return models.OutcomeInterrupted, true
@@ -852,7 +850,7 @@ func (o *PlanOrchestrator) gateMisaligned(ctx context.Context) (models.Outcome, 
 			return models.OutcomePlanReady, false
 		}
 		o.publishMisalignedTests(misaligned)
-		choice := o.askAlignChoice()
+		choice := o.askAlignChoice(ctx)
 		if choice == alignChoiceAccept {
 			return models.OutcomePlanReady, false
 		}
@@ -915,12 +913,11 @@ const dropTestsConstraint = "Constraint for this run: instead of rewriting each 
 
 // askAlignChoice asks the accept / rewrite / drop question until it gets a
 // valid answer. A failed read is the Stop path, which stalls the plan.
-func (o *PlanOrchestrator) askAlignChoice() alignGateChoice {
-	if o.status != nil {
-		o.status.WaitForInput()
-	}
+func (o *PlanOrchestrator) askAlignChoice(ctx context.Context) alignGateChoice {
 	for {
-		answer, err := o.prompter.Ask(alignGateQuestion)
+		answer, err := o.prompter.Ask(ctx, models.ChoicePrompt("Resolve misaligned tests", alignGateQuestion, []models.PromptChoice{
+			{Value: "accept", Label: "Accept"}, {Value: "rewrite", Label: "Rewrite"}, {Value: "drop", Label: "Drop"},
+		}))
 		if err != nil {
 			fmt.Fprintf(o.terminal, "determined: could not read your answer: %v\n", err)
 			return alignChoiceStop

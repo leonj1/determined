@@ -53,8 +53,8 @@ type fakePrompter struct {
 	next    int
 }
 
-func (p *fakePrompter) Ask(question string) (string, error) {
-	p.asked = append(p.asked, question)
+func (p *fakePrompter) Ask(_ context.Context, prompt models.UserPrompt) (string, error) {
+	p.asked = append(p.asked, prompt.Body)
 	if p.next >= len(p.answers) {
 		return "", io.EOF
 	}
@@ -971,9 +971,6 @@ func TestMisalignedGateAcceptCompletesAndPublishesTests(t *testing.T) {
 	finding := "progress: misaligned test: ### Test 1: journey — proves logging, not the goal."
 	if !containsEvent(reporter.events, finding) {
 		t.Fatalf("expected the misaligned test on the status reporter, got %v", reporter.events)
-	}
-	if !containsEvent(reporter.events, "wait-for-input") {
-		t.Fatalf("expected the gate to signal wait-for-input, got %v", reporter.events)
 	}
 	if !strings.Contains(terminal.String(), "proves logging, not the goal.") {
 		t.Fatalf("expected the alignment note on the terminal, got:\n%s", terminal.String())

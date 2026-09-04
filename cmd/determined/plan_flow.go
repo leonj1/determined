@@ -35,21 +35,14 @@ func postPlanActionFor(executing bool, outcome models.Outcome) postPlanAction {
 	return postPlanOffer
 }
 
-// inputWaiter is the slice of the status page the approval gate needs: it
-// surfaces the terminal wait so the browser user returns to the terminal.
-// A nil waiter (headless chains without a page) disables the notice.
-type inputWaiter interface {
-	WaitForInput()
-}
-
 // approveExecution gates chained execution on explicit user consent: only a
 // y/yes answer starts the execute loop. Anything else — bare Enter, any other
 // text, or a failed read — declines, leaving the plan files intact.
-func approveExecution(prompter services.Prompter, status inputWaiter) bool {
-	if status != nil {
-		status.WaitForInput()
-	}
-	answer, err := prompter.Ask("Plan approved — begin execution? [y/N]")
+func approveExecution(ctx context.Context, prompter services.Prompter) bool {
+	answer, err := prompter.Ask(ctx, models.ChoicePrompt("Begin execution?",
+		"Plan approved — begin execution? [y/N]", []models.PromptChoice{
+			{Value: "y", Label: "Begin execution"}, {Value: "n", Label: "Keep plan only"},
+		}))
 	if err != nil {
 		return false
 	}

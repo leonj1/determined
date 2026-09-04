@@ -95,6 +95,12 @@ type StallChoiceSink interface {
 	SubmitStallChoice(models.StallDecision, string) bool
 }
 
+// PromptResponseSink receives answers to the application-owned prompt shown
+// by the status page.
+type PromptResponseSink interface {
+	SubmitPromptResponse(models.PromptResponse) models.PromptSubmissionResult
+}
+
 // ChatResponder answers requests and derives pushed events from status diffs.
 type ChatResponder interface {
 	Answer(models.ChatRequest) models.ChatResponse
@@ -111,6 +117,7 @@ type PlanStatusServer struct {
 	implement   ImplementSink
 	taskControl TaskControlSink
 	stallChoice StallChoiceSink
+	prompts     PromptResponseSink
 	explain     ExplainRequester
 	clock       clock
 	listener    net.Listener
@@ -147,6 +154,12 @@ func (s *PlanStatusServer) WithTaskControl(sink TaskControlSink) *PlanStatusServ
 // WithStallChoice enables the page's verification-deadlock tiebreak modal.
 func (s *PlanStatusServer) WithStallChoice(sink StallChoiceSink) *PlanStatusServer {
 	s.stallChoice = sink
+	return s
+}
+
+// WithPromptResponses enables answers from the status-page prompt modal.
+func (s *PlanStatusServer) WithPromptResponses(sink PromptResponseSink) *PlanStatusServer {
+	s.prompts = sink
 	return s
 }
 
@@ -289,6 +302,7 @@ func (s *PlanStatusServer) routes() *http.ServeMux {
 	mux.HandleFunc("/task/skip", s.serveTaskSkip)
 	mux.HandleFunc("/task/stop", s.serveTaskStop)
 	mux.HandleFunc("/stall/choice", s.serveStallChoice)
+	mux.HandleFunc("/prompt/respond", s.servePromptResponse)
 	mux.HandleFunc("/explain/start", s.serveExplainStart)
 	mux.HandleFunc("/chat", s.serveChat)
 	mux.HandleFunc("/chat/ask", s.serveChatAsk)
@@ -533,6 +547,34 @@ func (s *PlanStatusServer) serveStallChoice(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	w.WriteHeader(http.StatusAccepted)
+}
+
+// servePromptResponse relays one answer to the currently published prompt.
+func (s *PlanStatusServer) servePromptResponse(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if !s.authorized(w, r) {
+		return
+	}
+	if s.prompts == nil {
+		http.Error(w, "prompt responses unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	var response models.PromptResponse
+	if err := json.NewDecoder(r.Body).Decode(&response); err != nil {
+		http.Error(w, "invalid prompt response payload", http.StatusBadRequest)
+		return
+	}
+	switch s.prompts.SubmitPromptResponse(response) {
+	case models.PromptSubmissionAccepted:
+		w.WriteHeader(http.StatusAccepted)
+	case models.PromptSubmissionInvalid:
+		http.Error(w, "invalid answer for active prompt", http.StatusBadRequest)
+	default:
+		http.Error(w, "no matching active prompt", http.StatusConflict)
+	}
 }
 
 // serveExplainStart relays the page's confirmed request to generate the

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -44,6 +45,9 @@ type PlanStatusService struct {
 	// in AwaitStallChoice. It is non-nil only while a run is blocked on the
 	// modal, so SubmitStallChoice can tell whether a wait is pending.
 	stallChoice chan models.StallGuidance
+
+	nextPromptID   models.PromptID
+	promptResponse chan models.PromptResponse
 }
 
 // NewPlanStatusService wires a PlanStatusService with the session's git
@@ -165,10 +169,9 @@ func (s *PlanStatusService) SetMilestone(progress models.MilestoneProgress) {
 	})
 }
 
-// AddStep appends a timestamped workflow step, clearing any waiting flag.
+// AddStep appends a timestamped workflow step.
 func (s *PlanStatusService) AddStep(message string) {
 	s.update(func(st models.PlanSessionStatus) models.PlanSessionStatus {
-		st.WaitingForInput = false
 		return st.WithStep(models.PlanStep{At: s.clock.Now(), Message: message})
 	})
 }
@@ -189,21 +192,69 @@ func (s *PlanStatusService) AppendLogOutput(text string) {
 	}
 }
 
-// WaitForInput marks the session as blocked on terminal input, adding a
-// visible step so the browser user knows to return to the terminal.
-func (s *PlanStatusService) WaitForInput() {
+// Ask implements Prompter for interactive sessions by publishing a typed
+// prompt and waiting for the status page to submit its answer.
+func (s *PlanStatusService) Ask(ctx context.Context, prompt models.UserPrompt) (string, error) {
+	responses := make(chan models.PromptResponse, 1)
+	prompt = s.openPrompt(prompt, responses)
+	defer s.closePrompt(prompt.ID)
+	select {
+	case <-ctx.Done():
+		return "", ctx.Err()
+	case response := <-responses:
+		return strings.TrimSpace(response.Answer), nil
+	}
+}
+
+func (s *PlanStatusService) openPrompt(prompt models.UserPrompt, responses chan models.PromptResponse) models.UserPrompt {
 	s.update(func(st models.PlanSessionStatus) models.PlanSessionStatus {
-		st = st.WithStep(models.PlanStep{At: s.clock.Now(), Message: "waiting for input on the terminal"})
-		st.WaitingForInput = true
+		s.nextPromptID++
+		prompt.ID = s.nextPromptID
+		s.promptResponse = responses
+		st.PendingPrompt = &prompt
 		return st
 	})
+	return prompt
+}
+
+func (s *PlanStatusService) closePrompt(id models.PromptID) {
+	s.update(func(st models.PlanSessionStatus) models.PlanSessionStatus {
+		if st.PendingPrompt == nil || st.PendingPrompt.ID != id {
+			return st
+		}
+		s.promptResponse = nil
+		st.PendingPrompt = nil
+		return st
+	})
+}
+
+// SubmitPromptResponse delivers only the first valid response for the active
+// prompt. Typed results let the HTTP adapter map failures without string tests.
+func (s *PlanStatusService) SubmitPromptResponse(response models.PromptResponse) models.PromptSubmissionResult {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	prompt := s.status.PendingPrompt
+	if prompt == nil || s.promptResponse == nil {
+		return models.PromptSubmissionMissing
+	}
+	if response.ID != prompt.ID {
+		return models.PromptSubmissionStale
+	}
+	response.Answer = strings.TrimSpace(response.Answer)
+	if !prompt.Accepts(response.Answer) {
+		return models.PromptSubmissionInvalid
+	}
+	responses := s.promptResponse
+	s.promptResponse = nil
+	responses <- response
+	return models.PromptSubmissionAccepted
 }
 
 // Finish records the end of the planning phase as succeeded or failed.
 func (s *PlanStatusService) Finish(succeeded bool) {
 	s.update(func(st models.PlanSessionStatus) models.PlanSessionStatus {
 		st.EndedAt = s.clock.Now()
-		st.WaitingForInput = false
+		st.PendingPrompt = nil
 		if succeeded {
 			st.Phase = models.PlanPhaseSucceeded
 		} else {

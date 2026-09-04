@@ -109,7 +109,7 @@ skipped and resumes at the oldest available line.
 2. **Invoke the planner** — ask the selected AI tool to read the goal and
    either create clarifying questions or produce the plan files.
 3. **Run the interview** — if the tool writes `QUESTIONS.md`, ask each question
-   on the terminal, append the responses to `ANSWERS.md`, clear the questions,
+   in the status page for interactive runs or on the terminal otherwise, append the responses to `ANSWERS.md`, clear the questions,
    and invoke the planner again. Repeat until it has enough information.
 4. **Create the plan** — the planner writes `PLAN.md` and a machine-checkable
    `STEPS.md` whose checkbox steps each have a concrete `Done when:` criterion.
@@ -119,7 +119,8 @@ skipped and resumes at the oldest available line.
    rendered as its own block on the status page) as one question. Bare Enter,
    `y`, `yes`, or `ok` confirms; any other answer is treated as a correction,
    applied to the plan, and the documents are republished. A plan without the
-   section skips this round.
+   section skips this round. Interactive runs answer this prompt in the status
+   page; ordinary runs continue to use stdin.
 6. **Apply the quality gate** — independently assess completeness, the
    task-specific template, ordering, step size, and acceptance criteria.
    Objective issues go to `REFINEMENTS.md`; preference-, intent-, and
@@ -243,7 +244,7 @@ each one is for:
 |------|---------|
 | `writing planning goal` | Write the supplied goal text (or goal file contents) to `GOAL.md` so the planner has a fixed statement of intent. |
 | `planning project` | Invoke the AI tool to read the goal and either raise clarifying questions or write `PLAN.md` / `STEPS.md`. |
-| `answering planning questions` | Relay each question from `QUESTIONS.md` to you on the terminal and record your responses in `ANSWERS.md` for the next planner pass. |
+| `answering planning questions` | Relay each question from `QUESTIONS.md` to the active input surface and record responses in `ANSWERS.md` for the next planner pass. |
 | `confirming plan assumptions` | Relay the plan's `## Assumptions` section for confirmation or correction before refinement begins. |
 | `assessing plan` | Independently grade the drafted plan for completeness, ordering, step size, and concrete `Done when:` criteria, writing objective issues to `REFINEMENTS.md` and preference-dependent findings to `QUESTIONS.md`. |
 | `refining plan` | Rework the plan to resolve the assessment's issues, then reassess — up to `--max-step-passes` rounds; an exhausted cap with findings remaining asks accept / refine / edit. |
@@ -309,7 +310,7 @@ ideally a clean git checkout, so every change is reviewable and revertible.
 | `--review-plan`  | `false`  | Critique existing `PLAN.md` + `STEPS.md`, interview the user about consequential choices, and revise without executing. |
 | `--criteria`     | `false`  | Interactively capture BDD journey tests into `CRITERIA.md` (accept / modify / skip / end / cancel per proposal). Runs before `--plan` / `-exec` when combined; incompatible with `--review-plan`. |
 | `--status-host`  | `127.0.0.1` | Interface the live status page binds to. Loopback by default; setting a non-loopback host (e.g. `0.0.0.0`) exposes the page — including its state-changing controls such as Implement — to the network. |
-| `--interactive`  | `false`  | With `--plan` or `--exec`, serve a live HTML status page showing planning documents and workflow steps. A trivial, self-contained UI change may include a generated demo beneath the Plan tab. For an existing plan, execution starts immediately; after failure, annotate the page and click Implement to retry in the same session. After success, the Explanation tab (`/explain`) shows an AI-generated walkthrough with colored diffs, followed by a five-question Quiz tab (`/quiz`) whose questions link to their source explanation sections. |
+| `--interactive`  | `false`  | With `--plan` or `--exec`, serve a live HTML status page showing planning documents and workflow steps. Application-owned planning questions appear as browser modals and are answered there. A trivial, self-contained UI change may include a generated demo beneath the Plan tab. For an existing plan, execution starts immediately; after failure, annotate the page and click Implement to retry in the same session. After success, the Explanation tab (`/explain`) shows an AI-generated walkthrough with colored diffs, followed by a five-question Quiz tab (`/quiz`) whose questions link to their source explanation sections. |
 | `--link`         | `false`  | Print the URL of the status page served by a live interactive or headless execution session, then exit. Prints the URL on exit `0` only after verifying the process, port, and determined status page; otherwise exits `1`. |
 | `--chat`         | `false`  | Connect to the verified live session over WebSocket, subscribe to events, and exchange stdin lines for replies. Incompatible with run/session mode flags. |
 | `-m`             | —        | With `--chat`, ask one question, print the reply text, and exit. Without `--chat`, exits with usage code `2`. |

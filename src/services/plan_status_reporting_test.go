@@ -18,10 +18,10 @@ type fakeStatusReporter struct {
 	goal        string
 	plan        string
 	assumptions string
-	demo      string
-	tests     string
-	taskSteps []models.TaskStep
-	logOutput string
+	demo        string
+	tests       string
+	taskSteps   []models.TaskStep
+	logOutput   string
 
 	// mu guards annotations: ServeAnnotations drains them from another
 	// goroutine while a test appends late arrivals.
@@ -63,7 +63,6 @@ func (r *fakeStatusReporter) SetTaskSteps(steps []models.TaskStep) {
 	r.taskSteps = steps
 	r.events = append(r.events, "task-steps")
 }
-func (r *fakeStatusReporter) WaitForInput() { r.events = append(r.events, "wait-for-input") }
 func (r *fakeStatusReporter) TakeAnnotation() (models.Annotation, bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -125,7 +124,6 @@ func TestSuccessfulPlanReportsFullStatusSequence(t *testing.T) {
 		"goal",
 		"progress: planning project",
 		"log-entry: planning project",
-		"wait-for-input",
 		"progress: planning project",
 		"log-entry: planning project",
 		"plan",        // refine entry publishes the finished plan

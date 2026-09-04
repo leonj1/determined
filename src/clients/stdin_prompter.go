@@ -2,9 +2,12 @@ package clients
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"io"
 	"strings"
+
+	"determined/src/models"
 )
 
 // StdinPrompter asks the user questions on a terminal, reading single-line
@@ -22,8 +25,8 @@ func NewStdinPrompter(out io.Writer, in io.Reader) *StdinPrompter {
 
 // Ask prints the question and returns the user's typed answer. It returns
 // io.EOF if the input stream closes before an answer is given (e.g. Ctrl+D).
-func (p *StdinPrompter) Ask(question string) (string, error) {
-	fmt.Fprintf(p.out, "\n%s\n> ", question)
+func (p *StdinPrompter) Ask(_ context.Context, prompt models.UserPrompt) (string, error) {
+	fmt.Fprintf(p.out, "\n%s\n> ", prompt.Body)
 	if !p.scanner.Scan() {
 		if err := p.scanner.Err(); err != nil {
 			return "", err

@@ -79,8 +79,8 @@ func (o *CriteriaOrchestrator) Run(ctx context.Context) models.Outcome {
 		case o.budgetExceeded(deadline):
 			return models.OutcomeBudgetExceeded
 		}
-		description, err := o.prompter.Ask(
-			"Describe a user journey to protect with a BDD test (press Enter to finish)")
+		description, err := o.prompter.Ask(ctx, models.TextPrompt("Describe user journey",
+			"Describe a user journey to protect with a BDD test (press Enter to finish)", true))
 		if err != nil {
 			fmt.Fprintf(o.terminal, "determined: could not read your answer: %v\n", err)
 			return models.OutcomeInterrupted
@@ -141,7 +141,7 @@ func (o *CriteriaOrchestrator) draftAndReview(
 			return models.OutcomeCriteriaStalled, true
 		}
 		fmt.Fprintf(o.terminal, "\nProposed BDD test:\n\n%s\n", strings.TrimSpace(draft))
-		action, interrupted := o.reviewAction()
+		action, interrupted := o.reviewAction(ctx)
 		if interrupted {
 			return models.OutcomeInterrupted, true
 		}
@@ -152,7 +152,7 @@ func (o *CriteriaOrchestrator) draftAndReview(
 			}
 			return models.OutcomeCriteriaReady, false // ask for the next journey
 		case actionModify:
-			if outcome, stop := o.recordRevision(); stop {
+			if outcome, stop := o.recordRevision(ctx); stop {
 				return outcome, true
 			}
 			// Loop: rerun the tool against the appended revision request.
@@ -172,9 +172,13 @@ func (o *CriteriaOrchestrator) draftAndReview(
 // reviewAction asks for a verdict on the presented draft until the answer is
 // one of the five recognised actions. It reports whether reading the answer
 // was interrupted.
-func (o *CriteriaOrchestrator) reviewAction() (criteriaAction, bool) {
+func (o *CriteriaOrchestrator) reviewAction(ctx context.Context) (criteriaAction, bool) {
 	for {
-		answer, err := o.prompter.Ask("Accept, modify, skip, end, or cancel? [a/m/s/e/c]")
+		answer, err := o.prompter.Ask(ctx, models.ChoicePrompt("Review proposed BDD test",
+			"Accept, modify, skip, end, or cancel? [a/m/s/e/c]", []models.PromptChoice{
+				{Value: "a", Label: "Accept"}, {Value: "m", Label: "Modify"},
+				{Value: "s", Label: "Skip"}, {Value: "e", Label: "End"}, {Value: "c", Label: "Cancel"},
+			}))
 		if err != nil {
 			fmt.Fprintf(o.terminal, "determined: could not read your answer: %v\n", err)
 			return actionCancel, true
@@ -199,8 +203,8 @@ func (o *CriteriaOrchestrator) reviewAction() (criteriaAction, bool) {
 // recordRevision appends the user's requested change to the request file so
 // the next tool run revises the draft instead of starting over. It reports
 // whether the session should stop.
-func (o *CriteriaOrchestrator) recordRevision() (models.Outcome, bool) {
-	note, err := o.prompter.Ask("How should the BDD test be updated?")
+func (o *CriteriaOrchestrator) recordRevision(ctx context.Context) (models.Outcome, bool) {
+	note, err := o.prompter.Ask(ctx, models.TextPrompt("Update BDD test", "How should the BDD test be updated?", false))
 	if err != nil {
 		fmt.Fprintf(o.terminal, "determined: could not read your answer: %v\n", err)
 		return models.OutcomeInterrupted, true

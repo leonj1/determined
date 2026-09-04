@@ -531,14 +531,10 @@ type fakePrompter struct {
 	asked  []string
 }
 
-func (p *fakePrompter) Ask(question string) (string, error) {
-	p.asked = append(p.asked, question)
+func (p *fakePrompter) Ask(_ context.Context, prompt models.UserPrompt) (string, error) {
+	p.asked = append(p.asked, prompt.Body)
 	return p.answer, p.err
 }
-
-type fakeInputWaiter struct{ waits int }
-
-func (w *fakeInputWaiter) WaitForInput() { w.waits++ }
 
 func TestChainedExecutionRequiresExplicitYes(t *testing.T) {
 	tests := []struct {
@@ -557,7 +553,7 @@ func TestChainedExecutionRequiresExplicitYes(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			prompter := &fakePrompter{answer: test.answer}
-			if got := approveExecution(prompter, nil); got != test.want {
+			if got := approveExecution(context.Background(), prompter); got != test.want {
 				t.Fatalf("approveExecution(%q) = %v, want %v", test.answer, got, test.want)
 			}
 			want := "Plan approved — begin execution? [y/N]"
@@ -570,24 +566,15 @@ func TestChainedExecutionRequiresExplicitYes(t *testing.T) {
 
 func TestFailedApprovalReadDeclinesExecution(t *testing.T) {
 	prompter := &fakePrompter{err: errors.New("stdin closed")}
-	if approveExecution(prompter, nil) {
+	if approveExecution(context.Background(), prompter) {
 		t.Fatal("a failed read must not approve execution")
-	}
-}
-
-func TestApprovalShowsTheWaitOnTheStatusPage(t *testing.T) {
-	waiter := &fakeInputWaiter{}
-	approveExecution(&fakePrompter{answer: "y"}, waiter)
-
-	if waiter.waits != 1 {
-		t.Fatalf("WaitForInput calls = %d, want 1", waiter.waits)
 	}
 }
 
 // chainedExecution mirrors both real call sites: the execute loop starts only
 // when the approval gate says yes.
 func chainedExecution(prompter services.Prompter, executor *fakePlanExecutor) (models.Outcome, bool) {
-	if !approveExecution(prompter, nil) {
+	if !approveExecution(context.Background(), prompter) {
 		return models.OutcomePlanReady, false
 	}
 	return executor.Execute(context.Background(), nil), true
