@@ -701,12 +701,30 @@ func (o *PlanOrchestrator) questionProgress() progressMessage {
 // planComplete reports whether every finished-plan file now exists: the plan,
 // the step list, and the recommended journey/BDD tests.
 func (o *PlanOrchestrator) planComplete() bool {
+	if o.cfg.Milestones {
+		return o.planDrafted()
+	}
 	return o.planDrafted() && o.files.Exists(o.cfg.TestsFile)
 }
 
 // planDrafted reports whether the plan and step list exist, regardless of
 // whether the recommended tests were produced yet.
 func (o *PlanOrchestrator) planDrafted() bool {
+	if o.cfg.Milestones {
+		if !o.files.Exists(o.cfg.PlanFile) || !o.files.Exists(o.cfg.MilestonesFile) {
+			return false
+		}
+		content, err := o.files.Read(o.cfg.MilestonesFile)
+		if err != nil {
+			return false
+		}
+		_, err = ParseMilestones(content)
+		if o.files.Exists(o.cfg.StepsFile) {
+			o.files.Remove(o.cfg.StepsFile)
+			o.files.Append("NOTES.md", "\nRemoved STEPS.md because milestone planning elaborates steps during execution.\n")
+		}
+		return err == nil
+	}
 	return o.files.Exists(o.cfg.PlanFile) && o.files.Exists(o.cfg.StepsFile)
 }
 
@@ -716,6 +734,9 @@ func (o *PlanOrchestrator) planDrafted() bool {
 // tests file missing one triggers one regeneration pass before stalling.
 // It reports whether the loop should stop.
 func (o *PlanOrchestrator) ensureTests(ctx context.Context) (models.Outcome, bool) {
+	if o.cfg.Milestones {
+		return models.OutcomePlanReady, false
+	}
 	for pass := 0; pass < 2; pass++ {
 		if outcome, stop := o.produceTests(ctx); stop {
 			return outcome, stop

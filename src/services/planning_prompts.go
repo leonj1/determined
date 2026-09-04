@@ -126,6 +126,15 @@ func PlanningPrompts(mode models.PlanMode) models.PlanningPrompts {
 	}
 }
 
+// MilestonePlanningPrompts extends normal planning with the milestone document protocol.
+func MilestonePlanningPrompts(mode models.PlanMode) models.PlanningPrompts {
+	p := PlanningPrompts(mode)
+	p.Plan = "You are planning software before implementation. " + MilestonePlanProtocol + " " + standardQuality
+	p.Assess = "Read PLAN.md and MILESTONES.md. Check every milestone has an observable Working state, milestone 1 is a walking skeleton across the architecture, and every stubs/flags ledger entry names its removal milestone. Write findings to REFINEMENTS.md or exactly NONE. Do not implement anything."
+	p.Refine = "Read PLAN.md, MILESTONES.md, REFINEMENTS.md, and ANSWERS.md if present. Resolve every finding in PLAN.md or MILESTONES.md. Preserve the milestone format and do not write STEPS.md or implement anything."
+	return p
+}
+
 // ReviewPrompts returns instructions for interviewing the user about an
 // existing plan before applying the resulting revisions.
 func ReviewPrompts() models.PlanningPrompts {

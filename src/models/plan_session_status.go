@@ -150,19 +150,20 @@ type PlanSessionStatus struct {
 	Git GitContext `json:"git"`
 	// Tool names the AI CLI and model driving the session; the page header
 	// shows the model (or the CLI's default when none was selected).
-	Tool            ToolIdentity `json:"tool"`
-	Goal            string       `json:"goal"`
-	Plan            string       `json:"plan"`
-	Assumptions     string       `json:"assumptions"`
-	Demo            string       `json:"demo"`
-	Tests           string       `json:"tests"`
-	Phase           PlanPhase    `json:"phase"`
-	WaitingForInput bool         `json:"waitingForInput"`
-	Steps           []PlanStep   `json:"steps"`
-	TaskSteps       []TaskStep   `json:"taskSteps"`
-	Log             []LogEntry   `json:"log"`
-	StartedAt       time.Time    `json:"startedAt"`
-	EndedAt         time.Time    `json:"endedAt"`
+	Tool            ToolIdentity       `json:"tool"`
+	Goal            string             `json:"goal"`
+	Plan            string             `json:"plan"`
+	Assumptions     string             `json:"assumptions"`
+	Demo            string             `json:"demo"`
+	Tests           string             `json:"tests"`
+	Phase           PlanPhase          `json:"phase"`
+	WaitingForInput bool               `json:"waitingForInput"`
+	Steps           []PlanStep         `json:"steps"`
+	TaskSteps       []TaskStep         `json:"taskSteps"`
+	Log             []LogEntry         `json:"log"`
+	StartedAt       time.Time          `json:"startedAt"`
+	EndedAt         time.Time          `json:"endedAt"`
+	Milestone       *MilestoneProgress `json:"milestone,omitempty"`
 
 	// PendingAnnotations is the queue of user feedback submitted from the page
 	// and not yet applied by the AI tool.

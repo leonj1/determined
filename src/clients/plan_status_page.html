@@ -617,6 +617,7 @@
     <button id="log-jump" class="log-jump" hidden>⏬ Live</button>
     <section class="panel" id="panel-exec">
       <h2 class="panel-title">Execution</h2>
+      <div id="milestone-progress" class="muted"></div>
       <div id="exec-state" class="empty">Not started — the Implement button appears once planning completes.</div>
       <div id="exec-stuck" hidden role="alert">
         <div class="stuck-title">⚠ Execution stopped — action needed</div>
@@ -1472,6 +1473,8 @@
     el("waiting").classList.toggle("on", !!status.waitingForInput);
 
     renderSteps(status.taskSteps || []);
+    const milestone = document.getElementById("milestone-progress");
+    if (milestone) milestone.textContent = status.milestone ? `Milestone ${status.milestone.current}/${status.milestone.total} · revision ${status.milestone.revision} · ${status.milestone.phase}` : "";
     renderLog(status.log || []);
     renderExec(status);
     renderExplanation(status);

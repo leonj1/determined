@@ -22,7 +22,7 @@ import (
 // version is the semantic version of the binary. It defaults to "dev" for local
 // builds and is overridden at link time via -ldflags="-X main.version=<semver>"
 // by the release build (see Dockerfile.build / Makefile).
-var version = "dev"
+var version = "1.1.0"
 
 func main() {
 	if isUpdateCommand(os.Args) {
@@ -38,10 +38,14 @@ func main() {
 	initialize := registerInitFlag(flag.CommandLine)
 	logDir := flag.String("log-dir", "logs", "directory for per-iteration log files")
 	tool := flag.String("tool", "droid", "AI coding CLI to run (droid|pi|claude)")
+	planTool := flag.String("plan-tool", "", "AI CLI for milestone planning gates (droid|pi|claude; defaults to -tool)")
 	model := flag.String("model", "", "model ID or alias to pass to droid or claude")
 	execModel := flag.String("exec-model", "", "model ID or alias used only for execution steps; falls back to -model when empty")
 	plan := flag.String("plan", "", "describe a goal to plan interactively, producing PLAN.md and STEPS.md")
 	exec := flag.Bool("exec", false, "run the execute loop against PLAN.md / STEPS.md; add -interactive for a live status page and failed-run retries")
+	milestones := flag.Bool("milestones", false, "plan or execute using bounded, independently verified milestones")
+	maxPlanRevisions := flag.Int("max-plan-revisions", 3, "maximum milestone replans; 0 means unlimited")
+	maxIntentRetries := flag.Int("max-intent-retries", 2, "maximum failed intent checks per milestone; 0 means unlimited")
 	reviewPlan := flag.Bool("review-plan", false, "critique and interactively revise existing PLAN.md and STEPS.md")
 	criteria := flag.Bool("criteria", false, "interactively capture BDD journey tests into CRITERIA.md; with -plan or -exec, the session runs first and the tests become required acceptance criteria")
 	interactive := flag.Bool("interactive", false, "with -plan or -exec, serve a live HTML status page on a local web server")
@@ -112,6 +116,10 @@ func main() {
 		fmt.Fprintf(os.Stderr, "determined: %v\n", err)
 		os.Exit(2)
 	}
+	if err := validateMilestoneFlags(*milestones, *exec, *plan != "", *planTool, *maxPlanRevisions, *maxIntentRetries); err != nil {
+		fmt.Fprintf(os.Stderr, "determined: %v\n", err)
+		os.Exit(2)
+	}
 	executing := executeRequested(*exec, *plan != "", *reviewPlan, *criteria)
 	if err := validateExecModelFlag(*execModel, executing); err != nil {
 		fmt.Fprintf(os.Stderr, "determined: %v\n", err)
@@ -131,6 +139,14 @@ func main() {
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "determined: %v\n", err)
 		os.Exit(2)
+	}
+	selectedPlanTool := selected
+	if *planTool != "" {
+		selectedPlanTool, err = models.SelectTool(models.ToolName(*planTool), models.ToolOptions{Model: models.ModelID(*model)})
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "determined: %v\n", err)
+			os.Exit(2)
+		}
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
@@ -159,12 +175,12 @@ func main() {
 	}
 	if proceed {
 		executor := func(ctx context.Context, status services.ExecStatusReporter) models.Outcome {
-			return runLoop(ctx, executionTool, *budget, *maxStalled, *maxFailures, *maxSpecialistRounds, *maxIterationDuration, *stepMaxRuntime, *verify, *specializedReviews, *gitCheckpoint, *tieBreaker, status, clock, logs)
+			return runLoop(ctx, executionTool, *budget, *maxStalled, *maxFailures, *maxSpecialistRounds, *maxIterationDuration, *stepMaxRuntime, *verify, *specializedReviews, *gitCheckpoint, *tieBreaker, status, clock, logs, *milestones, selectedPlanTool, *maxPlanRevisions, *maxIntentRetries)
 		}
 		if *reviewPlan {
 			outcome = runReviewPlan(ctx, selected, *budget, *maxStepPasses, *maxFailures, clock, logs)
 		} else if *plan != "" {
-			outcome = runPlan(ctx, selected, planInput(*plan, flag.Args()), planMode, *budget, *maxStepPasses, *maxFailures, *interactive, executing, *statusHost, executor, clock, logs)
+			outcome = runPlan(ctx, selected, planInput(*plan, flag.Args()), planMode, *budget, *maxStepPasses, *maxFailures, *interactive, executing, *statusHost, executor, clock, logs, *milestones)
 			if shouldExecuteAfterPlan(executing, *interactive, outcome) &&
 				approveExecution(clients.NewStdinPrompter(os.Stdout, os.Stdin), nil) {
 				outcome = runHeadlessExec(ctx, executionTool, *statusHost, executor, clock)
@@ -375,6 +391,22 @@ func validateInteractiveFlag(interactive, planning, executing bool) error {
 	return nil
 }
 
+func validateMilestoneFlags(enabled, executing, planning bool, planTool string, revisions, retries int) error {
+	if enabled && !executing && !planning {
+		return fmt.Errorf("-milestones requires -exec or -plan")
+	}
+	if revisions < 0 {
+		return fmt.Errorf("-max-plan-revisions must be >= 0")
+	}
+	if retries < 0 {
+		return fmt.Errorf("-max-intent-retries must be >= 0")
+	}
+	if planTool != "" && planTool != "droid" && planTool != "pi" && planTool != "claude" {
+		return fmt.Errorf("unknown tool %q", planTool)
+	}
+	return nil
+}
+
 // criteriaAllowsContinuation reports whether a -criteria session left the run
 // able to continue into planning or execution: a finished session does, and
 // so does a cancelled one (cancel discards the session's tests, not the run).
@@ -398,9 +430,14 @@ func refinePasses(mode models.PlanMode, configured int) int {
 
 // createPlanConfig builds the complete planning protocol configuration used by
 // both new plans and resumed interactive execution sessions.
-func createPlanConfig(tool models.Tool, goal string, mode models.PlanMode, budget time.Duration, maxStepPasses, maxFailures int) models.PlanConfig {
+func createPlanConfig(tool models.Tool, goal string, mode models.PlanMode, budget time.Duration, maxStepPasses, maxFailures int, milestoneArgs ...bool) models.PlanConfig {
+	milestones := len(milestoneArgs) > 0 && milestoneArgs[0]
 	prompts := services.PlanningPrompts(mode)
+	if milestones {
+		prompts = services.MilestonePlanningPrompts(mode)
+	}
 	return models.PlanConfig{
+		Milestones: milestones, MilestonesFile: "MILESTONES.md",
 		Operation: models.PlanOperationCreate, Goal: goal,
 		Invocation: tool.Invocation(prompts.Plan), Budget: budget,
 		AssessInvocation: tool.Invocation(prompts.Assess), RefineInvocation: tool.Invocation(prompts.Refine),
@@ -421,7 +458,7 @@ type planExecutor func(ctx context.Context, status services.ExecStatusReporter) 
 
 // runLoop runs the unattended execute loop against PLAN.md / STEPS.md. A
 // non-nil status reporter streams the run to the interactive status page.
-func runLoop(ctx context.Context, tool models.Tool, budget time.Duration, maxStalled, maxFailures, maxSpecialistRounds int, maxIterationDuration, stepMaxRuntime time.Duration, verify, specializedReviews, gitCheckpoint, tieBreaker bool, status services.ExecStatusReporter, clock services.Clock, logs services.LogSink) models.Outcome {
+func runLoop(ctx context.Context, tool models.Tool, budget time.Duration, maxStalled, maxFailures, maxSpecialistRounds int, maxIterationDuration, stepMaxRuntime time.Duration, verify, specializedReviews, gitCheckpoint, tieBreaker bool, status services.ExecStatusReporter, clock services.Clock, logs services.LogSink, milestoneArgs ...any) models.Outcome {
 	cfg := models.Config{
 		StopFile:               "STOP.md",
 		PlanFile:               "PLAN.md",
@@ -440,6 +477,31 @@ func runLoop(ctx context.Context, tool models.Tool, budget time.Duration, maxSta
 		MaxSpecialistRounds:    maxSpecialistRounds,
 		GitCheckpoint:          gitCheckpoint,
 		TieBreaker:             tieBreaker,
+	}
+	if len(milestoneArgs) >= 4 {
+		cfg.Milestones, _ = milestoneArgs[0].(bool)
+		cfg.PlanTool, _ = milestoneArgs[1].(models.Tool)
+		cfg.MaxPlanRevisions, _ = milestoneArgs[2].(int)
+		cfg.MaxIntentRetries, _ = milestoneArgs[3].(int)
+		cfg.MilestonesFile = "MILESTONES.md"
+		cfg.MilestoneStateFile = ".determined/milestones.json"
+		cfg.DivergenceFile = "DIVERGENCE.md"
+	}
+	if cfg.Milestones {
+		if err := os.MkdirAll(".determined/steps", 0o755); err != nil {
+			fmt.Fprintf(os.Stderr, "determined: %v\n", err)
+			return models.OutcomeDroidFailed
+		}
+		files := clients.NewOsFileStore()
+		runner := clients.NewExecCommandRunner()
+		factory := func(inner models.Config) *services.Orchestrator {
+			return services.NewOrchestrator(runner, files, clock, logs, os.Stdout, inner).WithStatusReporter(status)
+		}
+		return services.NewMilestoneOrchestrator(runner, files, clock, logs, os.Stdout, cfg, factory).WithStatusReporter(status).Run(ctx)
+	}
+	if clients.NewOsFileStore().Exists("MILESTONES.md") && !clients.NewOsFileStore().Exists("STEPS.md") {
+		fmt.Fprintln(os.Stderr, "determined: MILESTONES.md found; run with -milestones")
+		return models.OutcomeMissingFiles
 	}
 	orchestrator := services.NewOrchestrator(
 		clients.NewExecCommandRunner(),
@@ -539,8 +601,8 @@ func runUpdateCommand() {
 // questions to the user until a plan is produced. With interactive set, a
 // local web server shows the session live. Executing selects automatic live
 // execution; otherwise the page offers its Implement button after planning.
-func runPlan(ctx context.Context, tool models.Tool, goal string, mode models.PlanMode, budget time.Duration, maxStepPasses, maxFailures int, interactive, executing bool, statusHost string, execute planExecutor, clock services.Clock, logs services.LogSink) models.Outcome {
-	cfg := createPlanConfig(tool, goal, mode, budget, maxStepPasses, maxFailures)
+func runPlan(ctx context.Context, tool models.Tool, goal string, mode models.PlanMode, budget time.Duration, maxStepPasses, maxFailures int, interactive, executing bool, statusHost string, execute planExecutor, clock services.Clock, logs services.LogSink, milestoneArgs ...bool) models.Outcome {
+	cfg := createPlanConfig(tool, goal, mode, budget, maxStepPasses, maxFailures, milestoneArgs...)
 	orchestrator := services.NewPlanOrchestrator(
 		clients.NewExecCommandRunner(),
 		clients.NewOsFileStore(),

@@ -1,5 +1,7 @@
 # determined
 
+Milestone mode (`-plan ... -milestones`, then `-exec -milestones`) divides large work into shippable increments. Each increment receives a read-only intent check before execution and independent verification afterward; failed verification or a worker-written `DIVERGENCE.md` triggers a bounded replan.
+
 **Run an AI coding CLI in a loop until the plan is actually done — verified, not taken on its word.**
 
 You give `determined` a plan (`PLAN.md` + a `STEPS.md` checkbox list). Each
