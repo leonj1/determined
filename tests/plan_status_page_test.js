@@ -557,6 +557,23 @@ test("only the current unfinished planning artifact is marked running", () => {
   });
 });
 
+test("activity entries do not repeat the current repository name", () => {
+  const browser = createPageEnvironment();
+  browser.run(`
+    render({
+      git: { remote: "git@github.com:leonj1/PocketFlow-Typescript.git", branch: "main" },
+      tool: {}, phase: "running", goal: "Goal", plan: "Plan", assumptions: "",
+      tests: "", taskSteps: [], log: [],
+      steps: [{ at: "2026-07-22T10:00:00Z", message: "planning project" }],
+      pendingAnnotations: [], execLog: [], execPhase: "", explainPhase: "", quizPhase: "",
+    });
+  `);
+
+  const text = collectDescendants(browser.registry.get("activity-log"))
+    .map((node) => node.textContent);
+  assert.equal(text.includes("leonj1/PocketFlow-Typescript"), false);
+});
+
 test("the active activity entry offers confirmed Skip and Stop controls", () => {
   const browser = createPageEnvironment();
   browser.run(`
