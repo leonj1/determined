@@ -10,11 +10,18 @@ type Invocation struct {
 
 // Config holds everything one orchestrator run needs.
 type Config struct {
-	StopFile        string
-	PlanFile        string // must exist at startup; execute mode refuses to run without a plan
-	StepsFile       string
-	ExplanationFile string
-	QuizFile        string
+	Milestones         bool
+	MilestonesFile     string
+	MilestoneStateFile string
+	DivergenceFile     string
+	MaxPlanRevisions   int
+	MaxIntentRetries   int
+	PlanTool           Tool
+	StopFile           string
+	PlanFile           string // must exist at startup; execute mode refuses to run without a plan
+	StepsFile          string
+	ExplanationFile    string
+	QuizFile           string
 	// ProtectedFiles lists the files that define the work's success criteria
 	// (the plan, tests, and BDD criteria) and therefore must not change during
 	// execution. Any modification a tool invocation makes to one of them is

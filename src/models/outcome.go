@@ -46,6 +46,9 @@ const (
 	// in more completion passes than MaxSpecialistRounds allows, so the run
 	// stopped for the user to review the remaining findings in FIXES.md.
 	OutcomeSpecialistLimit
+	OutcomeDiverged
+	OutcomeIntentLimit
+	OutcomeReplanLimit
 )
 
 // ExitCode maps an outcome to a process exit code: 0 only when the work
@@ -57,7 +60,7 @@ func (o Outcome) ExitCode() int {
 	case OutcomeStopped, OutcomePlanReady, OutcomePlanReviewed,
 		OutcomeCriteriaReady, OutcomeCriteriaCancelled:
 		return 0
-	case OutcomeStalled, OutcomeSpecialistLimit:
+	case OutcomeStalled, OutcomeSpecialistLimit, OutcomeDiverged, OutcomeIntentLimit, OutcomeReplanLimit:
 		return 3
 	default:
 		return 1
@@ -98,6 +101,12 @@ func (o Outcome) String() string {
 		return "stopped (run stopped from the status page)"
 	case OutcomeSpecialistLimit:
 		return "stopped (a specialist review exceeded its remediation-round cap)"
+	case OutcomeDiverged:
+		return "diverged (worker reported the plan is wrong; see DIVERGENCE.md)"
+	case OutcomeIntentLimit:
+		return "stopped (milestone intent check retry cap reached)"
+	case OutcomeReplanLimit:
+		return "stopped (milestone plan revision cap reached)"
 	default:
 		return "unknown"
 	}

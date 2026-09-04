@@ -157,6 +157,14 @@ func (s *PlanStatusService) SetTaskSteps(steps []models.TaskStep) {
 	})
 }
 
+// SetMilestone publishes the outer milestone gate currently in progress.
+func (s *PlanStatusService) SetMilestone(progress models.MilestoneProgress) {
+	s.update(func(st models.PlanSessionStatus) models.PlanSessionStatus {
+		st.Milestone = &progress
+		return st
+	})
+}
+
 // AddStep appends a timestamped workflow step, clearing any waiting flag.
 func (s *PlanStatusService) AddStep(message string) {
 	s.update(func(st models.PlanSessionStatus) models.PlanSessionStatus {

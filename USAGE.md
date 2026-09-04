@@ -186,3 +186,8 @@ Sec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=
 On curl builds with WebSocket URL support,
 `curl --include ws://localhost:63431/chat` can perform the upgrade, but a
 WebSocket client is still needed to mask and exchange the JSON frames reliably.
+# Milestone execution
+
+Use `-milestones` with `-plan` or `-exec`. `-plan-tool` selects the independent gate tool (default: `-tool`). `-max-plan-revisions` and `-max-intent-retries` bound the outer loop; zero means unlimited.
+
+The protocol uses `MILESTONES.md`, worker signal `DIVERGENCE.md`, and resumable `.determined/milestones.json`. The inner loop's `OutcomeDiverged` triggers replanning; terminal outer-loop limits are reported as `OutcomeIntentLimit` or `OutcomeReplanLimit`, both with exit code 3.

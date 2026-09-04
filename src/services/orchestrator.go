@@ -233,6 +233,14 @@ func (o *Orchestrator) loop(ctx context.Context) models.Outcome {
 		if outcome, stop := o.runOnce(ctx); stop {
 			return outcome
 		}
+		diverged, err := o.workerDiverged()
+		if err != nil {
+			fmt.Fprintf(o.terminal, "determined: could not read %s: %v\n", o.cfg.DivergenceFile, err)
+			return models.OutcomeDroidFailed
+		}
+		if diverged {
+			return models.OutcomeDiverged
+		}
 		if outcome, stop := o.verifyNewSteps(ctx, before); stop {
 			return outcome
 		}
@@ -383,31 +391,27 @@ func (o *Orchestrator) runTieBreaker(ctx context.Context) (models.Outcome, bool)
 // GUIDANCE lines from the tie-breaker's output. It scans for lines beginning
 // with the expected prefixes and returns the first match of each.
 func parseTieBreakerVerdict(output string) (verdict tieBreakerVerdict, rationale string, guidance string) {
-	lines := strings.Split(output, "\n")
-	hasVerdict := false
-	hasRationale := false
-	for _, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		switch {
-		case !hasVerdict && hasFoldPrefix(trimmed, "VERDICT:"):
-			v := strings.TrimSpace(strings.TrimPrefix(trimmed, trimmed[:len("VERDICT:")]))
-			switch strings.ToUpper(v) {
-			case "ACCEPT":
-				verdict = tieBreakerVerdictAccept
-			case "REJECT":
-				verdict = tieBreakerVerdictReject
-			}
-			hasVerdict = true
-		case !hasRationale && hasFoldPrefix(trimmed, "RATIONALE:"):
-			rationale = strings.TrimSpace(trimmed[len("RATIONALE:"):])
-			hasRationale = true
-		case hasFoldPrefix(trimmed, "GUIDANCE:"):
-			if guidance == "" {
-				guidance = strings.TrimSpace(trimmed[len("GUIDANCE:"):])
-			}
-		}
+	g, ok := ParseGateVerdict(output, "ACCEPT", "REJECT")
+	if !ok {
+		return tieBreakerVerdictInvalid, "", ""
 	}
-	return
+	if g.Token == "ACCEPT" {
+		verdict = tieBreakerVerdictAccept
+	} else {
+		verdict = tieBreakerVerdictReject
+	}
+	return verdict, g.Rationale, g.Guidance
+}
+
+func (o *Orchestrator) workerDiverged() (bool, error) {
+	if !o.cfg.Milestones || !o.files.Exists(o.cfg.DivergenceFile) {
+		return false, nil
+	}
+	content, err := o.files.Read(o.cfg.DivergenceFile)
+	if err != nil {
+		return false, err
+	}
+	return strings.TrimSpace(content) != "", nil
 }
 
 // stalledStepTitle names the step the run keeps failing to check, for the
@@ -682,14 +686,14 @@ func (o *Orchestrator) runOnce(ctx context.Context) (models.Outcome, bool) {
 	if AllStepsComplete(o.parsedSteps()) {
 		return o.runCompletionReviews(ctx)
 	}
-	target, _ := NextIncompleteStep(o.parsedSteps())
+	target, targetFound := NextIncompleteStep(o.parsedSteps())
 	prompt, progress, err := o.iterationPrompt()
 	if err != nil {
 		fmt.Fprintf(o.terminal, "determined: could not read %s: %v\n", o.cfg.StepsFile, err)
 		return models.OutcomeDroidFailed, true
 	}
 	result := o.invoke(ctx, prompt, progress)
-	if result.skipped {
+	if result.skipped && targetFound {
 		o.skipTargetStep(target)
 	}
 	return result.outcome, result.stop
@@ -1287,7 +1291,7 @@ func (o *Orchestrator) iterationPrompt() (string, progressMessage, error) {
 	for i, step := range steps {
 		if !step.Completed {
 			progress := executionProgress(i+1, step)
-			return stepPrompt(step), progress, nil
+			return stepPrompt(step, stepPromptOptions{Milestones: o.cfg.Milestones}), progress, nil
 		}
 	}
 	return noParsableStepsPrompt, "repairing step list", nil
@@ -1310,7 +1314,11 @@ func executionProgress(n int, step Step) progressMessage {
 // step, meet its acceptance criterion, and check its box when done. NOTES.md
 // carries knowledge between otherwise-independent invocations: each iteration
 // reads what earlier steps recorded and appends what later steps need to know.
-func stepPrompt(step Step) string {
+// stepPromptOptions controls optional worker protocols without variadic ambiguity.
+type stepPromptOptions struct{ Milestones bool }
+
+// stepPrompt builds the instruction for exactly one executable step.
+func stepPrompt(step Step, options stepPromptOptions) string {
 	var b strings.Builder
 	b.WriteString("Read NOTES.md if it exists before starting. ")
 	b.WriteString("Work on exactly this step and no other: ")
@@ -1326,6 +1334,9 @@ func stepPrompt(step Step) string {
 	b.WriteString(" Mark it `[x]` in STEPS.md when done. " +
 		"Before finishing, append to NOTES.md any decisions, conventions, or " +
 		"gotchas later steps need to know.")
+	if options.Milestones {
+		b.WriteString(" If this milestone's plan is wrong or cannot achieve its goal, write DIVERGENCE.md explaining why and stop work.")
+	}
 	return b.String()
 }
 

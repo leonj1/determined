@@ -9,10 +9,12 @@ import "time"
 // Once a plan exists, determined checks its quality and resolves findings until
 // it passes or MaxRefinePasses is reached.
 type PlanConfig struct {
-	Operation  PlanOperation // create a plan or review an existing one
-	Goal       string        // the user's goal or a file reference used to seed GoalFile
-	Invocation Invocation    // the planning tool command (print mode) run each round
-	Budget     time.Duration // wall-clock budget; 0 means unlimited
+	Milestones     bool
+	MilestonesFile string
+	Operation      PlanOperation // create a plan or review an existing one
+	Goal           string        // the user's goal or a file reference used to seed GoalFile
+	Invocation     Invocation    // the planning tool command (print mode) run each round
+	Budget         time.Duration // wall-clock budget; 0 means unlimited
 
 	AssessInvocation   Invocation // reviews plan and step quality, writing AssessmentFile
 	RefineInvocation   Invocation // resolves assessment findings in PlanFile and StepsFile

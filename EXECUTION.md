@@ -250,3 +250,20 @@ to know before finishing. The file lives in the working directory alongside
 For chat commands, exit `0` means a one-shot reply arrived or an interactive
 connection closed cleanly; exit `1` means no verified live session, a timeout,
 or a transport failure; exit `2` means invalid flag usage.
+## Milestone mode
+
+Milestone mode wraps the normal step loop without changing it. `MILESTONES.md` defines the increments and `.determined/milestones.json` records approvals, verification, and the current revision for resume.
+
+```mermaid
+flowchart LR
+  Plan --> Elaborate --> Intent
+  Intent -->|PASS| Execute --> Verify
+  Intent -->|FAIL| Elaborate
+  Verify -->|PASS| Advance
+  Verify -->|REPLAN| Replan --> Elaborate
+```
+
+| Bound | Flag | Default |
+|---|---|---:|
+| Intent retries | `-max-intent-retries` | 2 |
+| Replans | `-max-plan-revisions` | 3 |

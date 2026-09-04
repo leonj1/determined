@@ -126,6 +126,15 @@ func PlanningPrompts(mode models.PlanMode) models.PlanningPrompts {
 	}
 }
 
+// BuildMilestonePlanningPrompts extends the selected mode with milestone planning.
+func BuildMilestonePlanningPrompts(mode models.PlanMode) models.PlanningPrompts {
+	p := PlanningPrompts(mode)
+	p.Plan += " " + MilestonePlanProtocol
+	p.Assess += " Also read MILESTONES.md and check every milestone has an observable Working state, milestone 1 is a walking skeleton across the architecture, and every stubs/flags ledger entry names its removal milestone."
+	p.Refine += " Resolve milestone findings in MILESTONES.md while preserving its format; do not write STEPS.md."
+	return p
+}
+
 // ReviewPrompts returns instructions for interviewing the user about an
 // existing plan before applying the resulting revisions.
 func ReviewPrompts() models.PlanningPrompts {
