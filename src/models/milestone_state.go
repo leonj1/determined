@@ -10,10 +10,11 @@ type MilestoneProgress struct {
 
 // MilestoneStatus is the persisted gate state for one milestone.
 type MilestoneStatus struct {
-	IntentChecked    bool `json:"intentChecked"`
-	ApprovedRevision int  `json:"approvedRevision"`
-	Verified         bool `json:"verified"`
-	IntentRetries    int  `json:"intentRetries"`
+	IntentChecked    bool   `json:"intentChecked"`
+	ApprovedRevision int    `json:"approvedRevision"`
+	Verified         bool   `json:"verified"`
+	IntentRetries    int    `json:"intentRetries"`
+	DefinitionHash   string `json:"definitionHash,omitempty"`
 }
 
 // MilestoneState is the resumable outer-loop checkpoint.

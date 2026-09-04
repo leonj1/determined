@@ -190,4 +190,4 @@ WebSocket client is still needed to mask and exchange the JSON frames reliably.
 
 Use `-milestones` with `-plan` or `-exec`. `-plan-tool` selects the independent gate tool (default: `-tool`). `-max-plan-revisions` and `-max-intent-retries` bound the outer loop; zero means unlimited.
 
-The protocol uses `MILESTONES.md`, worker signal `DIVERGENCE.md`, and resumable `.determined/milestones.json`. Outer-loop failures are reported as `OutcomeDiverged`, `OutcomeIntentLimit`, or `OutcomeReplanLimit`, all with exit code 3.
+The protocol uses `MILESTONES.md`, worker signal `DIVERGENCE.md`, and resumable `.determined/milestones.json`. The inner loop's `OutcomeDiverged` triggers replanning; terminal outer-loop limits are reported as `OutcomeIntentLimit` or `OutcomeReplanLimit`, both with exit code 3.

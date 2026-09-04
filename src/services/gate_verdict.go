@@ -2,8 +2,10 @@ package services
 
 import "strings"
 
+// GateVerdict is the structured result emitted by a read-only milestone gate.
 type GateVerdict struct{ Token, Rationale, Guidance string }
 
+// ParseGateVerdict returns the first accepted verdict and its explanatory lines.
 func ParseGateVerdict(output string, accepted ...string) (GateVerdict, bool) {
 	allowed := map[string]bool{}
 	for _, v := range accepted {

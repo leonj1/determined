@@ -719,11 +719,18 @@ func (o *PlanOrchestrator) planDrafted() bool {
 			return false
 		}
 		_, err = ParseMilestones(content)
-		if o.files.Exists(o.cfg.StepsFile) {
-			o.files.Remove(o.cfg.StepsFile)
-			o.files.Append("NOTES.md", "\nRemoved STEPS.md because milestone planning elaborates steps during execution.\n")
+		if err != nil {
+			return false
 		}
-		return err == nil
+		if o.files.Exists(o.cfg.StepsFile) {
+			if err := o.files.Remove(o.cfg.StepsFile); err != nil {
+				return false
+			}
+			if err := o.files.Append("NOTES.md", "\nRemoved STEPS.md because milestone planning elaborates steps during execution.\n"); err != nil {
+				return false
+			}
+		}
+		return true
 	}
 	return o.files.Exists(o.cfg.PlanFile) && o.files.Exists(o.cfg.StepsFile)
 }

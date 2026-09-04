@@ -174,8 +174,9 @@ func main() {
 			operationRequested(*plan != "", *reviewPlan, *exec, false)
 	}
 	if proceed {
+		milestoneCfg := milestoneExecutionConfig{Enabled: *milestones, PlanTool: selectedPlanTool, MaxPlanRevisions: *maxPlanRevisions, MaxIntentRetries: *maxIntentRetries}
 		executor := func(ctx context.Context, status services.ExecStatusReporter) models.Outcome {
-			return runLoop(ctx, executionTool, *budget, *maxStalled, *maxFailures, *maxSpecialistRounds, *maxIterationDuration, *stepMaxRuntime, *verify, *specializedReviews, *gitCheckpoint, *tieBreaker, status, clock, logs, *milestones, selectedPlanTool, *maxPlanRevisions, *maxIntentRetries)
+			return runLoop(ctx, executionTool, *budget, *maxStalled, *maxFailures, *maxSpecialistRounds, *maxIterationDuration, *stepMaxRuntime, *verify, *specializedReviews, *gitCheckpoint, *tieBreaker, status, clock, logs, milestoneCfg)
 		}
 		if *reviewPlan {
 			outcome = runReviewPlan(ctx, selected, *budget, *maxStepPasses, *maxFailures, clock, logs)
@@ -434,7 +435,7 @@ func createPlanConfig(tool models.Tool, goal string, mode models.PlanMode, budge
 	milestones := len(milestoneArgs) > 0 && milestoneArgs[0]
 	prompts := services.PlanningPrompts(mode)
 	if milestones {
-		prompts = services.MilestonePlanningPrompts(mode)
+		prompts = services.BuildMilestonePlanningPrompts(mode)
 	}
 	return models.PlanConfig{
 		Milestones: milestones, MilestonesFile: "MILESTONES.md",
@@ -456,10 +457,39 @@ func createPlanConfig(tool models.Tool, goal string, mode models.PlanMode, budge
 // events to the given status reporter (nil disables reporting).
 type planExecutor func(ctx context.Context, status services.ExecStatusReporter) models.Outcome
 
+// milestoneExecutionConfig carries the optional outer-loop configuration.
+type milestoneExecutionConfig struct {
+	Enabled          bool
+	PlanTool         models.Tool
+	MaxPlanRevisions int
+	MaxIntentRetries int
+}
+
 // runLoop runs the unattended execute loop against PLAN.md / STEPS.md. A
 // non-nil status reporter streams the run to the interactive status page.
-func runLoop(ctx context.Context, tool models.Tool, budget time.Duration, maxStalled, maxFailures, maxSpecialistRounds int, maxIterationDuration, stepMaxRuntime time.Duration, verify, specializedReviews, gitCheckpoint, tieBreaker bool, status services.ExecStatusReporter, clock services.Clock, logs services.LogSink, milestoneArgs ...any) models.Outcome {
-	cfg := models.Config{
+func runLoop(ctx context.Context, tool models.Tool, budget time.Duration, maxStalled, maxFailures, maxSpecialistRounds int, maxIterationDuration, stepMaxRuntime time.Duration, verify, specializedReviews, gitCheckpoint, tieBreaker bool, status services.ExecStatusReporter, clock services.Clock, logs services.LogSink, milestone milestoneExecutionConfig) models.Outcome {
+	cfg := buildExecutionConfig(tool, budget, maxStalled, maxFailures, maxSpecialistRounds, maxIterationDuration, stepMaxRuntime, verify, specializedReviews, gitCheckpoint, tieBreaker)
+	if milestone.Enabled {
+		return runMilestoneLoop(ctx, cfg, milestone, status, clock, logs)
+	}
+	files := clients.NewOsFileStore()
+	if files.Exists("MILESTONES.md") && !files.Exists("STEPS.md") {
+		fmt.Fprintln(os.Stderr, "determined: MILESTONES.md found; run with -milestones")
+		return models.OutcomeMissingFiles
+	}
+	orchestrator := services.NewOrchestrator(clients.NewExecCommandRunner(), files, clock, logs, os.Stdout, cfg).WithStatusReporter(status)
+	if control, ok := status.(services.TaskController); ok {
+		orchestrator.WithTaskControl(control)
+	}
+	if resolver, ok := status.(services.StallResolver); ok {
+		orchestrator.WithStallResolver(resolver)
+	}
+	return orchestrator.Run(ctx)
+}
+
+// buildExecutionConfig maps CLI execution settings to the domain configuration.
+func buildExecutionConfig(tool models.Tool, budget time.Duration, maxStalled, maxFailures, maxSpecialistRounds int, maxIterationDuration, stepMaxRuntime time.Duration, verify, specializedReviews, gitCheckpoint, tieBreaker bool) models.Config {
+	return models.Config{
 		StopFile:               "STOP.md",
 		PlanFile:               "PLAN.md",
 		StepsFile:              "STEPS.md",
@@ -478,50 +508,27 @@ func runLoop(ctx context.Context, tool models.Tool, budget time.Duration, maxSta
 		GitCheckpoint:          gitCheckpoint,
 		TieBreaker:             tieBreaker,
 	}
-	if len(milestoneArgs) >= 4 {
-		cfg.Milestones, _ = milestoneArgs[0].(bool)
-		cfg.PlanTool, _ = milestoneArgs[1].(models.Tool)
-		cfg.MaxPlanRevisions, _ = milestoneArgs[2].(int)
-		cfg.MaxIntentRetries, _ = milestoneArgs[3].(int)
-		cfg.MilestonesFile = "MILESTONES.md"
-		cfg.MilestoneStateFile = ".determined/milestones.json"
-		cfg.DivergenceFile = "DIVERGENCE.md"
+}
+
+// runMilestoneLoop constructs the milestone-specific dependencies and state paths.
+func runMilestoneLoop(ctx context.Context, cfg models.Config, milestone milestoneExecutionConfig, status services.ExecStatusReporter, clock services.Clock, logs services.LogSink) models.Outcome {
+	if err := os.MkdirAll(".determined/steps", 0o755); err != nil {
+		fmt.Fprintf(os.Stderr, "determined: %v\n", err)
+		return models.OutcomeDroidFailed
 	}
-	if cfg.Milestones {
-		if err := os.MkdirAll(".determined/steps", 0o755); err != nil {
-			fmt.Fprintf(os.Stderr, "determined: %v\n", err)
-			return models.OutcomeDroidFailed
-		}
-		files := clients.NewOsFileStore()
-		runner := clients.NewExecCommandRunner()
-		factory := func(inner models.Config) *services.Orchestrator {
-			return services.NewOrchestrator(runner, files, clock, logs, os.Stdout, inner).WithStatusReporter(status)
-		}
-		return services.NewMilestoneOrchestrator(runner, files, clock, logs, os.Stdout, cfg, factory).WithStatusReporter(status).Run(ctx)
+	cfg.Milestones = true
+	cfg.PlanTool = milestone.PlanTool
+	cfg.MaxPlanRevisions = milestone.MaxPlanRevisions
+	cfg.MaxIntentRetries = milestone.MaxIntentRetries
+	cfg.MilestonesFile = "MILESTONES.md"
+	cfg.MilestoneStateFile = ".determined/milestones.json"
+	cfg.DivergenceFile = "DIVERGENCE.md"
+	files := clients.NewOsFileStore()
+	runner := clients.NewExecCommandRunner()
+	factory := func(inner models.Config) *services.Orchestrator {
+		return services.NewOrchestrator(runner, files, clock, logs, os.Stdout, inner).WithStatusReporter(status)
 	}
-	if clients.NewOsFileStore().Exists("MILESTONES.md") && !clients.NewOsFileStore().Exists("STEPS.md") {
-		fmt.Fprintln(os.Stderr, "determined: MILESTONES.md found; run with -milestones")
-		return models.OutcomeMissingFiles
-	}
-	orchestrator := services.NewOrchestrator(
-		clients.NewExecCommandRunner(),
-		clients.NewOsFileStore(),
-		clock,
-		logs,
-		os.Stdout,
-		cfg,
-	).WithStatusReporter(status)
-	// The status service doubles as the page's task controller, so the Skip
-	// and Stop buttons on the active activity entry can reach the loop.
-	if control, ok := status.(services.TaskController); ok {
-		orchestrator.WithTaskControl(control)
-	}
-	// The same service resolves verification deadlocks: when the run stalls,
-	// it parks on the page's tiebreak modal instead of stopping outright.
-	if resolver, ok := status.(services.StallResolver); ok {
-		orchestrator.WithStallResolver(resolver)
-	}
-	return orchestrator.Run(ctx)
+	return services.NewMilestoneOrchestrator(runner, files, clock, logs, os.Stdout, cfg, factory, status).Run(ctx)
 }
 
 // runExplain generates the explanation and quiz on demand from the status

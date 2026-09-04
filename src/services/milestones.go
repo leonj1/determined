@@ -8,11 +8,13 @@ import (
 	"strings"
 )
 
+// Milestone is one independently shippable unit parsed from MILESTONES.md.
 type Milestone struct {
 	Number                                            int
 	Name, Goal, WorkingState, RisksRetired, DependsOn string
 }
 
+// MilestoneDocument preserves parsed milestones and uninterpreted trailer text.
 type MilestoneDocument struct {
 	Milestones []Milestone
 	Trailer    string
@@ -21,6 +23,7 @@ type MilestoneDocument struct {
 
 var milestoneHeading = regexp.MustCompile(`^## Milestone ([0-9]+):\s*(.*)$`)
 
+// ParseMilestones validates and parses milestone headings outside code fences.
 func ParseMilestones(content string) (MilestoneDocument, error) {
 	starts := milestoneStarts(content)
 	if len(starts) == 0 {
@@ -56,6 +59,7 @@ func ParseMilestones(content string) (MilestoneDocument, error) {
 	return doc, nil
 }
 
+// milestoneStarts locates milestone headings while ignoring fenced examples.
 func milestoneStarts(content string) []int {
 	var starts []int
 	offset, fenced := 0, false
@@ -71,10 +75,14 @@ func milestoneStarts(content string) []int {
 	return starts
 }
 
+// milestoneBlock separates the final milestone from document trailer sections.
 func milestoneBlock(block string) (string, int) {
-	lines, offset := strings.SplitAfter(block, "\n"), 0
+	lines, offset, fenced := strings.SplitAfter(block, "\n"), 0, false
 	for i, line := range lines {
-		if i > 0 && strings.HasPrefix(strings.TrimSpace(line), "## ") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "```") {
+			fenced = !fenced
+		} else if i > 0 && !fenced && strings.HasPrefix(trimmed, "## ") {
 			return block[:offset], offset
 		}
 		offset += len(line)
@@ -82,10 +90,14 @@ func milestoneBlock(block string) (string, int) {
 	return block, -1
 }
 
+// parseMilestone validates one heading and its required fields.
 func parseMilestone(block string) (Milestone, error) {
 	lines := strings.Split(block, "\n")
 	match := milestoneHeading.FindStringSubmatch(strings.TrimSpace(lines[0]))
-	n, _ := strconv.Atoi(match[1])
+	n, err := strconv.Atoi(match[1])
+	if err != nil {
+		return Milestone{}, fmt.Errorf("invalid milestone number %q: %w", match[1], err)
+	}
 	m := Milestone{Number: n, Name: match[2]}
 	for _, line := range lines[1:] {
 		value := func(prefix string) string { return strings.TrimSpace(strings.TrimPrefix(line, prefix)) }
@@ -106,6 +118,7 @@ func parseMilestone(block string) (Milestone, error) {
 	return m, nil
 }
 
+// Render returns the original document or a canonical rendering of a constructed value.
 func (d MilestoneDocument) Render() string {
 	if d.raw != "" {
 		return d.raw
@@ -118,6 +131,7 @@ func (d MilestoneDocument) Render() string {
 	return b.String() + d.Trailer
 }
 
+// Find returns the milestone with the requested number.
 func (d MilestoneDocument) Find(n int) (Milestone, bool) {
 	for _, m := range d.Milestones {
 		if m.Number == n {
@@ -126,6 +140,8 @@ func (d MilestoneDocument) Find(n int) (Milestone, bool) {
 	}
 	return Milestone{}, false
 }
+
+// Next returns the lowest-numbered milestone greater than after.
 func (d MilestoneDocument) Next(after int) (Milestone, bool) {
 	ms := append([]Milestone(nil), d.Milestones...)
 	sort.Slice(ms, func(i, j int) bool { return ms[i].Number < ms[j].Number })
