@@ -112,14 +112,12 @@ field definitions and curl examples are in [USAGE.md](USAGE.md).
    any success resets the count. Only when the cap is hit does the run abort
    with exit **1**. `SIGINT` / `SIGTERM` stop immediately with exit **1**.
 6. **Verification pass** (`--verify`, default **on**) — for every step this
-   iteration newly checked, a fresh reviewer invocation first checks the
-   implementation is the simplest solution that satisfies the step; a
-   materially simpler alternative unchecks the step and records the simpler
-   approach in `FIXES.md`, skipping the correctness check for that round.
-   Otherwise a second reviewer invocation confirms the acceptance criterion
-   actually holds. If it does not, the reviewer unchecks the step in
+   iteration newly checked, one fresh reviewer invocation confirms the
+   acceptance criterion actually holds. If it does not, the reviewer unchecks the step in
    `STEPS.md` and appends what is wrong to `FIXES.md`, so the loop re-runs
-   it.
+   it. Planning performs one whole-plan simplicity review before refinement;
+   `--step-simplicity` opts into the former additional simplicity invocation
+   before each correctness review.
 7. **Git checkpoint** (`--git-checkpoint`, default **on**) — each newly
    checked step that survived verification is committed as
    `determined: step N: <step text>` (`git add -A && git commit`). Outside a
@@ -172,6 +170,9 @@ A reviewer reports only concrete, actionable findings. It appends the finding
 and evidence to `FIXES.md`, then reopens the relevant checkbox or adds an
 unchecked remediation step with a `Done when:` criterion. That immediately
 blocks later gates; after remediation, all specialist reviews run again.
+Risks recorded in PLAN.md under `## Accepted trade-offs` are not reopened;
+a specialist that considers one unsafe may add an `Advisory (<specialist>):`
+line to `NOTES.md` without changing the steps.
 `--specialized-reviews=false` skips these three gates.
 
 After all enabled specialist reviews approve, one final invocation reads

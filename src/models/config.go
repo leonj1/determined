@@ -55,12 +55,14 @@ type Config struct {
 	// remaining findings in FIXES.md instead of the loop burning a full cycle
 	// per finding forever; 0 means unlimited.
 	MaxSpecialistRounds int
-	// Verify runs independent reviewer invocations after each newly checked
-	// step: a simplicity check first, then a correctness verification. Either
-	// unchecks the step (and records why in FIXES.md) when a materially
-	// simpler solution exists or its acceptance criterion is not genuinely
-	// met.
+	// Verify runs an independent correctness reviewer after each newly checked
+	// step. The reviewer unchecks the step and records why in FIXES.md when its
+	// acceptance criterion is not genuinely met.
 	Verify bool
+	// SimplicityReviews adds an opt-in simplicity reviewer before each step's
+	// correctness review. Planning already performs one whole-plan simplicity
+	// pass, so this extra per-step invocation defaults off.
+	SimplicityReviews bool
 	// SpecializedReviews runs independent security, performance, and
 	// reliability/maintainability reviews before the final whole-plan audit.
 	// A reviewer can reopen or add a remediation step in STEPS.md.

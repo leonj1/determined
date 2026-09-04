@@ -127,14 +127,16 @@ func TestStandardAssessmentRejectsStepsThatRequireImplementerAssumptions(t *test
 	}
 }
 
-func TestAssessmentSplitsFindingsFromPreferenceQuestions(t *testing.T) {
+func TestAssessmentAsksOnlyGoalClarifyingQuestions(t *testing.T) {
 	for _, mode := range []models.PlanMode{models.PlanModeStandard, models.PlanModeMVP, models.PlanModePrototype} {
 		prompt := services.PlanningPrompts(mode).Assess
 		for _, expected := range []string{
 			"objective finding as a markdown list item in REFINEMENTS.md",
-			"depends on user preference, product intent, or risk tolerance",
+			"only when GOAL.md is ambiguous about something the plan must implement",
+			"needed to implement GOAL.md as written",
+			"Never ask whether to add behaviour",
 			"QUESTIONS.md as a markdown numbered list",
-			"do not resolve preference-dependent findings yourself",
+			"names the GOAL.md phrase it clarifies",
 		} {
 			if !strings.Contains(prompt, expected) {
 				t.Fatalf("expected %s assessment prompt to contain %q", mode, expected)
@@ -172,9 +174,9 @@ func TestPrototypePlanPrioritizesExperimentation(t *testing.T) {
 	}
 }
 
-func TestReviewInterviewsUserAboutConsequentialFindings(t *testing.T) {
+func TestReviewInterviewsUserOnlyToClarifyGoal(t *testing.T) {
 	prompts := services.ReviewPrompts()
-	for _, expected := range []string{"assumptions", "edge cases", "risk tolerance", "REVIEW_QUESTIONS.md", "options and tradeoffs"} {
+	for _, expected := range []string{"assumptions", "edge cases", "GOAL.md is ambiguous", "REVIEW_QUESTIONS.md", "Never ask whether to add behaviour"} {
 		if !strings.Contains(prompts.Assess, expected) {
 			t.Fatalf("expected review assessment prompt to contain %q", expected)
 		}
@@ -182,6 +184,102 @@ func TestReviewInterviewsUserAboutConsequentialFindings(t *testing.T) {
 	for _, expected := range []string{"REVIEW_ANSWERS.md", "authoritative", "Do not implement"} {
 		if !strings.Contains(prompts.Refine, expected) {
 			t.Fatalf("expected review refinement prompt to contain %q", expected)
+		}
+	}
+}
+
+func TestStandardPlanTriagesGoalSizeBeforeApplyingTemplates(t *testing.T) {
+	prompt := services.PlanningPrompts(models.PlanModeStandard).Plan
+	for _, expected := range []string{
+		"## Size", "**Size:**", "trivial", "small", "medium", "large",
+		"at most 3 steps", "at most 6 steps", "at most 12 steps",
+		"For trivial and small goals apply the lean gate",
+	} {
+		if !strings.Contains(prompt, expected) {
+			t.Fatalf("expected standard planning prompt to contain %q", expected)
+		}
+	}
+	if strings.Index(prompt, "**Size:**") > strings.Index(prompt, "Classify the work and apply the matching template") {
+		t.Fatal("size triage must precede the task-template instruction")
+	}
+}
+
+func TestLeanGateIsSharedBetweenMVPAndSmallStandardPlans(t *testing.T) {
+	lean := "Require only the intended outcome, target user/use case, must-have scope, key constraint, and observable core success behavior."
+	if !strings.Contains(services.PlanningPrompts(models.PlanModeMVP).Plan, lean) ||
+		!strings.Contains(services.PlanningPrompts(models.PlanModeStandard).Plan, lean) {
+		t.Fatal("expected the lean gate text in MVP and standard prompts")
+	}
+}
+
+func TestAssessmentAndRefinementCanShrinkPlans(t *testing.T) {
+	for _, assess := range []string{
+		services.PlanningPrompts(models.PlanModeStandard).Assess,
+		services.PlanningPrompts(models.PlanModeMVP).Assess,
+		services.ReviewPrompts().Assess,
+	} {
+		for _, expected := range []string{
+			"merged into a neighbour", "exactly one caller", "GOAL.md does not require",
+			"satisfy a convention rather than the goal", "Prefer removing a step over splitting one",
+			"never the presence of an interface, Fake, wrapper type, or file",
+			"exceeds its cap", "trivial 3", "small 6", "medium 12",
+		} {
+			if !strings.Contains(assess, expected) {
+				t.Fatalf("expected assessment prompt to contain %q", expected)
+			}
+		}
+	}
+	refine := services.PlanningPrompts(models.PlanModeStandard).Refine
+	for _, expected := range []string{"merge or delete steps", "Never add a step the findings do not require"} {
+		if !strings.Contains(refine, expected) {
+			t.Fatalf("expected refinement prompt to contain %q", expected)
+		}
+	}
+}
+
+func TestSimplifyPromptRemovesWhatTheGoalDoesNotRequire(t *testing.T) {
+	prompt := services.PlanningPrompts(models.PlanModeStandard).Simplify
+	for _, expected := range []string{
+		"Read GOAL.md", "STEPS.md", "TESTS.md", "the goal does not require",
+		"merge steps", "## Simplifications", "Do not implement anything or create STOP.md",
+		"never the presence of an interface, Fake, wrapper type, or file",
+	} {
+		if !strings.Contains(prompt, expected) {
+			t.Fatalf("expected simplify prompt to contain %q", expected)
+		}
+	}
+}
+
+func TestAnswersNeverWidenTheGoal(t *testing.T) {
+	prompts := services.PlanningPrompts(models.PlanModeStandard)
+	for name, prompt := range map[string]string{
+		"plan": prompts.Plan, "refine": prompts.Refine, "review": services.ReviewPrompts().Refine,
+	} {
+		for _, expected := range []string{
+			"for the questions they answer, and for nothing else", "An answer never widens GOAL.md",
+			"plan no step, design decision, or test for it",
+		} {
+			if !strings.Contains(prompt, expected) {
+				t.Fatalf("expected %s prompt to contain %q", name, expected)
+			}
+		}
+	}
+}
+
+func TestPlanRecordsAcceptedTradeOffsAndProportionalTests(t *testing.T) {
+	for _, mode := range []models.PlanMode{models.PlanModeStandard, models.PlanModeMVP, models.PlanModePrototype} {
+		if !strings.Contains(services.PlanningPrompts(mode).Plan, "`## Accepted trade-offs` heading") {
+			t.Fatalf("expected %s prompt to require accepted trade-offs", mode)
+		}
+	}
+	for _, prompt := range []string{services.PlanningPrompts(models.PlanModeStandard).Plan, services.PlanningPrompts(models.PlanModeStandard).Tests} {
+		for _, expected := range []string{
+			"trivial or small goal, TESTS.md lists exactly one test", "no journey test and no mermaid diagram",
+			"medium and large goals, list up to 3 tests",
+		} {
+			if !strings.Contains(prompt, expected) {
+				t.Fatalf("expected tests requirement to contain %q", expected)
+			}
 		}
 	}
 }

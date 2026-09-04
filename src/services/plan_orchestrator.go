@@ -65,6 +65,7 @@ type PlanOrchestrator struct {
 
 	iteration  int
 	goalSeeded bool
+	simplified bool
 	failures   int
 	// lastSkipped reports whether the most recent invocation was aborted by
 	// the user's Skip on the status page: the loop treats it as done, and
@@ -184,6 +185,9 @@ func (o *PlanOrchestrator) create(ctx context.Context, deadline time.Time) model
 		}
 
 		if o.planDrafted() {
+			if outcome, stop := o.simplifyDraft(ctx); stop {
+				return outcome
+			}
 			if outcome, stop := o.ensureTests(ctx); stop {
 				return outcome
 			}
@@ -201,6 +205,16 @@ func (o *PlanOrchestrator) create(ctx context.Context, deadline time.Time) model
 		// The tool wrote neither questions nor a plan: it cannot make progress.
 		return models.OutcomePlanStalled
 	}
+}
+
+// simplifyDraft runs once after this session creates its first complete draft.
+// A draft already present when create starts is a resumed plan and bypasses it.
+func (o *PlanOrchestrator) simplifyDraft(ctx context.Context) (models.Outcome, bool) {
+	if o.simplified || o.cfg.Milestones || o.cfg.SimplifyInvocation.Binary == "" {
+		return models.OutcomePlanReady, false
+	}
+	o.simplified = true
+	return o.runInvocation(ctx, o.cfg.SimplifyInvocation, "simplifying plan")
 }
 
 func (o *PlanOrchestrator) review(ctx context.Context, deadline time.Time) models.Outcome {
@@ -412,6 +426,11 @@ func (o *PlanOrchestrator) refine(ctx context.Context, deadline time.Time) model
 			fmt.Fprintf(o.terminal, "determined: could not read %s: %v\n", o.cfg.AssessmentFile, err)
 			return models.OutcomeDroidFailed
 		}
+		content, err = o.withSizeFindings(content)
+		if err != nil {
+			fmt.Fprintf(o.terminal, "determined: could not enforce plan size: %v\n", err)
+			return models.OutcomeDroidFailed
+		}
 		issues := RefinementIssues(content)
 		if len(issues) == 0 {
 			o.files.Remove(o.cfg.AssessmentFile)
@@ -441,6 +460,67 @@ func (o *PlanOrchestrator) refine(ctx context.Context, deadline time.Time) model
 		o.reportPlan()
 		o.files.Remove(o.cfg.AssessmentFile)
 	}
+}
+
+func (o *PlanOrchestrator) withSizeFindings(assessment string) (string, error) {
+	if o.cfg.Milestones {
+		return assessment, nil
+	}
+	plan, err := o.files.Read(o.cfg.PlanFile)
+	if err != nil {
+		return "", err
+	}
+	if _, ok := PlanSizeOf(plan); !ok && !o.simplified {
+		return assessment, nil
+	}
+	steps, err := o.files.Read(o.cfg.StepsFile)
+	if err != nil {
+		return "", err
+	}
+	tests, err := o.files.Read(o.cfg.TestsFile)
+	if err != nil {
+		return "", err
+	}
+	content := mergeFindings(assessment, sizeFindings(plan, steps, tests))
+	if content != assessment {
+		err = o.files.Write(o.cfg.AssessmentFile, content)
+	}
+	return content, err
+}
+
+func sizeFindings(plan, steps, tests string) []string {
+	size, ok := PlanSizeOf(plan)
+	if !ok {
+		return []string{"PLAN.md has no `**Size:**` line under `## Size`"}
+	}
+	findings := []string{}
+	stepCount, cap := len(ParseSteps(steps)), StepCap(size)
+	if cap > 0 && stepCount > cap {
+		findings = append(findings, fmt.Sprintf("%d steps exceeds the %s cap of %d", stepCount, size, cap))
+	}
+	testCount := NewTestsDocument(tests).TestCount()
+	if (size == models.PlanSizeTrivial || size == models.PlanSizeSmall) && testCount > 1 {
+		findings = append(findings, fmt.Sprintf("%d tests exceeds the %s limit of 1", testCount, size))
+	}
+	return findings
+}
+
+func mergeFindings(assessment string, findings []string) string {
+	if len(findings) == 0 {
+		return assessment
+	}
+	base := strings.TrimSpace(assessment)
+	if strings.EqualFold(base, "NONE") {
+		base = ""
+	}
+	var merged strings.Builder
+	if base != "" {
+		merged.WriteString(base + "\n")
+	}
+	for _, finding := range findings {
+		fmt.Fprintf(&merged, "- %s\n", finding)
+	}
+	return merged.String()
 }
 
 // refineCapAction tells refine what to do after the exhausted-cap gate:
@@ -660,18 +740,18 @@ func (o *PlanOrchestrator) relayQuestions(ctx context.Context) (models.Outcome, 
 		return models.OutcomePlanStalled, true
 	}
 	writeProgress(o.terminal, o.clock, o.questionProgress())
-	var round strings.Builder
-	fmt.Fprintf(&round, "## Round %d\n\n", o.iteration)
+	var qa strings.Builder
 	for _, q := range questions {
 		answer, err := o.prompter.Ask(ctx, models.TextPrompt("Planning question", q, true))
 		if err != nil {
 			fmt.Fprintf(o.terminal, "determined: could not read your answer: %v\n", err)
 			return models.OutcomeInterrupted, true
 		}
-		fmt.Fprintf(&round, "**Q: %s**\n\n%s\n\n", q, strings.TrimSpace(answer))
+		fmt.Fprintf(&qa, "**Q: %s**\n\n%s\n\n", q, strings.TrimSpace(answer))
 	}
 
-	if err := o.files.Append(o.cfg.AnswersFile, round.String()); err != nil {
+	round := answersRound(o.iteration, o.files.Exists(o.cfg.AnswersFile), qa.String())
+	if err := o.files.Append(o.cfg.AnswersFile, round); err != nil {
 		fmt.Fprintf(o.terminal, "determined: could not write %s: %v\n", o.cfg.AnswersFile, err)
 		return models.OutcomeDroidFailed, true
 	}
@@ -680,6 +760,18 @@ func (o *PlanOrchestrator) relayQuestions(ctx context.Context) (models.Outcome, 
 		return models.OutcomeDroidFailed, true
 	}
 	return models.OutcomePlanReady, false // outcome ignored when stop is false
+}
+
+const answersPreamble = "Answers below clarify the questions asked. They do not extend GOAL.md; " +
+	"behaviour an answer mentions that GOAL.md does not is out of scope."
+
+func answersRound(iteration int, exists bool, qa string) string {
+	var round strings.Builder
+	if !exists {
+		round.WriteString(answersPreamble + "\n\n")
+	}
+	fmt.Fprintf(&round, "## Round %d\n\n%s", iteration, qa)
+	return round.String()
 }
 
 func (o *PlanOrchestrator) assessmentProgress() progressMessage {
@@ -743,13 +835,9 @@ func (o *PlanOrchestrator) ensureTests(ctx context.Context) (models.Outcome, boo
 		return models.OutcomePlanReady, false
 	}
 	for pass := 0; pass < 2; pass++ {
-		if outcome, stop := o.produceTests(ctx); stop {
+		missing, outcome, stop := o.testDiagramFindings(ctx)
+		if stop {
 			return outcome, stop
-		}
-		missing, err := o.journeyTestsMissingDiagrams()
-		if err != nil {
-			fmt.Fprintf(o.terminal, "determined: could not read %s: %v\n", o.cfg.TestsFile, err)
-			return models.OutcomePlanStalled, true
 		}
 		if len(missing) == 0 {
 			return o.ensureAlignment(ctx)
@@ -765,6 +853,39 @@ func (o *PlanOrchestrator) ensureTests(ctx context.Context) (models.Outcome, boo
 	fmt.Fprintf(o.terminal,
 		"determined: journey tests in %s still lack sequence diagrams\n", o.cfg.TestsFile)
 	return models.OutcomePlanStalled, true
+}
+
+func (o *PlanOrchestrator) testDiagramFindings(ctx context.Context) ([]string, models.Outcome, bool) {
+	if outcome, stop := o.produceTests(ctx); stop {
+		return nil, outcome, true
+	}
+	doc, size, err := o.testsDocumentAndSize()
+	if err != nil {
+		fmt.Fprintf(o.terminal, "determined: could not read %s: %v\n", o.cfg.TestsFile, err)
+		return nil, models.OutcomePlanStalled, true
+	}
+	if !journeyDiagramsRequired(size, doc) {
+		return nil, models.OutcomePlanReady, false
+	}
+	return doc.JourneyTestsMissingDiagrams(), models.OutcomePlanReady, false
+}
+
+func journeyDiagramsRequired(size models.PlanSize, doc TestsDocument) bool {
+	lean := size == models.PlanSizeTrivial || size == models.PlanSizeSmall
+	return !lean || doc.HasJourneyTest()
+}
+
+func (o *PlanOrchestrator) testsDocumentAndSize() (TestsDocument, models.PlanSize, error) {
+	tests, err := o.files.Read(o.cfg.TestsFile)
+	if err != nil {
+		return TestsDocument{}, "", err
+	}
+	plan, err := o.files.Read(o.cfg.PlanFile)
+	if err != nil {
+		return TestsDocument{}, "", err
+	}
+	size, _ := PlanSizeOf(plan)
+	return NewTestsDocument(tests), size, nil
 }
 
 // produceTests runs the tests invocation when the tests file is absent and
@@ -969,16 +1090,6 @@ func (o *PlanOrchestrator) testsMissingAlignment() ([]string, error) {
 		return nil, err
 	}
 	return NewTestsDocument(content).TestsMissingAlignment(), nil
-}
-
-// journeyTestsMissingDiagrams lists journey tests in the tests file that lack
-// a mermaid sequence diagram.
-func (o *PlanOrchestrator) journeyTestsMissingDiagrams() ([]string, error) {
-	content, err := o.files.Read(o.cfg.TestsFile)
-	if err != nil {
-		return nil, err
-	}
-	return NewTestsDocument(content).JourneyTestsMissingDiagrams(), nil
 }
 
 // ServeAnnotations keeps the finished session responsive to page feedback: it

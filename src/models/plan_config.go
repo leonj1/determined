@@ -18,6 +18,7 @@ type PlanConfig struct {
 
 	AssessInvocation   Invocation // reviews plan and step quality, writing AssessmentFile
 	RefineInvocation   Invocation // resolves assessment findings in PlanFile and StepsFile
+	SimplifyInvocation Invocation // removes needless plan ceremony after the initial draft
 	TestsInvocation    Invocation // backfills TestsFile when a plan exists without it
 	DemoInvocation     Invocation // optionally creates a trivial UI demo after planning
 	AlignInvocation    Invocation // judges each test in TestsFile against the plan's functional goal
