@@ -163,7 +163,7 @@ test("slug output matches the anchor contract", () => {
   assert.equal(browser.run(`slugify("Café behavior")`), "caf-behavior");
 });
 
-test("a pending confirmation renders exact text and submits its prompt id", async () => {
+test("a pending confirmation renders safe markdown and submits its prompt id", async () => {
   const browser = createPageEnvironment();
   browser.run(`
     globalThis.promptFetches = [];
@@ -171,12 +171,14 @@ test("a pending confirmation renders exact text and submits its prompt id", asyn
       promptFetches.push({ path, options });
       return Promise.resolve({ ok: true, status: 202 });
     };
-    renderPromptModal({ id: 41, title: "Confirm assumptions", body: "Literal <script> text",
+    renderPromptModal({ id: 41, title: "Confirm assumptions",
+      body: "**Choose** \`ready\` and keep <script>alert(1)</script> literal",
       kind: "confirm", allowEmpty: true, choices: [] });
   `);
   assert(browser.registry.get("prompt-modal").classList.contains("open"));
   assert.equal(browser.registry.get("prompt-title").textContent, "Confirm assumptions");
-  assert.equal(browser.registry.get("prompt-body").textContent, "Literal <script> text");
+  assert.equal(browser.registry.get("prompt-body").innerHTML,
+    "<p><strong>Choose</strong> <code>ready</code> and keep &lt;script&gt;alert(1)&lt;/script&gt; literal</p>\n");
   assert.equal(browser.registry.get("prompt-body").children.length, 0);
   const confirm = browser.registry.get("prompt-options").children[0];
   assert.equal(confirm.textContent, "Confirm");
