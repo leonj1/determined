@@ -532,6 +532,20 @@
   }
   .stall-msg { margin: 0.7rem 0 0; font-size: 0.85rem; text-align: center; }
   .stall-msg.failed { color: #e5484d; }
+  #prompt-modal {
+    display: none; position: fixed; inset: 0; z-index: 60;
+    background: color-mix(in srgb, #000 45%, transparent);
+    align-items: center; justify-content: center; padding: 1rem;
+  }
+  #prompt-modal.open { display: flex; }
+  .prompt-body { white-space: pre-wrap; line-height: 1.5; }
+  #prompt-options { display: flex; flex-wrap: wrap; gap: 0.6rem; margin-top: 1rem; }
+  #prompt-text-form { margin-top: 1rem; }
+  #prompt-text {
+    width: 100%; min-height: 5rem; box-sizing: border-box; resize: vertical;
+    border: 1px solid var(--border); border-radius: 8px; padding: 0.6rem;
+    font: inherit; background: var(--bg); color: var(--text);
+  }
 </style>
 </head>
 <body>
@@ -568,7 +582,6 @@
 </nav>
 <main>
   <div id="content">
-    <div id="waiting">Waiting for your input on the terminal…</div>
     <div id="disconnected">Connection lost — the determined process may have exited.</div>
     <section class="panel active" id="panel-goal">
       <div class="panel-head" id="goal-head"><h2 class="panel-title">Goal</h2></div>
@@ -644,6 +657,21 @@
     </section>
   </aside>
 </main>
+<div id="prompt-modal" role="dialog" aria-modal="true" aria-labelledby="prompt-title">
+  <div class="stall-box">
+    <h2 id="prompt-title">Input required</h2>
+    <p id="prompt-body" class="prompt-body"></p>
+    <div id="prompt-options"></div>
+    <div id="prompt-text-form">
+      <label for="prompt-text">Your response</label>
+      <textarea id="prompt-text"></textarea>
+      <div class="stall-other-actions">
+        <button type="button" id="prompt-send" class="stall-btn primary">Send response</button>
+      </div>
+    </div>
+    <p id="prompt-status" class="stall-msg" hidden></p>
+  </div>
+</div>
 <div id="stall-modal" role="dialog" aria-modal="true" aria-labelledby="stall-title">
   <div class="stall-box">
     <h2 id="stall-title">Verification deadlock</h2>
@@ -677,6 +705,98 @@
   let renderedDemo = null;
   let pendingExplanationHash = window.location.hash;
   let pendingPlanHash = window.location.hash;
+  let activePromptId = null;
+  let promptPending = false;
+  let promptButtons = [];
+  let promptPreviousFocus = null;
+
+  function promptLock(locked) {
+    promptPending = locked;
+    el("prompt-send").disabled = locked;
+    el("prompt-text").disabled = locked;
+    for (const button of promptButtons) button.disabled = locked;
+  }
+
+  function promptError(text) {
+    const status = el("prompt-status");
+    status.textContent = text;
+    status.className = "stall-msg failed";
+    status.hidden = false;
+  }
+
+  function submitPrompt(answer) {
+    if (promptPending || activePromptId === null) return;
+    promptLock(true);
+    el("prompt-status").hidden = true;
+    fetch("/prompt/respond", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...sessionHeaders },
+      body: JSON.stringify({ id: activePromptId, answer }),
+    }).then((response) => {
+      if (response.ok) return;
+      promptLock(false);
+      promptError("Could not submit response (" + response.status + "). Try again.");
+    }, () => {
+      promptLock(false);
+      promptError("Could not reach the server. Try again.");
+    });
+  }
+
+  el("prompt-send").addEventListener("click", () => {
+    const answer = el("prompt-text").value.trim();
+    const prompt = currentPrompt;
+    if (!answer && prompt && !prompt.allowEmpty) return;
+    submitPrompt(answer);
+  });
+
+  let currentPrompt = null;
+  function renderPromptModal(prompt) {
+    const modal = el("prompt-modal");
+    if (!prompt) {
+      if (modal.classList.contains("open") && promptPreviousFocus && promptPreviousFocus.focus) promptPreviousFocus.focus();
+      modal.classList.remove("open");
+      activePromptId = null;
+      currentPrompt = null;
+      promptPending = false;
+      return;
+    }
+    const changed = activePromptId !== prompt.id;
+    currentPrompt = prompt;
+    activePromptId = prompt.id;
+    el("prompt-title").textContent = prompt.title || "Input required";
+    el("prompt-body").textContent = prompt.body || "";
+    if (!changed) return;
+    promptLock(false);
+    el("prompt-status").hidden = true;
+    el("prompt-text").value = "";
+    promptButtons = [];
+    const options = [];
+    for (const choice of (prompt.choices || [])) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "stall-btn primary";
+      button.textContent = choice.label;
+      button.title = choice.description || "";
+      button.addEventListener("click", () => submitPrompt(choice.value));
+      promptButtons.push(button);
+      options.push(button);
+    }
+    if (prompt.kind === "confirm" && prompt.allowEmpty) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "stall-btn primary";
+      button.textContent = "Confirm";
+      button.addEventListener("click", () => submitPrompt(""));
+      promptButtons.push(button);
+      options.push(button);
+    }
+    el("prompt-options").replaceChildren(...options);
+    el("prompt-text-form").hidden = prompt.kind === "choice";
+    if (!modal.classList.contains("open")) promptPreviousFocus = document.activeElement;
+    modal.classList.add("open");
+    const focusTarget = options[0] || el("prompt-text");
+    if (focusTarget.focus) focusTarget.focus();
+  }
 
   function syncStickyOffsets() {
     const headerHeight = el("page-header").offsetHeight || 0;
@@ -1454,7 +1574,7 @@
     const tests = splitTests(status.tests);
     renderTests(el("tests-journey-doc"), tests.journey, "Not produced yet.");
     renderTests(el("tests-bdd-doc"), tests.bdd, "Not produced yet.");
-    el("waiting").classList.toggle("on", !!status.waitingForInput);
+    renderPromptModal(status.pendingPrompt || null);
 
     renderSteps(status.taskSteps || []);
     const milestone = document.getElementById("milestone-progress");

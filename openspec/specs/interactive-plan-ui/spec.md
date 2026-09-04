@@ -44,7 +44,7 @@ The status page SHALL display the working directory's git remote URL and current
 - **THEN** the header shows a "no remote" placeholder and the branch name, and the session proceeds normally
 
 ### Requirement: Live goal, plan, and step display
-The status page SHALL display the planning Goal, the Plan, and the sequence of workflow steps the orchestrator has emitted, and SHALL update in real time as the session progresses without a manual browser refresh. Progress messages written to the terminal during planning SHALL also appear as step entries on the page, including a visible indication when the session is waiting for terminal input.
+The status page SHALL display the planning Goal, the Plan, and the sequence of workflow steps the orchestrator has emitted, and SHALL update in real time as the session progresses without a manual browser refresh. Progress messages written to the terminal during planning SHALL also appear as step entries on the page. Application-owned prompts SHALL publish their complete text and typed controls on the page and accept one matching browser response.
 
 #### Scenario: Goal appears at session start
 - **WHEN** the orchestrator writes `GOAL.md`
@@ -68,9 +68,11 @@ plan.
 - **THEN** the left pane lists those sections as links
 - **AND** selecting a link scrolls the corresponding plan section into view
 
-#### Scenario: Waiting for terminal input
-- **WHEN** the session is prompting the user with clarifying questions on the terminal
-- **THEN** the page shows a step entry indicating input is awaited on the terminal
+#### Scenario: Answering an interactive prompt
+- **WHEN** an interactive planning session needs confirmation, a fixed choice, or free text
+- **THEN** the page displays the complete prompt in a modal with matching controls
+- **AND** the first valid response resumes the planning session
+- **AND** stale, invalid, or duplicate responses do not affect a later prompt
 
 #### Scenario: Late-joining browser
 - **WHEN** a browser opens the page mid-session

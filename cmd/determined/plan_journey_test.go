@@ -54,8 +54,8 @@ type journeyPrompter struct {
 	next    int
 }
 
-func (p *journeyPrompter) Ask(question string) (string, error) {
-	p.asked = append(p.asked, question)
+func (p *journeyPrompter) Ask(_ context.Context, prompt models.UserPrompt) (string, error) {
+	p.asked = append(p.asked, prompt.Body)
 	if p.next >= len(p.answers) {
 		return "", io.EOF
 	}
@@ -115,13 +115,10 @@ func (r *journeyStatusReporter) SetAssumptions(assumptions string) {
 	r.assumptions = assumptions
 	r.events = append(r.events, "assumptions")
 }
-func (r *journeyStatusReporter) SetDemo(string)                {}
-func (r *journeyStatusReporter) SetTests(string)               {}
+func (r *journeyStatusReporter) SetDemo(string)                 {}
+func (r *journeyStatusReporter) SetTests(string)                {}
 func (r *journeyStatusReporter) SetTaskSteps([]models.TaskStep) {}
-func (r *journeyStatusReporter) WaitForInput() {
-	r.events = append(r.events, "wait-for-input")
-}
-func (r *journeyStatusReporter) Finish(bool) { r.events = append(r.events, "finish") }
+func (r *journeyStatusReporter) Finish(bool)                    { r.events = append(r.events, "finish") }
 func (r *journeyStatusReporter) TakeAnnotation() (models.Annotation, bool) {
 	return models.Annotation{}, false
 }

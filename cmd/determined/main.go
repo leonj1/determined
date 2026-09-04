@@ -183,7 +183,7 @@ func main() {
 		} else if *plan != "" {
 			outcome = runPlan(ctx, selected, planInput(*plan, flag.Args()), planMode, *budget, *maxStepPasses, *maxFailures, *interactive, executing, *statusHost, executor, clock, logs, *milestones)
 			if shouldExecuteAfterPlan(executing, *interactive, outcome) &&
-				approveExecution(clients.NewStdinPrompter(os.Stdout, os.Stdin), nil) {
+				approveExecution(ctx, clients.NewStdinPrompter(os.Stdout, os.Stdin)) {
 				outcome = runHeadlessExec(ctx, executionTool, *statusHost, executor, clock)
 			}
 		} else if *interactive {
@@ -636,7 +636,7 @@ func runInteractivePlan(ctx context.Context, orchestrator *services.PlanOrchestr
 		return models.OutcomeDroidFailed
 	}
 	defer cleanup()
-	outcome := orchestrator.WithStatusReporter(status).WithTaskControl(status).Run(ctx)
+	outcome := orchestrator.WithPrompter(status).WithStatusReporter(status).WithTaskControl(status).Run(ctx)
 	if ctx.Err() != nil {
 		return outcome
 	}
@@ -645,7 +645,7 @@ func runInteractivePlan(ctx context.Context, orchestrator *services.PlanOrchestr
 		explain := func(ctx context.Context) { runExplain(ctx, tool, status) }
 		return holdStatusPage(ctx, orchestrator, status, server.URL(), execute, explain, outcome)
 	case postPlanAutoExec:
-		if !approveExecution(clients.NewStdinPrompter(os.Stdout, os.Stdin), status) {
+		if !approveExecution(ctx, status) {
 			return outcome
 		}
 		fmt.Fprintf(os.Stdout, "determined: plan ready — executing now; status page streaming at %s\n", server.URL())
@@ -667,7 +667,7 @@ func startStatusSession(status *services.PlanStatusService, clock services.Clock
 	server := clients.NewPlanStatusServer(status, status, status, clock).
 		WithBindHost(statusHost).
 		WithLogSource(status).WithChatResponder(chat).
-		WithTaskControl(status).WithStallChoice(status).
+		WithTaskControl(status).WithStallChoice(status).WithPromptResponses(status).
 		WithExplainSink(status)
 	if err := server.Start(); err != nil {
 		fmt.Fprintf(os.Stderr, "determined: %v\n", err)

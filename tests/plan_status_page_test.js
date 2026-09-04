@@ -64,6 +64,7 @@ class FakeNode {
     this.children = children;
   }
   addEventListener(name, listener) { this.listeners[name] = listener; }
+  focus() { this.registry.focused = this; }
   setAttribute(name, value) { this.attributes[name] = value; }
   scrollIntoView(options) { this.scrolls.push(options); }
 }
@@ -160,6 +161,49 @@ test("slug output matches the anchor contract", () => {
   assert.equal(browser.run(`slugify("Widget: behavior")`), "widget-behavior");
   assert.equal(browser.run(`slugify("Widget behavior!")`), "widget-behavior");
   assert.equal(browser.run(`slugify("Café behavior")`), "caf-behavior");
+});
+
+test("a pending confirmation renders exact text and submits its prompt id", async () => {
+  const browser = createPageEnvironment();
+  browser.run(`
+    globalThis.promptFetches = [];
+    fetch = (path, options) => {
+      promptFetches.push({ path, options });
+      return Promise.resolve({ ok: true, status: 202 });
+    };
+    renderPromptModal({ id: 41, title: "Confirm assumptions", body: "Literal <script> text",
+      kind: "confirm", allowEmpty: true, choices: [] });
+  `);
+  assert(browser.registry.get("prompt-modal").classList.contains("open"));
+  assert.equal(browser.registry.get("prompt-title").textContent, "Confirm assumptions");
+  assert.equal(browser.registry.get("prompt-body").textContent, "Literal <script> text");
+  assert.equal(browser.registry.get("prompt-body").children.length, 0);
+  const confirm = browser.registry.get("prompt-options").children[0];
+  assert.equal(confirm.textContent, "Confirm");
+  confirm.listeners.click();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(browser.run(`promptFetches[0].path`), "/prompt/respond");
+  assert.equal(browser.run(`promptFetches[0].options.body`), '{"id":41,"answer":""}');
+  assert.equal(browser.run(`promptButtons.every((button) => button.disabled)`), true);
+});
+
+test("fixed prompt choices submit stable values and close only after snapshot clear", async () => {
+  const browser = createPageEnvironment();
+  browser.run(`
+    globalThis.promptFetches = [];
+    fetch = (path, options) => { promptFetches.push({ path, options }); return Promise.resolve({ ok: true }); };
+    renderPromptModal({ id: 7, title: "Resolve", body: "Choose", kind: "choice", allowEmpty: false,
+      choices: [{ value: "rewrite", label: "Rewrite", description: "Run again" }] });
+  `);
+  const rewrite = browser.registry.get("prompt-options").children[0];
+  assert.equal(rewrite.textContent, "Rewrite");
+  assert.equal(rewrite.title, "Run again");
+  rewrite.listeners.click();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(browser.run(`promptFetches[0].options.body`), '{"id":7,"answer":"rewrite"}');
+  assert(browser.registry.get("prompt-modal").classList.contains("open"));
+  browser.run(`renderPromptModal(null)`);
+  assert(!browser.registry.get("prompt-modal").classList.contains("open"));
 });
 
 test("heading ids use the requested document anchor contract", () => {

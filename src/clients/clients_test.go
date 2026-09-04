@@ -162,7 +162,7 @@ func TestUserCanAnswerPlanningQuestionFromInput(t *testing.T) {
 	var out bytes.Buffer
 	prompter := clients.NewStdinPrompter(&out, strings.NewReader("  PostgreSQL  \n"))
 
-	answer, err := prompter.Ask("Which database?")
+	answer, err := prompter.Ask(context.Background(), models.TextPrompt("Database", "Which database?", false))
 
 	if err != nil || answer != "PostgreSQL" {
 		t.Fatalf("expected trimmed planning answer, got %q (err %v)", answer, err)
@@ -175,7 +175,7 @@ func TestUserCanAnswerPlanningQuestionFromInput(t *testing.T) {
 func TestPrompterReportsClosedInput(t *testing.T) {
 	prompter := clients.NewStdinPrompter(io.Discard, strings.NewReader(""))
 
-	_, err := prompter.Ask("Continue?")
+	_, err := prompter.Ask(context.Background(), models.ConfirmPrompt("Continue", "Continue?", true))
 
 	if err != io.EOF {
 		t.Fatalf("expected EOF when no answer is available, got %v", err)
@@ -185,7 +185,7 @@ func TestPrompterReportsClosedInput(t *testing.T) {
 func TestPrompterReportsInputReadError(t *testing.T) {
 	prompter := clients.NewStdinPrompter(io.Discard, failingReader{})
 
-	_, err := prompter.Ask("Continue?")
+	_, err := prompter.Ask(context.Background(), models.ConfirmPrompt("Continue", "Continue?", true))
 
 	if err == nil {
 		t.Fatal("expected the prompter to report input read errors")

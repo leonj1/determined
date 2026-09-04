@@ -1,6 +1,7 @@
 package tests
 
 import (
+	"context"
 	"encoding/json"
 	"strings"
 	"testing"
@@ -235,21 +236,29 @@ func TestPlanStatusServiceLogOutputWithoutEntryIsDropped(t *testing.T) {
 	}
 }
 
-func TestPlanStatusServiceWaitForInputSetsFlagAndVisibleStep(t *testing.T) {
+func TestPlanStatusServicePublishesAndAnswersBrowserPrompt(t *testing.T) {
 	service := newTestPlanStatusService(newSteppingClock(planStart()), models.GitContext{}, models.ToolIdentity{})
-	service.WaitForInput()
-
-	snapshot := service.Snapshot()
-	if !snapshot.WaitingForInput {
-		t.Error("waitingForInput = false, want true")
+	answers := make(chan string, 1)
+	go func() {
+		answer, _ := service.Ask(context.Background(), models.ConfirmPrompt("Confirm assumptions", "Review these assumptions", true))
+		answers <- answer
+	}()
+	updates, cancel := service.Subscribe()
+	defer cancel()
+	var snapshot models.PlanSessionStatus
+	for snapshot.PendingPrompt == nil {
+		snapshot = <-updates
 	}
-	if len(snapshot.Steps) != 1 || snapshot.Steps[0].Message != "waiting for input on the terminal" {
-		t.Errorf("steps = %+v, want a waiting step", snapshot.Steps)
-	}
 
-	service.AddStep("planning project")
-	if service.Snapshot().WaitingForInput {
-		t.Error("waitingForInput still true after next step")
+	prompt := snapshot.PendingPrompt
+	if prompt.Title != "Confirm assumptions" || prompt.Body != "Review these assumptions" || !prompt.AllowEmpty {
+		t.Fatalf("pending prompt = %+v, want complete confirmation prompt", prompt)
+	}
+	if got := service.SubmitPromptResponse(models.PromptResponse{ID: prompt.ID, Answer: " corrected "}); got != models.PromptSubmissionAccepted {
+		t.Fatalf("submission = %q, want accepted", got)
+	}
+	if answer := <-answers; answer != "corrected" {
+		t.Fatalf("answer = %q, want trimmed browser answer", answer)
 	}
 }
 
