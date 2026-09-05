@@ -100,7 +100,7 @@ const simplifyPlanProtocol = "Read GOAL.md, PLAN.md, STEPS.md, and TESTS.md if i
 const planProtocol = "Read GOAL.md and ANSWERS.md if it exists. Treat GOAL.md as authoritative. " +
 	answersScopeRule +
 	"If essential information is missing, write only high-impact clarifying questions to QUESTIONS.md " +
-	"as a markdown numbered list, one question per line. Accept `use sensible defaults` as an answer. " +
+	questionsFormatRule + "Accept `use sensible defaults` as an answer. " +
 	"Otherwise write PLAN.md, STEPS.md, and TESTS.md, and do not write QUESTIONS.md. " +
 	testsRequirement + alignmentRequirement + sizeTriage +
 	"Classify the work and apply the matching template: greenfield (foundations and delivery), feature " +
@@ -200,11 +200,15 @@ const assessmentReductionRule = "Also flag steps that could be merged into a nei
 const sizeAssessmentRule = "Read the `**Size:**` line in PLAN.md and flag a STEPS.md whose step count exceeds its cap: " +
 	"trivial 3, small 6, medium 12, and large unlimited. "
 
+const questionsFormatRule = "as a markdown numbered list, one question per top-level item. When a question has a finite set " +
+	"of answers, write each answer immediately below it as an indented bullet in `Label — description` format; include " +
+	"`Use sensible defaults` among those answers. "
+
 const questionRule = "Write a question to QUESTIONS.md only when GOAL.md is ambiguous about something the plan must implement " +
 	"and the ambiguity cannot be settled by a recorded assumption. Ask only questions whose answer is needed to implement GOAL.md " +
 	"as written. Never ask whether to add behaviour, indicators, safeguards, or polish that GOAL.md does not mention; record such " +
 	"ideas, if any, as a `## Out of scope` finding instead. Each question names the GOAL.md phrase it clarifies and the assumption " +
-	"the plan will use if the answer is `use sensible defaults`. Write QUESTIONS.md as a markdown numbered list. "
+	"the plan will use if the answer is `use sensible defaults`. Write QUESTIONS.md " + questionsFormatRule
 
 func assessmentPrompt(mode models.PlanMode) string {
 	criteria := "Review PLAN.md and STEPS.md against the full quality gate and applicable task template. "

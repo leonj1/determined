@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -50,11 +51,13 @@ func (f *fakeFileStore) Remove(path string) error { delete(f.data, path); return
 type fakePrompter struct {
 	answers []string
 	asked   []string
+	prompts []models.UserPrompt
 	next    int
 }
 
 func (p *fakePrompter) Ask(_ context.Context, prompt models.UserPrompt) (string, error) {
 	p.asked = append(p.asked, prompt.Body)
+	p.prompts = append(p.prompts, prompt)
 	if p.next >= len(p.answers) {
 		return "", io.EOF
 	}
@@ -142,6 +145,45 @@ func TestPlanAsksQuestionsThenCompletes(t *testing.T) {
 	}
 	if len(prompter.asked) != 2 {
 		t.Fatalf("expected the user to be asked 2 questions, got %d", len(prompter.asked))
+	}
+}
+
+func TestPlanOffersStructuredQuestionChoices(t *testing.T) {
+	fs := newFakeFileStore()
+	prompter := &fakePrompter{answers: []string{"Show browser note"}}
+	runner := &fakeRunner{script: func(call int, _ io.Writer) error {
+		if call == 1 {
+			fs.Write("QUESTIONS.md", "1. How should a failed write be shown?\n"+
+				"   - Stay silent — matches the current plan\n"+
+				"   - Show browser note — gives visible feedback\n")
+			return nil
+		}
+		fs.Write("PLAN.md", "the plan")
+		fs.Write("STEPS.md", "the steps")
+		fs.Write("TESTS.md", validTestsDoc)
+		return nil
+	}}
+	orchestrator := services.NewPlanOrchestrator(
+		runner, fs, prompter, &fakeClock{now: time.Now()}, &fakeLogSink{}, io.Discard, planConfig(0),
+	)
+
+	outcome := orchestrator.Run(context.Background())
+
+	if outcome != models.OutcomePlanReady {
+		t.Fatalf("expected a ready plan, got %v", outcome)
+	}
+	if len(prompter.prompts) != 1 || prompter.prompts[0].Kind != models.PromptKindChoice {
+		t.Fatalf("expected one choice prompt, got %#v", prompter.prompts)
+	}
+	want := []models.PromptChoice{
+		{Value: "Stay silent", Label: "Stay silent", Description: "matches the current plan"},
+		{Value: "Show browser note", Label: "Show browser note", Description: "gives visible feedback"},
+	}
+	if !reflect.DeepEqual(prompter.prompts[0].Choices, want) {
+		t.Fatalf("choice prompt options = %#v, want %#v", prompter.prompts[0].Choices, want)
+	}
+	if !strings.Contains(fs.data["ANSWERS.md"], "Show browser note") {
+		t.Fatalf("expected the selected choice in ANSWERS.md, got %q", fs.data["ANSWERS.md"])
 	}
 }
 

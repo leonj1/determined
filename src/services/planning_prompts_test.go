@@ -137,6 +137,8 @@ func TestAssessmentAsksOnlyGoalClarifyingQuestions(t *testing.T) {
 			"Never ask whether to add behaviour",
 			"QUESTIONS.md as a markdown numbered list",
 			"names the GOAL.md phrase it clarifies",
+			"indented bullet in `Label — description` format",
+			"`Use sensible defaults` among those answers",
 		} {
 			if !strings.Contains(prompt, expected) {
 				t.Fatalf("expected %s assessment prompt to contain %q", mode, expected)

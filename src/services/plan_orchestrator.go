@@ -734,7 +734,7 @@ func (o *PlanOrchestrator) relayQuestions(ctx context.Context) (models.Outcome, 
 		fmt.Fprintf(o.terminal, "determined: could not read %s: %v\n", o.cfg.QuestionsFile, err)
 		return models.OutcomeDroidFailed, true
 	}
-	questions := ParseQuestions(content)
+	questions := ParseClarifyingQuestions(content)
 	if len(questions) == 0 {
 		fmt.Fprintf(o.terminal, "determined: %s had no parseable questions\n", o.cfg.QuestionsFile)
 		return models.OutcomePlanStalled, true
@@ -742,12 +742,12 @@ func (o *PlanOrchestrator) relayQuestions(ctx context.Context) (models.Outcome, 
 	writeProgress(o.terminal, o.clock, o.questionProgress())
 	var qa strings.Builder
 	for _, q := range questions {
-		answer, err := o.prompter.Ask(ctx, models.TextPrompt("Planning question", q, true))
+		answer, err := o.prompter.Ask(ctx, planningQuestionPrompt(q))
 		if err != nil {
 			fmt.Fprintf(o.terminal, "determined: could not read your answer: %v\n", err)
 			return models.OutcomeInterrupted, true
 		}
-		fmt.Fprintf(&qa, "**Q: %s**\n\n%s\n\n", q, strings.TrimSpace(answer))
+		fmt.Fprintf(&qa, "**Q: %s**\n\n%s\n\n", q.Body, strings.TrimSpace(answer))
 	}
 
 	round := answersRound(o.iteration, o.files.Exists(o.cfg.AnswersFile), qa.String())
@@ -760,6 +760,13 @@ func (o *PlanOrchestrator) relayQuestions(ctx context.Context) (models.Outcome, 
 		return models.OutcomeDroidFailed, true
 	}
 	return models.OutcomePlanReady, false // outcome ignored when stop is false
+}
+
+func planningQuestionPrompt(question models.ClarifyingQuestion) models.UserPrompt {
+	if len(question.Choices) > 0 {
+		return models.ChoicePrompt("Planning question", question.Body, question.Choices)
+	}
+	return models.TextPrompt("Planning question", question.Body, true)
 }
 
 const answersPreamble = "Answers below clarify the questions asked. They do not extend GOAL.md; " +

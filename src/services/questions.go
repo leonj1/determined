@@ -1,6 +1,49 @@
 package services
 
-import "strings"
+import (
+	"strings"
+
+	"determined/src/models"
+)
+
+// ParseClarifyingQuestions extracts top-level questions and their optional
+// indented choices. A choice may use "Label — description" to provide concise
+// button text and additional context.
+func ParseClarifyingQuestions(content string) []models.ClarifyingQuestion {
+	var questions []models.ClarifyingQuestion
+	questionIndent := -1
+	for _, line := range strings.Split(content, "\n") {
+		item, indent, ok := indentedListItem(line)
+		if !ok {
+			continue
+		}
+		if len(questions) > 0 && indent > questionIndent {
+			last := len(questions) - 1
+			questions[last].Choices = append(questions[last].Choices, promptChoice(item))
+			continue
+		}
+		questions = append(questions, models.ClarifyingQuestion{Body: item})
+		questionIndent = indent
+	}
+	return questions
+}
+
+func indentedListItem(line string) (string, int, bool) {
+	trimmed := strings.TrimLeft(line, " \t")
+	item, ok := listItem(trimmed)
+	return item, len(line) - len(trimmed), ok
+}
+
+func promptChoice(item string) models.PromptChoice {
+	label, description, found := strings.Cut(item, " — ")
+	if !found {
+		label = item
+	}
+	label = strings.TrimSpace(label)
+	return models.PromptChoice{
+		Value: label, Label: label, Description: strings.TrimSpace(description),
+	}
+}
 
 // ParseQuestions extracts the individual clarifying questions a tool wrote to
 // QUESTIONS.md. The protocol asks the tool for a markdown list — either an
