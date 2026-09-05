@@ -48,6 +48,37 @@ func TestParseClarifyingQuestionsSupportsChoicesWithoutDescriptions(t *testing.T
 	}
 }
 
+func TestParseClarifyingQuestionsRecognizesIndentedLaterQuestion(t *testing.T) {
+	content := "1. Which database?\n" +
+		"   - SQLite\n" +
+		"      - PostgreSQL\n" +
+		"  2. Should migrations run automatically?\n" +
+		"     - Yes\n" +
+		"     - No\n"
+	want := []models.ClarifyingQuestion{
+		{
+			Body: "Which database?",
+			Choices: []models.PromptChoice{
+				{Value: "SQLite", Label: "SQLite"},
+				{Value: "PostgreSQL", Label: "PostgreSQL"},
+			},
+		},
+		{
+			Body: "Should migrations run automatically?",
+			Choices: []models.PromptChoice{
+				{Value: "Yes", Label: "Yes"},
+				{Value: "No", Label: "No"},
+			},
+		},
+	}
+
+	got := services.ParseClarifyingQuestions(content)
+
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("ParseClarifyingQuestions() = %#v, want %#v", got, want)
+	}
+}
+
 func TestParseQuestionsHandlesListStyles(t *testing.T) {
 	cases := []struct {
 		name string
