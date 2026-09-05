@@ -25,6 +25,7 @@ import (
 var version = "1.1.0"
 
 func main() {
+	rejectRemovedFlags(os.Args[1:])
 	if isUpdateCommand(os.Args) {
 		runUpdateCommand()
 		return
@@ -69,8 +70,8 @@ func main() {
 	stepSimplicity := registerStepSimplicityFlag(flag.CommandLine)
 	specializedReviews := flag.Bool("specialized-reviews", true,
 		"before the final audit, run independent security, performance, and reliability/maintainability reviews")
-	maxSpecialistRounds := flag.Int("max-specialist-rounds", 2,
-		"stop with exit 3 when a single specialist review triggers remediation in more than this many completion passes, leaving its findings in FIXES.md for user review; 0 disables")
+	remediationBudget := flag.Int("remediation-budget", -1,
+		"shared cap for verifier, audit, and specialist remediation; defaults by plan size")
 	gitCheckpoint := flag.Bool("git-checkpoint", true,
 		"git-commit the working tree after each verified step when running in a git repository")
 	tieBreaker := flag.Bool("tie-breaker", true,
@@ -177,7 +178,7 @@ func main() {
 	if proceed {
 		milestoneCfg := milestoneExecutionConfig{Enabled: *milestones, PlanTool: selectedPlanTool, MaxPlanRevisions: *maxPlanRevisions, MaxIntentRetries: *maxIntentRetries}
 		executor := func(ctx context.Context, status services.ExecStatusReporter) models.Outcome {
-			return runLoop(ctx, executionTool, *budget, *maxStalled, *maxFailures, *maxSpecialistRounds, *maxIterationDuration, *stepMaxRuntime, *verify, *stepSimplicity, *specializedReviews, *gitCheckpoint, *tieBreaker, status, clock, logs, milestoneCfg)
+			return runLoop(ctx, executionTool, *budget, *maxStalled, *maxFailures, *remediationBudget, *maxIterationDuration, *stepMaxRuntime, *verify, *stepSimplicity, *specializedReviews, *gitCheckpoint, *tieBreaker, status, clock, logs, milestoneCfg)
 		}
 		if *reviewPlan {
 			outcome = runReviewPlan(ctx, selected, *budget, *maxStepPasses, *maxFailures, clock, logs)
@@ -202,6 +203,15 @@ func main() {
 
 	fmt.Fprintf(os.Stderr, "\ndetermined: %s\n", outcome)
 	os.Exit(outcome.ExitCode())
+}
+
+func rejectRemovedFlags(args []string) {
+	for _, arg := range args {
+		if arg == "--max-specialist-rounds" || strings.HasPrefix(arg, "--max-specialist-rounds=") {
+			fmt.Fprintln(os.Stderr, "determined: --max-specialist-rounds was removed; use --remediation-budget")
+			os.Exit(2)
+		}
+	}
 }
 
 func registerInitFlag(flags *flag.FlagSet) *bool {
@@ -474,8 +484,8 @@ type milestoneExecutionConfig struct {
 
 // runLoop runs the unattended execute loop against PLAN.md / STEPS.md. A
 // non-nil status reporter streams the run to the interactive status page.
-func runLoop(ctx context.Context, tool models.Tool, budget time.Duration, maxStalled, maxFailures, maxSpecialistRounds int, maxIterationDuration, stepMaxRuntime time.Duration, verify, stepSimplicity, specializedReviews, gitCheckpoint, tieBreaker bool, status services.ExecStatusReporter, clock services.Clock, logs services.LogSink, milestone milestoneExecutionConfig) models.Outcome {
-	cfg := buildExecutionConfig(tool, budget, maxStalled, maxFailures, maxSpecialistRounds, maxIterationDuration, stepMaxRuntime, verify, stepSimplicity, specializedReviews, gitCheckpoint, tieBreaker)
+func runLoop(ctx context.Context, tool models.Tool, budget time.Duration, maxStalled, maxFailures, remediationBudget int, maxIterationDuration, stepMaxRuntime time.Duration, verify, stepSimplicity, specializedReviews, gitCheckpoint, tieBreaker bool, status services.ExecStatusReporter, clock services.Clock, logs services.LogSink, milestone milestoneExecutionConfig) models.Outcome {
+	cfg := buildExecutionConfig(tool, budget, maxStalled, maxFailures, remediationBudget, maxIterationDuration, stepMaxRuntime, verify, stepSimplicity, specializedReviews, gitCheckpoint, tieBreaker)
 	if milestone.Enabled {
 		return runMilestoneLoop(ctx, cfg, milestone, status, clock, logs)
 	}
@@ -495,7 +505,7 @@ func runLoop(ctx context.Context, tool models.Tool, budget time.Duration, maxSta
 }
 
 // buildExecutionConfig maps CLI execution settings to the domain configuration.
-func buildExecutionConfig(tool models.Tool, budget time.Duration, maxStalled, maxFailures, maxSpecialistRounds int, maxIterationDuration, stepMaxRuntime time.Duration, verify, stepSimplicity, specializedReviews, gitCheckpoint, tieBreaker bool) models.Config {
+func buildExecutionConfig(tool models.Tool, budget time.Duration, maxStalled, maxFailures, remediationBudget int, maxIterationDuration, stepMaxRuntime time.Duration, verify, stepSimplicity, specializedReviews, gitCheckpoint, tieBreaker bool) models.Config {
 	return models.Config{
 		StopFile:               "STOP.md",
 		PlanFile:               "PLAN.md",
@@ -512,7 +522,7 @@ func buildExecutionConfig(tool models.Tool, budget time.Duration, maxStalled, ma
 		Verify:                 verify,
 		SimplicityReviews:      stepSimplicity,
 		SpecializedReviews:     specializedReviews,
-		MaxSpecialistRounds:    maxSpecialistRounds,
+		RemediationBudget:      remediationBudget,
 		GitCheckpoint:          gitCheckpoint,
 		TieBreaker:             tieBreaker,
 	}

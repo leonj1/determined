@@ -79,7 +79,13 @@ func RefinementIssues(content string) []string {
 	if len(items) == 1 && strings.EqualFold(items[0], "NONE") {
 		return nil
 	}
-	return items
+	var blocking []string
+	for _, item := range items {
+		if hasFoldPrefix(item, "BLOCKING:") {
+			blocking = append(blocking, strings.TrimSpace(item[len("BLOCKING:"):]))
+		}
+	}
+	return blocking
 }
 
 // listItem returns the text of a markdown list item, stripped of its marker,

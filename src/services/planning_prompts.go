@@ -85,7 +85,9 @@ const sizeTriage = "Before applying task templates, classify the goal and write 
 	"persisted data or external contract change is trivial/small none, medium one compatible schema/file/API change, large a change " +
 	"needing migration/rollout/rollback; consequential unknowns are trivial 0, small 0-1, medium 2-3, large 4+. Bump one " +
 	"class for authentication, secrets, payment, or data deletion, and never bump down. Keep STEPS.md within the cap: " +
-	"trivial at most 3 steps, small at most 6 steps, medium at most 12 steps, and large unlimited. "
+	"trivial at most 3 steps, small at most 6 steps, medium at most 12 steps, and large unlimited. " +
+	"Also write `## Review profile` with `**Task type:**`, `**Risk tags:**`, and `**Reviews required:**`. " +
+	"Use risk tags secrets, auth, untrusted-input, rendered-html, network, filesystem, data-loop, hot-io, concurrency, io-boundary, and lifecycle; use `none` when empty. "
 
 const answersScopeRule = "Treat the user's answers in ANSWERS.md as authoritative for the questions they answer, and for " +
 	"nothing else. An answer never widens GOAL.md. If an answer describes behaviour GOAL.md does not mention, record it as " +
@@ -224,7 +226,7 @@ func assessmentPrompt(mode models.PlanMode) string {
 		"have vague `Done when:` criteria such as `works correctly`, `is implemented`, `looks good`, or unqualified `tests pass`, " +
 		"or whose `Purpose:` merely restates the technical action instead of the functional outcome it serves. " +
 		assessmentReductionRule + sizeAssessmentRule +
-		"Write each specific, actionable objective finding as a markdown list item in REFINEMENTS.md. " +
+		"Write each specific, actionable objective finding as a markdown list item in REFINEMENTS.md beginning `BLOCKING:`. Never record passed checks or no-finding notes. " +
 		"If there are no findings, write exactly NONE. " +
 		questionRule +
 		"Do not modify the plan or implement anything."

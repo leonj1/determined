@@ -207,6 +207,12 @@ the goal; add new behavior to GOAL.md instead. PLAN.md records deliberately
 accepted risks under `## Accepted trade-offs`, which specialist reviews may
 note as advisories but do not reopen as execution steps.
 
+Plans also record a `## Review profile` with task type, risk tags, and required
+specialists. Determined unions those declarations with conservative size
+defaults, runs the whole-plan audit first, then runs each selected specialist
+once. All review-caused retries share `--remediation-budget` (defaults: trivial
+1, small 2, medium 4, large 6).
+
 # Milestone execution
 
 Use `-milestones` with `-plan` or `-exec`. `-plan-tool` selects the independent gate tool (default: `-tool`). `-max-plan-revisions` and `-max-intent-retries` bound the outer loop; zero means unlimited.

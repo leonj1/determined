@@ -137,14 +137,13 @@ type Orchestrator struct {
 	// source other than a completion review; remediation cycles only reopen
 	// steps or append them during reviews, so they no longer retrigger the
 	// docs pass, while steps added by work invocations or the user do.
-	docsUpdated   bool
-	docsStepCount int
-	// specialistRounds counts, per specialist review, how many completion
-	// passes that specialist ended by triggering remediation (reopening or
-	// appending a step). It never resets during a run: the same specialist
-	// repeatedly forcing full remediation cycles is exactly the pathology
-	// cfg.MaxSpecialistRounds bounds.
-	specialistRounds map[string]int
+	docsUpdated      bool
+	profile          models.ReviewProfile
+	remediationsLeft int
+	auditPassed      bool
+	specialistsRun   map[string]bool
+	pendingFindings  map[string]ReviewFinding
+	nextFindingID    int
 }
 
 // invocationResult distinguishes a successful tool run from a retryable
@@ -158,7 +157,8 @@ type invocationResult struct {
 	skipped bool
 	// entry indexes this invocation's execution log entry, so a later signal
 	// can revise its outcome. It is -1 when no status page is attached.
-	entry int
+	entry  int
+	output string
 }
 
 // NewOrchestrator wires an orchestrator from its dependencies.
@@ -171,15 +171,16 @@ func NewOrchestrator(
 	cfg models.Config,
 ) *Orchestrator {
 	return &Orchestrator{
-		runner:           runner,
-		files:            files,
-		clock:            clock,
-		logs:             logs,
-		terminal:         terminal,
-		guard:            NewTamperGuard(files, cfg.ProtectedFiles),
-		cfg:              cfg,
-		stepIndex:        -1,
-		specialistRounds: map[string]int{},
+		runner:          runner,
+		files:           files,
+		clock:           clock,
+		logs:            logs,
+		terminal:        terminal,
+		guard:           NewTamperGuard(files, cfg.ProtectedFiles),
+		cfg:             cfg,
+		stepIndex:       -1,
+		specialistsRun:  map[string]bool{},
+		pendingFindings: map[string]ReviewFinding{},
 	}
 }
 
@@ -209,6 +210,7 @@ func (o *Orchestrator) Run(ctx context.Context) models.Outcome {
 	if !o.protocolFilesPresent() {
 		return models.OutcomeMissingFiles
 	}
+	o.initializeReviewPolicy()
 	o.reportStart()
 	outcome := o.loop(ctx)
 	o.reportFinish(ctx, outcome)
@@ -568,10 +570,6 @@ func (o *Orchestrator) checkCompletion() (models.Outcome, bool) {
 	switch {
 	case AllStepsComplete(steps):
 		if o.files.Exists(o.cfg.StopFile) {
-			if o.cfg.SpecializedReviews {
-				o.deleteUnreviewedStop()
-				return models.OutcomeStopped, false
-			}
 			return models.OutcomeStopped, true
 		}
 	case len(steps) > 0:
@@ -762,7 +760,8 @@ func (o *Orchestrator) invoke(
 		return invocationResult{outcome: models.OutcomeDroidFailed, stop: true}
 	}
 	defer log.Close()
-	out := io.MultiWriter(o.terminal, log)
+	var captured strings.Builder
+	out := io.MultiWriter(o.terminal, log, &captured)
 	writeProgress(out, o.clock, progress)
 	notifyProgress(o.status, progress)
 	entry := -1
@@ -780,16 +779,16 @@ func (o *Orchestrator) invoke(
 	if action == models.TaskActionStop {
 		fmt.Fprintln(o.terminal, "determined: run stopped from the status page")
 		o.settleEntry(entry, models.EntryStateWarn)
-		return invocationResult{outcome: models.OutcomeUserStopped, stop: true, entry: entry}
+		return invocationResult{outcome: models.OutcomeUserStopped, stop: true, entry: entry, output: captured.String()}
 	}
 	if err != nil {
 		if action == models.TaskActionSkip {
 			o.settleEntry(entry, models.EntryStateWarn)
-			return invocationResult{outcome: models.OutcomeStopped, skipped: true, entry: entry}
+			return invocationResult{outcome: models.OutcomeStopped, skipped: true, entry: entry, output: captured.String()}
 		}
 		o.settleEntry(entry, models.EntryStateError)
 		outcome, stop := o.recordFailure(ctx, err)
-		return invocationResult{outcome: outcome, stop: stop, entry: entry}
+		return invocationResult{outcome: outcome, stop: stop, entry: entry, output: captured.String()}
 	}
 	if tampered {
 		o.settleEntry(entry, models.EntryStateWarn)
@@ -797,7 +796,7 @@ func (o *Orchestrator) invoke(
 		o.settleEntry(entry, models.EntryStateOK)
 	}
 	o.failures = 0
-	return invocationResult{outcome: models.OutcomeStopped, succeeded: true, entry: entry}
+	return invocationResult{outcome: models.OutcomeStopped, succeeded: true, entry: entry, output: captured.String()}
 }
 
 // beginTask registers the running invocation's cancel function with the
@@ -879,10 +878,16 @@ func (o *Orchestrator) appendTamperNote(path string) {
 // reviewer invocation counts toward the consecutive-failure cap like any
 // other; the step simply stays checked.
 func (o *Orchestrator) verifyNewSteps(ctx context.Context, before []Step) (models.Outcome, bool) {
-	if !o.cfg.Verify {
-		return models.OutcomeStopped, false
-	}
 	for _, is := range newlyCompletedSteps(o.parsedSteps(), before) {
+		if result, handled := o.verifyRemediation(ctx, is.index, is.step); handled {
+			if result.stop {
+				return result.outcome, true
+			}
+			continue
+		}
+		if !o.cfg.Verify {
+			continue
+		}
 		if o.reviewWaivedFor(strings.TrimSpace(is.step.Text)) {
 			continue
 		}
@@ -921,21 +926,28 @@ func (o *Orchestrator) reviewWaivedFor(text string) bool {
 // text because a reviewer may insert steps and renumber the list.
 func (o *Orchestrator) verifyStep(ctx context.Context, i int, step Step) invocationResult {
 	text := strings.TrimSpace(step.Text)
-	if o.cfg.SimplicityReviews {
+	lean := o.profile.Size == models.PlanSizeTrivial || o.profile.Size == models.PlanSizeSmall
+	if o.cfg.SimplicityReviews && !lean {
 		result, rejected := o.reviewStepSimplicity(ctx, i, step, text)
 		if result.stop || !result.succeeded || rejected {
 			return result
 		}
 	}
 	was := completedTextCount(o.parsedSteps(), text)
-	result := o.invoke(ctx, verifyPrompt(i+1, step), progressMessage(fmt.Sprintf("verifying step %d", i+1)))
+	prompt := verifyPrompt(i+1, step)
+	if lean {
+		prompt += " Also reject materially needless abstraction, speculative generality, duplication, or dead code."
+	}
+	result := o.invoke(ctx, prompt, progressMessage(fmt.Sprintf("verifying step %d", i+1)))
 	if result.skipped {
 		return reviewWaived(result)
 	}
 	if result.stop || !result.succeeded {
 		return result
 	}
-	o.markRejectedStep(text, was, result.entry)
+	if o.markRejectedStep(text, was, result.entry) && !o.spendRemediation("step verifier", step.Text) {
+		return invocationResult{outcome: models.OutcomeRemediationBudget, stop: true, succeeded: true, entry: result.entry}
+	}
 	return result
 }
 
@@ -949,7 +961,11 @@ func (o *Orchestrator) reviewStepSimplicity(ctx context.Context, i int, step Ste
 	if result.stop || !result.succeeded {
 		return result, false
 	}
-	return result, o.markRejectedStep(text, was, result.entry)
+	rejected := o.markRejectedStep(text, was, result.entry)
+	if rejected && !o.spendRemediation("simplicity reviewer", step.Text) {
+		result.outcome, result.stop = models.OutcomeRemediationBudget, true
+	}
+	return result, rejected
 }
 
 // reviewWaived turns a user-skipped reviewer invocation into a passed review:
@@ -987,28 +1003,7 @@ type specializedReview struct {
 // A failure or a reviewer-created remediation step prevents later gates from
 // running until the next outer iteration.
 func (o *Orchestrator) runCompletionReviews(ctx context.Context) (models.Outcome, bool) {
-	result := o.updateDocs(ctx)
-	if result.stop {
-		return result.outcome, true
-	}
-	if !result.succeeded && !result.skipped {
-		return models.OutcomeStopped, false
-	}
-	if o.cfg.SpecializedReviews {
-		reviews := o.runSpecializedReviews(ctx)
-		if reviews.stop {
-			return reviews.outcome, true
-		}
-		if !reviews.succeeded {
-			return models.OutcomeStopped, false
-		}
-	}
-	result = o.invoke(ctx, auditPrompt, "auditing the whole plan")
-	o.absorbReviewSteps()
-	if result.succeeded && o.runComplete(o.parsedSteps()) {
-		return models.OutcomeStopped, true
-	}
-	return result.outcome, result.stop
+	return o.runCompletionPhase(ctx)
 }
 
 // updateDocs runs the completion-phase documentation pass, unless a prior pass
@@ -1034,77 +1029,12 @@ func (o *Orchestrator) updateDocs(ctx context.Context) invocationResult {
 // matches the absorbed snapshot. Any other change to the step count means new
 // work landed and the docs pass must run again.
 func (o *Orchestrator) docsCurrent() bool {
-	return o.docsUpdated && len(o.parsedSteps()) == o.docsStepCount
+	return o.docsUpdated
 }
 
 // markDocsUpdated snapshots the step count at a completed docs pass.
 func (o *Orchestrator) markDocsUpdated() {
 	o.docsUpdated = true
-	o.docsStepCount = len(o.parsedSteps())
-}
-
-// absorbReviewSteps refreshes the docs snapshot after a completion reviewer
-// runs, so remediation steps the reviewer appended count as remediation and
-// do not retrigger the docs pass on the next completion cycle.
-func (o *Orchestrator) absorbReviewSteps() {
-	if o.docsUpdated {
-		o.docsStepCount = len(o.parsedSteps())
-	}
-}
-
-func (o *Orchestrator) runSpecializedReviews(ctx context.Context) invocationResult {
-	for _, review := range specializedReviewSequence() {
-		progress := progressMessage(fmt.Sprintf("running %s review", review.name))
-		result := o.invoke(ctx, specializedReviewPrompt(review), progress)
-		o.absorbReviewSteps()
-		if result.stop {
-			return result
-		}
-		if result.skipped {
-			continue // the user waived this specialist's verdict
-		}
-		if !result.succeeded {
-			return invocationResult{outcome: models.OutcomeStopped}
-		}
-		if !AllStepsComplete(o.parsedSteps()) {
-			return o.recordSpecialistRemediation(review.name)
-		}
-	}
-	return invocationResult{outcome: models.OutcomeStopped, succeeded: true}
-}
-
-// recordSpecialistRemediation counts one remediation round triggered by the
-// named specialist and decides whether the loop may keep cycling on it.
-// Within cfg.MaxSpecialistRounds the remediation proceeds normally; past the
-// cap the run stops with OutcomeSpecialistLimit — surfacing the deadlock for
-// user review beats silently waiving a review gate. A cap of 0 or less means
-// unlimited, matching MaxStalledIterations.
-func (o *Orchestrator) recordSpecialistRemediation(name string) invocationResult {
-	o.specialistRounds[name]++
-	rounds := o.specialistRounds[name]
-	if o.cfg.MaxSpecialistRounds <= 0 || rounds <= o.cfg.MaxSpecialistRounds {
-		return invocationResult{outcome: models.OutcomeStopped}
-	}
-	fmt.Fprintf(o.terminal,
-		"determined: the %s review triggered remediation in %d completion passes, exceeding the cap of %d; "+
-			"stopping so you can review its remaining findings in FIXES.md\n",
-		name, rounds, o.cfg.MaxSpecialistRounds)
-	o.noteSpecialistLimit(name, rounds)
-	return invocationResult{outcome: models.OutcomeSpecialistLimit, stop: true}
-}
-
-// noteSpecialistLimit records the exhausted review gate in NOTES.md so the
-// situation survives the stopped run: the user (and any later invocation)
-// sees why the run ended and where the outstanding findings live.
-func (o *Orchestrator) noteSpecialistLimit(name string, rounds int) {
-	note := fmt.Sprintf("\n## %s review remediation cap reached\n\n"+
-		"The %s review triggered remediation in %d completion passes, exceeding the cap of %d, "+
-		"so the run stopped. Its remaining findings are recorded in FIXES.md; the user must "+
-		"review them and resolve or waive them before resuming.\n",
-		name, name, rounds, o.cfg.MaxSpecialistRounds)
-	if err := o.files.Append("NOTES.md", note); err != nil {
-		fmt.Fprintf(o.terminal, "determined: could not record the review cap in NOTES.md: %v\n", err)
-	}
 }
 
 func specializedReviewSequence() []specializedReview {
@@ -1116,7 +1046,7 @@ func specializedReviewSequence() []specializedReview {
 }
 
 func specializedReviewPrompt(review specializedReview) string {
-	return fmt.Sprintf("Act as the independent %s specialist. Read PLAN.md, STEPS.md, and the implementation. Review the completed work specifically for %s. Run relevant checks when practical and report only concrete, actionable findings caused or exposed by this work. PLAN.md lists deliberately accepted risks under `## Accepted trade-offs`. Do not report a finding that restates one of them, and do not reopen or append a step for it. If you believe an accepted trade-off is unsafe, append one advisory line to NOTES.md beginning `Advisory (%s):` and change nothing else for that concern. Report every material finding in this single pass — do not stop at the first one — subject to the accepted-trade-off rule above. For each finding, append the finding and evidence to FIXES.md, then reopen the most relevant step in STEPS.md; if no existing step fits, append a new unchecked remediation step with a `Done when:` criterion. Record one remediation step per finding, all in this same pass. If no material issue remains, do nothing. Do not implement fixes during this review.", review.name, review.focus, review.name)
+	return fmt.Sprintf("Act as the independent %s specialist. Read PLAN.md, STEPS.md, and the implementation. Review once for %s. PLAN.md records accepted risks under `## Accepted trade-offs`. Do not report a finding that restates one of them; do not reopen or append a step for it; classify it for the orchestrator to record as Advisory (%s):. Write nothing and modify no file. Return NO FINDINGS, or one or more blank-line-separated blocks: FINDING: <must-fix|advisory>, TITLE: <title>, EVIDENCE: <concrete evidence>, FIX: <bounded fix>. Report only concrete issues caused or exposed by this work.", review.name, review.focus, review.name)
 }
 
 // stepClaim states one newly checked step — its text, purpose, and acceptance
@@ -1232,16 +1162,12 @@ const docsPrompt = "All steps in STEPS.md are checked complete. Read PLAN.md, ST
 // It enforces the plan plus CRITERIA.md and TESTS.md test existence and passing.
 // The audit either creates STOP.md — the only thing that lets an all-checked
 // run end successfully — or sends remediation back to step execution.
-const auditPrompt = "All steps in STEPS.md are checked complete. Read PLAN.md and STEPS.md. " +
+const auditPrompt = "All steps in STEPS.md are checked complete. Read GOAL.md, PLAN.md and STEPS.md. " +
 	"Audit whether the implementation genuinely satisfies the plan. " +
 	"If CRITERIA.md exists, also audit that each of its BDD journey tests exists as an automated test and passes. " +
 	"If TESTS.md exists, also audit that each of its journey and BDD tests exists as an automated test and passes. " +
-	"If a step is not actually satisfied, change its `[x]` back to `[ ]` in STEPS.md " +
-	"and append the reason to FIXES.md. If a required CRITERIA.md or TESTS.md test is missing or failing, " +
-	"append a new `- [ ]` step to STEPS.md with a `Done when:` requiring that test to be implemented and passing, " +
-	"and append the reason to FIXES.md. " +
-	"If everything is satisfied, create STOP.md. " +
-	"Do not start work beyond this audit."
+	"Write nothing and modify no file. End with VERDICT: SATISFIED, or VERDICT: GAP followed by either " +
+	"STEP: <number> or TEST: <test title>, then RATIONALE: <specific gap>. Do not implement anything."
 
 // explainPrompt asks for a presentation-only walkthrough after a successful
 // run, naming the configured artifact so alternate configurations still work.
@@ -1460,9 +1386,9 @@ func execStopReasonAdvice(outcome models.Outcome, cfg models.Config) (string, st
 	case models.OutcomeInterrupted:
 		return "The run was interrupted by a signal before it could finish.",
 			"Click Implement (or rerun determined) to resume from the unchecked steps."
-	case models.OutcomeSpecialistLimit:
-		return fmt.Sprintf("A single specialist review triggered remediation in more than %d completion passes, so the run stopped instead of burning a full review cycle on every finding.", cfg.MaxSpecialistRounds),
-			"Read FIXES.md for the specialist's remaining findings and NOTES.md for the run's record of the deadlock, then resolve or waive the findings yourself. Then click Implement (or rerun determined) to resume."
+	case models.OutcomeRemediationBudget:
+		return fmt.Sprintf("The shared remediation budget of %d was exhausted, so the run stopped instead of looping.", cfg.RemediationBudget),
+			"Read FIXES.md and NOTES.md for the open findings, resolve or waive them, then rerun with an appropriate --remediation-budget."
 	case models.OutcomeUserStopped:
 		return "You stopped the run from the status page before every step completed.",
 			"Completed steps stay checked, so nothing is lost. Click Implement (or rerun determined) to resume from the remaining steps."

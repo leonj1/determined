@@ -1209,7 +1209,7 @@ func TestRetryableSpecialistFailureCannotReachTheAudit(t *testing.T) {
 func TestSpecialistExceedingRemediationCapStopsTheRun(t *testing.T) {
 	cfg := config(0)
 	cfg.SpecializedReviews = true
-	cfg.MaxSpecialistRounds = 2
+	cfg.RemediationBudget = 2
 	fs := plannedFileStore(twoStepsAllChecked)
 	var terminal bytes.Buffer
 	runner := &fakeRunner{script: func(call int, _ io.Writer) error {
@@ -1226,7 +1226,7 @@ func TestSpecialistExceedingRemediationCapStopsTheRun(t *testing.T) {
 
 	outcome := o.Run(context.Background())
 
-	if outcome != models.OutcomeSpecialistLimit || outcome.ExitCode() != 3 {
+	if outcome != models.OutcomeRemediationBudget || outcome.ExitCode() != 3 {
 		t.Fatalf("expected the third security remediation to stop the run with exit 3, got %v (exit %d)", outcome, outcome.ExitCode())
 	}
 	if runner.calls != 6 {
@@ -1254,7 +1254,7 @@ func TestSpecialistExceedingRemediationCapStopsTheRun(t *testing.T) {
 func TestSpecialistRemediationIsUnlimitedWhenCapDisabled(t *testing.T) {
 	cfg := config(0)
 	cfg.SpecializedReviews = true
-	cfg.MaxSpecialistRounds = 0
+	cfg.RemediationBudget = 0
 	fs := plannedFileStore(twoStepsAllChecked)
 	runner := &fakeRunner{script: func(call int, _ io.Writer) error {
 		switch call {
@@ -1285,7 +1285,7 @@ func TestSpecialistRemediationIsUnlimitedWhenCapDisabled(t *testing.T) {
 func TestSpecialistRemediationRoundsAreCountedPerSpecialist(t *testing.T) {
 	cfg := config(0)
 	cfg.SpecializedReviews = true
-	cfg.MaxSpecialistRounds = 1
+	cfg.RemediationBudget = 1
 	fs := plannedFileStore(twoStepsAllChecked)
 	runner := &fakeRunner{script: func(call int, _ io.Writer) error {
 		switch call {

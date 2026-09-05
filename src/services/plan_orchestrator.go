@@ -155,6 +155,10 @@ func (o *PlanOrchestrator) refreshDemo(ctx context.Context) {
 	if o.status == nil {
 		return
 	}
+	plan, err := o.files.Read(o.cfg.PlanFile)
+	if err != nil || !demoEligible(ReviewProfileOf(plan)) {
+		return
+	}
 	if _, stop := o.runInvocation(ctx, o.cfg.DemoInvocation, "generating UI demo"); stop {
 		return
 	}
@@ -212,6 +216,14 @@ func (o *PlanOrchestrator) create(ctx context.Context, deadline time.Time) model
 func (o *PlanOrchestrator) simplifyDraft(ctx context.Context) (models.Outcome, bool) {
 	if o.simplified || o.cfg.Milestones || o.cfg.SimplifyInvocation.Binary == "" {
 		return models.OutcomePlanReady, false
+	}
+	plan, err := o.files.Read(o.cfg.PlanFile)
+	if err == nil {
+		size, ok := PlanSizeOf(plan)
+		if ok && (size == models.PlanSizeTrivial || size == models.PlanSizeSmall) {
+			o.simplified = true
+			return models.OutcomePlanReady, false
+		}
 	}
 	o.simplified = true
 	return o.runInvocation(ctx, o.cfg.SimplifyInvocation, "simplifying plan")
@@ -400,8 +412,9 @@ func assumptionsConfirmed(answer string) bool {
 // remaining gates on an explicit user choice instead of silently accepting.
 func (o *PlanOrchestrator) refine(ctx context.Context, deadline time.Time) models.Outcome {
 	o.reportPlan()
-	if o.cfg.MaxRefinePasses == 0 {
-		return models.OutcomePlanReady // refinement disabled
+	maxPasses := 1
+	if plan, err := o.files.Read(o.cfg.PlanFile); err == nil {
+		maxPasses += RefinePassesFor(ReviewProfileOf(plan).Size, o.cfg.MaxRefinePasses)
 	}
 	for pass := 1; ; pass++ {
 		switch {
@@ -441,7 +454,7 @@ func (o *PlanOrchestrator) refine(ctx context.Context, deadline time.Time) model
 				return outcome
 			}
 		}
-		if pass >= o.cfg.MaxRefinePasses {
+		if pass >= maxPasses {
 			outcome, action := o.gateExhaustedCap(ctx, issues, pass)
 			if action == capReturn {
 				return outcome
@@ -491,16 +504,20 @@ func (o *PlanOrchestrator) withSizeFindings(assessment string) (string, error) {
 func sizeFindings(plan, steps, tests string) []string {
 	size, ok := PlanSizeOf(plan)
 	if !ok {
-		return []string{"PLAN.md has no `**Size:**` line under `## Size`"}
+		return []string{"BLOCKING: PLAN.md has no `**Size:**` line under `## Size`"}
 	}
 	findings := []string{}
+	if !strings.Contains(plan, "## Review profile") ||
+		!strings.Contains(plan, "**Risk tags:**") || !strings.Contains(plan, "**Reviews required:**") {
+		findings = append(findings, "BLOCKING: PLAN.md has no complete `## Review profile` section")
+	}
 	stepCount, cap := len(ParseSteps(steps)), StepCap(size)
 	if cap > 0 && stepCount > cap {
-		findings = append(findings, fmt.Sprintf("%d steps exceeds the %s cap of %d", stepCount, size, cap))
+		findings = append(findings, fmt.Sprintf("BLOCKING: %d steps exceeds the %s cap of %d", stepCount, size, cap))
 	}
 	testCount := NewTestsDocument(tests).TestCount()
 	if (size == models.PlanSizeTrivial || size == models.PlanSizeSmall) && testCount > 1 {
-		findings = append(findings, fmt.Sprintf("%d tests exceeds the %s limit of 1", testCount, size))
+		findings = append(findings, fmt.Sprintf("BLOCKING: %d tests exceeds the %s limit of 1", testCount, size))
 	}
 	return findings
 }

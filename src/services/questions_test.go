@@ -137,8 +137,8 @@ func TestRefinementIssuesTreatsNoneAsDone(t *testing.T) {
 		{"numbered none", "1. None", nil},
 		{"prose with no list", "All steps look good to me.", nil},
 		{"empty", "", nil},
-		{"real oversized steps", "1. Build the whole backend\n2. Build the whole frontend", []string{"Build the whole backend", "Build the whole frontend"}},
-		{"none alongside a real step stays flagged", "- NONE\n- Build everything", []string{"NONE", "Build everything"}},
+		{"blocking findings", "1. BLOCKING: Build the whole backend\n2. BLOCKING: Build the whole frontend", []string{"Build the whole backend", "Build the whole frontend"}},
+		{"nonblocking notes ignored", "- NONE\n- Build everything", nil},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

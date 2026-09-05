@@ -142,7 +142,7 @@ field definitions and curl examples are in [USAGE.md](USAGE.md).
    as no progress, which bounds worker/reviewer ping-pong. `0` disables stall
    detection.
 
-## Documentation update, specialist reviews, and the whole-plan audit
+## Whole-plan audit, selected specialist reviews, and documentation
 
 Checked boxes alone are not success. Once every step is checked, one
 invocation first updates the project's own documentation so it describes the
@@ -175,8 +175,8 @@ a specialist that considers one unsafe may add an `Advisory (<specialist>):`
 line to `NOTES.md` without changing the steps.
 `--specialized-reviews=false` skips these three gates.
 
-After all enabled specialist reviews approve, one final invocation reads
-`PLAN.md` and `STEPS.md` and audits whether the implementation genuinely
+Once all steps are checked, one read-only invocation first reads `GOAL.md`,
+`PLAN.md`, and `STEPS.md` and audits whether the implementation genuinely
 satisfies the plan:
 
 - If a step is not actually satisfied, the audit unchecks it and appends the
@@ -189,7 +189,17 @@ satisfies the plan:
   to exist as an automated test and pass; a missing or failing test adds a
   new unchecked remediation step with a `Done when:` requiring that test to
   be implemented and passing, plus a `FIXES.md` entry.
-- If everything is satisfied, the audit creates `STOP.md`.
+- If everything is satisfied, its `SATISFIED` verdict is remembered and is not rerun.
+
+The orchestrator then runs only the specialists selected by the plan review
+profile. Each specialist runs once and reports structured must-fix or advisory
+findings without editing files. Advisories go to `NOTES.md`; must-fix findings
+become remediation steps. A completed remediation receives one closed
+`RESOLVED`/`UNRESOLVED` re-check instead of restarting the audit or specialists.
+Every verifier rejection, audit gap, must-fix finding, and unresolved re-check
+spends from one shared remediation budget: trivial 1, small 2, medium 4, large
+6, overridden by `--remediation-budget`. After all findings close, docs run
+once and the orchestrator creates `STOP.md`.
 
 Only *all steps checked + `STOP.md` present* ends the run with exit **0**.
 
@@ -222,9 +232,9 @@ the quiz.
 |------------|-------------------------------------------------------------------|
 | `PLAN.md`  | The plan the steps implement; read by the audit. Required at startup. |
 | `STEPS.md` | Checkbox step list with `Done when:` criteria; the loop's source of truth. Required at startup. |
-| `STOP.md`  | Created by the whole-plan audit to approve the finished run; deleted if it appears early. |
+| `STOP.md`  | Created by the orchestrator after audit, selected specialists, remediation, and docs complete; deleted if it appears early. |
 | `NOTES.md` | Cross-iteration memory (see below); created by the tool on first use. |
-| `FIXES.md` | Why a verifier, specialist, or audit reopened/added a step; appended by reviewer invocations. |
+| `FIXES.md` | Why a verifier, specialist, or audit opened work; appended by the orchestrator from structured verdicts. |
 | `CRITERIA.md` | Optional user-approved BDD journey tests from a `--criteria` session; enforced by the final audit. |
 | `TESTS.md` | Recommended journey/BDD tests from planning; enforced by the final audit. |
 | `DEMO.html` | Optional self-contained demo for a trivial planned UI change; shown beneath the interactive Plan tab and never used as execution input. |

@@ -188,7 +188,7 @@ with `--plan` and `-exec` (the session runs first); see
 1. **Validate the inputs** — require `PLAN.md` and `STEPS.md`; delete a stale
    `STOP.md` when it cannot prove that the current run is complete.
 2. **Check completion and budget** — exit `0` only when every step is checked
-   and the final audit created `STOP.md`; exit `1` if `--max-duration` / `-t`
+   and the orchestrator created `STOP.md`; exit `1` if `--max-duration` / `-t`
    is exhausted.
 3. **Select the next step** — re-parse `STEPS.md`, choose exactly the next
    unchecked checkbox, and build a prompt containing its `Done when:`
@@ -212,19 +212,14 @@ with `--plan` and `-exec` (the session runs first); see
    can break the deadlock and continue. Without `--tie-breaker` and without
    the interactive status page, the run stops with exit `3`; otherwise return
    to step 2.
-8. **Update the documentation** — once all boxes are checked, bring the
-   project's own docs (`README.md`, a `docs/` directory, and any other
-   documentation the project already keeps) in line with what the work
-   changed: new commands, flags, environment variables, endpoints,
-   configuration, and setup steps.
-9. **Run specialist reviews** — independently review security, performance,
-   and reliability/maintainability. A concrete finding is written to
-   `FIXES.md` and reopens a relevant step (or adds a remediation step),
-   returning execution to step 2.
-10. **Audit the whole plan** — after the specialist gates pass, compare the
-    implementation with `PLAN.md`. Reopen unsatisfied steps and record why in
-    `FIXES.md`, or create `STOP.md` when the entire plan is satisfied.
-11. **Finish execution** — return to the completion check, which exits `0`
+8. **Audit the whole result** — compare the implementation and tests with the goal once.
+9. **Run selected specialist reviews once** — run only the security,
+   performance, or reliability reviews selected by the plan's risk profile.
+10. **Triage and re-check** — record advisories; turn must-fix findings into
+    bounded remediation steps and give each fix one targeted closed re-check.
+11. **Update documentation and finish** — update docs once, then let the
+    orchestrator create `STOP.md`.
+12. **Finish execution** — return to the completion check, which exits `0`
     only when all boxes remain checked and `STOP.md` is present.
 
 See [EXECUTION.md](EXECUTION.md) for details.
@@ -336,7 +331,8 @@ ideally a clean git checkout, so every change is reviewable and revertible.
 | `--max-stalled-iterations` | `3` | Stop (exit `3`) after this many consecutive iterations check no new step. `0` disables stall detection. |
 | `--verify`       | `true`   | After each newly checked step, run an independent correctness reviewer; failure unchecks it and records why in `FIXES.md`. |
 | `--step-simplicity` | `false` | Before correctness verification, also run the legacy per-step simplicity reviewer. Planning already performs one whole-plan simplicity pass. |
-| `--specialized-reviews` | `true` | Before the final audit, run independent security, performance, and reliability/maintainability review gates. |
+| `--specialized-reviews` | `true` | After the goal audit, run the specialist reviews selected by the plan profile once each. |
+| `--remediation-budget` | by plan size | Shared cap for verifier, audit, and specialist remediation (trivial 1, small 2, medium 4, large 6). |
 | `--git-checkpoint` | `true` | Git-commit the working tree after each verified step when running in a git repository. |
 | `--tie-breaker`  | `true`   | When the coder and verifier deadlock after `--max-stalled-iterations`, run an independent AI invocation to break the tie. The tie-breaker evaluates the step, the goal, the implementation, and the verifier's rejections; its verdict (ACCEPT or REJECT) is final and skips further verification. |
 | `--log-dir`      | `logs`   | Directory for per-iteration log files.                          |

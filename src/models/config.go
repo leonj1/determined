@@ -48,13 +48,9 @@ type Config struct {
 	// unchecked past the cap ends the run with OutcomeStepTimeout. 0 means
 	// unlimited.
 	StepMaxRuntime time.Duration
-	// MaxSpecialistRounds caps how many completion passes a single specialist
-	// review (security, performance, reliability) may end by triggering
-	// remediation — reopening or appending a step. When one specialist exceeds
-	// the cap the run ends with OutcomeSpecialistLimit so the user reviews the
-	// remaining findings in FIXES.md instead of the loop burning a full cycle
-	// per finding forever; 0 means unlimited.
-	MaxSpecialistRounds int
+	// RemediationBudget bounds every review-caused retry from one shared pool.
+	// A negative value selects the plan-size default; zero permits no remediation.
+	RemediationBudget int
 	// Verify runs an independent correctness reviewer after each newly checked
 	// step. The reviewer unchecks the step and records why in FIXES.md when its
 	// acceptance criterion is not genuinely met.
