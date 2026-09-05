@@ -109,9 +109,12 @@ skipped and resumes at the oldest available line.
 2. **Invoke the planner** — ask the selected AI tool to read the goal and
    either create clarifying questions or produce the plan files.
 3. **Run the interview** — if the tool writes `QUESTIONS.md`, ask each question
-   in the status page for interactive runs or on the terminal otherwise, append the responses to `ANSWERS.md` beneath a preamble
-   stating that answers only clarify `GOAL.md`, clear the questions,
-   and invoke the planner again. Repeat until it has enough information.
+   in the status page for interactive runs or on the terminal otherwise.
+   Finite answers written as indented `Label — description` bullets become
+   selection buttons; questions without choices keep the free-text response.
+   Append the responses to `ANSWERS.md` beneath a preamble stating that answers
+   only clarify `GOAL.md`, clear the questions, and invoke the planner again.
+   Repeat until it has enough information.
 4. **Create the plan** — the planner writes `PLAN.md` and a machine-checkable
    `STEPS.md` whose checkbox steps each have a concrete `Done when:` criterion.
    `PLAN.md` records an auditable `## Size` classification (`trivial`, `small`,

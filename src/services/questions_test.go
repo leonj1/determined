@@ -4,8 +4,80 @@ import (
 	"reflect"
 	"testing"
 
+	"determined/src/models"
 	"determined/src/services"
 )
+
+func TestParseClarifyingQuestionsExtractsButtonChoices(t *testing.T) {
+	content := "# Questions\n\n1. How should a failed write be shown?\n" +
+		"   - Stay silent — matches the current plan\n" +
+		"   - Show browser note — gives visible feedback\n" +
+		"2. What wording should the note use?\n"
+	want := []models.ClarifyingQuestion{
+		{
+			Body: "How should a failed write be shown?",
+			Choices: []models.PromptChoice{
+				{Value: "Stay silent", Label: "Stay silent", Description: "matches the current plan"},
+				{Value: "Show browser note", Label: "Show browser note", Description: "gives visible feedback"},
+			},
+		},
+		{Body: "What wording should the note use?"},
+	}
+
+	got := services.ParseClarifyingQuestions(content)
+
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("ParseClarifyingQuestions() = %#v, want %#v", got, want)
+	}
+}
+
+func TestParseClarifyingQuestionsSupportsChoicesWithoutDescriptions(t *testing.T) {
+	content := "- Which database?\n  - SQLite\n  - PostgreSQL\n"
+	want := []models.ClarifyingQuestion{{
+		Body: "Which database?",
+		Choices: []models.PromptChoice{
+			{Value: "SQLite", Label: "SQLite"},
+			{Value: "PostgreSQL", Label: "PostgreSQL"},
+		},
+	}}
+
+	got := services.ParseClarifyingQuestions(content)
+
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("ParseClarifyingQuestions() = %#v, want %#v", got, want)
+	}
+}
+
+func TestParseClarifyingQuestionsRecognizesIndentedLaterQuestion(t *testing.T) {
+	content := "1. Which database?\n" +
+		"   - SQLite\n" +
+		"      - PostgreSQL\n" +
+		"  2. Should migrations run automatically?\n" +
+		"     - Yes\n" +
+		"     - No\n"
+	want := []models.ClarifyingQuestion{
+		{
+			Body: "Which database?",
+			Choices: []models.PromptChoice{
+				{Value: "SQLite", Label: "SQLite"},
+				{Value: "PostgreSQL", Label: "PostgreSQL"},
+			},
+		},
+		{
+			Body: "Should migrations run automatically?",
+			Choices: []models.PromptChoice{
+				{Value: "Yes", Label: "Yes"},
+				{Value: "No", Label: "No"},
+			},
+		},
+	}
+
+	got := services.ParseClarifyingQuestions(content)
+
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("ParseClarifyingQuestions() = %#v, want %#v", got, want)
+	}
+}
 
 func TestParseQuestionsHandlesListStyles(t *testing.T) {
 	cases := []struct {
