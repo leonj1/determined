@@ -404,3 +404,5 @@ make test
 
 This runs the full Go unit-test suite plus the Node.js browser-behaviour tests
 inside `Dockerfile.test` — no local toolchain needed beyond Docker.
+
+Pushed from a local Compute Wizard stack on an LXC daemon.
